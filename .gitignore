@@ -231,3 +231,6 @@ packages/http-client-python/venv_build_wheel/
 
 # http-server-js emitter
 packages/http-server-js/test/e2e/generated
+
+# Turborepo
+.turbo/

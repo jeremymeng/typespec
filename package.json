@@ -68,6 +68,7 @@
     "rimraf": "~6.0.1",
     "syncpack": "^13.0.3",
     "tsx": "^4.19.3",
+    "turbo": "^2.5.6",
     "typescript": "~5.8.2",
     "typescript-eslint": "^8.27.0",
     "vite-plugin-node-polyfills": "^0.24.0",
