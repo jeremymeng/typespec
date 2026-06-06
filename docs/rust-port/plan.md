@@ -288,7 +288,7 @@ Each milestone is independently deliverable and testable. Agents can work on the
 
 - `--esm` flag exists in `@napi-rs/cli` v3.x only (not v2.x)
 - Requires the Rust `napi` and `napi-derive` crates to also be on v3 — v2 Rust crates produced an empty `.d.ts` and no JS binding with the v3 CLI
-- `napi-build` stays on v2 (shared between v2/v3 of the macro crates)
+- `napi-build` stays on `2.x` — **there is no v3 release**; `napi-build 2.3.2` is the latest and is intentionally written to work with both v2 and v3 CLIs by emitting both legacy and new `cargo:rerun-if-env-changed` env-var names. It's a small orthogonal crate (one `pub fn setup()` that emits platform-specific linker directives) whose API hasn't needed a major bump.
 - v3 CLI replaces v2's verbose per-platform `switch` loader with a single-file ESM binding (`import { createRequire } from 'node:module'` + `export { ... }`); the native `.node` is still loaded via `createRequire` (Node platform limitation, not napi-rs)
 - v3 CLI also generates a proper `.d.ts` with full type info (struct/enum/function signatures) — v2 in our setup produced 0 bytes
 - v3 deprecates `napi.name` → `napi.binaryName` and `napi.triples` → `napi.targets` in `package.json`
@@ -308,7 +308,7 @@ Each milestone is independently deliverable and testable. Agents can work on the
 - `crates/typespec-napi/Cargo.toml`:
   - `napi`: `"3"` (with `default-features = false` and existing feature set re-validated against v3)
   - `napi-derive`: `"3"`
-  - `napi-build` stays on `"2"`
+  - `napi-build` stays on `"2"` — no v3 published; current `2.3.2` is bi-CLI compatible
 - `crates/_spike_napi_roundtrip/Cargo.toml`: same treatment, OR a comment noting it's frozen on v2 for historical reference
 - Any source-code changes required by napi v3 API differences (most v2 macros are compatible; spot-check `External<T>`, `JsObject`, error types, the `Env::create_external` signature)
 - `packages/compiler-rust/test/`: update imports to ESM-style if needed (vitest handles both; verify no breakage)
