@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T04:20:58Z",
+  "updated_at": "2026-06-06T04:27:02Z",
   "updated_by": "agent:rust-port-m2",
   "tasks": [
     {
@@ -126,7 +126,7 @@
         },
         {
           "done": true,
-          "text": "Answer: arena lifetime vs JS object lifetime â€” can arena be freed safely?"
+          "text": "Answer: arena lifetime vs JS object lifetime \u00e2\u20ac\u201d can arena be freed safely?"
         },
         {
           "done": true,
@@ -173,15 +173,15 @@
       ],
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-source/src/lib.rs: SourceFile, Position, Diagnostic"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-scanner/src/token.rs: Token enum matching TS Token"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-scanner/src/charcode.rs: character classification"
         },
         {
@@ -189,7 +189,7 @@
           "text": "crates/typespec-scanner/src/lib.rs: Scanner struct with scan() method"
         },
         {
-          "done": false,
+          "done": true,
           "text": "string-interner integration for identifiers"
         },
         {
@@ -221,7 +221,13 @@
           "text": "Fuzz inputs tested: unicode, unterminated strings, empty input, edge cases"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-06-06T04:27:02Z",
+          "author": "agent:rust-port-m2",
+          "text": "Implemented SourceFile UTF-16 line mapping, scanner token enum, charcode helpers including generated non-ASCII identifier ranges, and initial hand-written scanner with unit coverage."
+        }
+      ]
     },
     {
       "id": "M3",
