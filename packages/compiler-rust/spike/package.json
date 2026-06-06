@@ -1,0 +1,11 @@
+{
+  "name": "@typespec/compiler-rust-spike-napi-roundtrip",
+  "version": "0.0.0",
+  "private": true,
+  "napi": {
+    "name": "spike-napi-roundtrip",
+    "triples": {
+      "defaults": true
+    }
+  }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "_spike_napi_roundtrip"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+name = "_spike_napi_roundtrip"
+path = "src/lib.rs"
+test = false
+
+[dependencies]
+bumpalo = "3"
+napi = { version = "2", default-features = false, features = ["napi8"] }
+napi-derive = "2"
+
+[build-dependencies]
+napi-build = "2"

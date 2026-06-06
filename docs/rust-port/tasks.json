@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T00:36:23Z",
+  "updated_at": "2026-06-06T00:45:13Z",
   "updated_by": "agent:rust-port-m1-5",
   "tasks": [
     {
@@ -90,7 +90,7 @@
     {
       "id": "M1.5",
       "title": "napi-rs Round-trip Spike",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M1"],
       "plan_section": "docs/rust-port/plan.md#m15--napi-rs-round-trip-spike",
       "complexity": "small",
@@ -98,50 +98,61 @@
       "branch": "jeremymeng/rust-port-m1.5-napi-spike",
       "pr": null,
       "started_at": "2026-06-06T00:36:23Z",
-      "completed_at": null,
+      "completed_at": "2026-06-06T00:45:13Z",
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "Mini-AST in Rust with 5 node types, bumpalo-allocated, NodeId references"
         },
         {
-          "done": false,
+          "done": true,
           "text": "napi binding parse_mini(source) -> MiniAst (eager)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "napi binding get_node(id) -> NodeInfo (lazy)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "JS test compares eager vs lazy traversal performance on ~10K nodes"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Answer: serialization cost of 10K-node arena to JS"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Answer: does lazy External<T> handle pattern work cleanly?"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Answer: arena lifetime vs JS object lifetime â€” can arena be freed safely?"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Answer: ergonomic issues with arena-allocated structs at FFI boundary"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Writeup at docs/rust-port/spike-napi-roundtrip.md"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Decision recorded: eager / lazy / hybrid (update plan.md if changes M3 API)"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-06-06T00:45:13Z",
+          "author": "agent:rust-port-m1-5",
+          "text": "Built disposable _spike_napi_roundtrip crate plus compiler-rust spike benchmarks and lifetime tests for eager serialization and lazy External<T> traversal."
+        },
+        {
+          "timestamp": "2026-06-06T00:45:13Z",
+          "author": "agent:rust-port-m1-5",
+          "text": "Measured 10,011 nodes over 10 iterations: eager build median 30.589 ms / traversal 0.366 ms / heap +1.677 MB; lazy build median 0.817 ms / traversal 32.045 ms / heap ~0 MB. Recorded hybrid decision and updated M3 plan."
+        }
+      ]
     },
     {
       "id": "M2",

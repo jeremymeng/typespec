@@ -284,6 +284,8 @@ Each milestone is independently deliverable and testable. Agents can work on the
 
 **Goal**: Port the TypeSpec parser from TS to Rust. Expose `parse(source: string) → AST` via napi-rs. Define the arena-based AST.
 
+**Updated by M1.5 spike**: Use a hybrid napi-rs API. `parse(source)` should eagerly return a flat `SerializedAST` node table with `NodeId` references for full-tree parser comparison tests. Keep lazy `External<AstArena>` handles as an optional sparse/debug access pattern, not the default full-tree traversal API.
+
 **Key source files to port from**:
 
 - `packages/compiler/src/core/parser.ts` (3,085 lines)
@@ -294,7 +296,7 @@ Each milestone is independently deliverable and testable. Agents can work on the
 - `crates/typespec-parser/src/ast.rs` — Arena-allocated AST node types
 - `crates/typespec-parser/src/syntax_kind.rs` — `SyntaxKind` enum matching TS
 - `crates/typespec-parser/src/lib.rs` — `Parser` struct, `parse()` function
-- `crates/typespec-napi/src/parser.rs` — napi binding: `parse(source: String) → SerializedAST`
+- `crates/typespec-napi/src/parser.rs` — napi binding: `parse(source: String) → SerializedAST` (eager flat node table); optional lazy handle helpers for sparse/debug queries
 - Comparison tests + dual-runner tests
 
 **Implementation guidance**:
@@ -304,7 +306,7 @@ Each milestone is independently deliverable and testable. Agents can work on the
 - The TS `SyntaxKind` enum has ~130 variants — port them all.
 - Parser error recovery: the TS parser recovers from errors by inserting missing tokens. Replicate this behavior so diagnostic output matches.
 - Key AST node types to port: `TypeSpecScriptNode`, `ModelStatementNode`, `EnumStatementNode`, `UnionStatementNode`, `OperationStatementNode`, `InterfaceStatementNode`, `ScalarStatementNode`, `AliasStatementNode`, `NamespaceStatementNode`, and all expression nodes.
-- The API shape (eager vs lazy serialization) is determined by M1.5's spike findings.
+- The API shape follows M1.5's hybrid decision: eager flat node table for full parse results; lazy handles only for sparse/debug queries.
 
 **Arena design**:
 

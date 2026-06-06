@@ -13,6 +13,7 @@
   "scripts": {
     "build": "napi build --platform --release --cargo-cwd ../../crates/typespec-napi",
     "build:debug": "napi build --platform --cargo-cwd ../../crates/typespec-napi",
+    "build:spike": "napi build spike --platform --release --cargo-cwd ../../crates/_spike_napi_roundtrip --config spike/package.json --js false",
     "test": "vitest run"
   },
   "napi": {

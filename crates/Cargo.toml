@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "_spike_napi_roundtrip",
   "typespec-source",
   "typespec-scanner",
   "typespec-parser",
