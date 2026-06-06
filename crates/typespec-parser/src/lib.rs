@@ -19,6 +19,22 @@ pub struct ParseResult {
     pub arena: AstArena,
     pub root: NodeId,
     pub diagnostics: Vec<Diagnostic>,
+    pub comments: Vec<NodeId>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ParseOptions {
+    pub comments: bool,
+    pub docs: bool,
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        Self {
+            comments: false,
+            docs: true,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -27,6 +43,14 @@ struct Annotations {
     decorators: Vec<NodeId>,
     directives: Vec<NodeId>,
     docs: Vec<NodeId>,
+}
+
+#[derive(Clone)]
+struct DocRange {
+    pos: u32,
+    end: u32,
+    text: String,
+    comment: Option<NodeId>,
 }
 
 #[derive(Clone, Copy)]
@@ -159,16 +183,23 @@ pub struct Parser<'src> {
     missing_identifier_counter: u32,
     tree_printable: bool,
     new_line_is_trivia: bool,
+    options: ParseOptions,
+    comments: Vec<NodeId>,
+    doc_ranges: Vec<DocRange>,
 }
 
 pub fn parse(source: &SourceFile) -> ParseResult {
-    let mut parser = Parser::new(source);
+    parse_with_options(source, ParseOptions::default())
+}
+
+pub fn parse_with_options(source: &SourceFile, options: ParseOptions) -> ParseResult {
+    let mut parser = Parser::new(source, options);
     let root = parser.parse_type_spec_script();
     parser.into_result(root)
 }
 
 impl<'src> Parser<'src> {
-    pub fn new(source: &'src SourceFile) -> Self {
+    pub fn new(source: &'src SourceFile, options: ParseOptions) -> Self {
         let diagnostics = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&diagnostics);
         let mut parser = Self {
@@ -181,6 +212,9 @@ impl<'src> Parser<'src> {
             missing_identifier_counter: 0,
             tree_printable: true,
             new_line_is_trivia: true,
+            options,
+            comments: Vec::new(),
+            doc_ranges: Vec::new(),
         };
         parser.next_token();
         parser
@@ -192,6 +226,7 @@ impl<'src> Parser<'src> {
             arena: self.arena,
             root,
             diagnostics,
+            comments: self.comments,
         }
     }
 
@@ -333,7 +368,7 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_annotations(&mut self) -> Annotations {
-        let pos = self.token_pos();
+        let (mut pos, mut docs) = self.parse_doc_list(false);
         let mut decorators = Vec::new();
         let mut directives = Vec::new();
         while matches!(self.token(), Token::Hash | Token::At) {
@@ -342,13 +377,41 @@ impl<'src> Parser<'src> {
             } else {
                 decorators.push(self.parse_decorator_expression());
             }
+            let (doc_pos, added_docs) = self.parse_doc_list(false);
+            if !added_docs.is_empty() {
+                if docs.is_empty() {
+                    pos = doc_pos;
+                }
+                docs.extend(added_docs);
+            }
         }
         Annotations {
             pos,
             decorators,
             directives,
-            docs: Vec::new(),
+            docs,
         }
+    }
+
+    fn parse_doc_list(&mut self, skip_parsing_doc_nodes: bool) -> (u32, Vec<NodeId>) {
+        if self.doc_ranges.is_empty() || !self.options.docs || skip_parsing_doc_nodes {
+            return (self.token_pos(), Vec::new());
+        }
+
+        let ranges = std::mem::take(&mut self.doc_ranges);
+        let pos = ranges[0].pos;
+        let mut docs = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            let doc = self.parse_doc_comment(&range);
+            if let Some(comment) = range.comment {
+                if let NodeData::Comment { parsed_as_docs } = &mut self.arena.get_mut(comment).data
+                {
+                    *parsed_as_docs = true;
+                }
+            }
+            docs.push(doc);
+        }
+        (pos, docs)
     }
 
     fn parse_declaration(
@@ -953,7 +1016,11 @@ impl<'src> Parser<'src> {
             ) {
                 Some(expr)
             } else {
-                self.error_at("token-expected", self.node_span(expr));
+                self.error_at_with_message(
+                    "token-expected",
+                    self.node_span(expr),
+                    Some("numericOrStringLiteral"),
+                );
                 None
             }
         } else {
@@ -1386,6 +1453,87 @@ impl<'src> Parser<'src> {
         )
     }
 
+    fn parse_doc_comment(&mut self, range: &DocRange) -> NodeId {
+        let inner_pos = range.pos + 3;
+        let inner_end = range.end.saturating_sub(2);
+        let inner = range
+            .text
+            .strip_prefix("/**")
+            .unwrap_or(&range.text)
+            .strip_suffix("*/")
+            .unwrap_or_else(|| range.text.strip_prefix("/**").unwrap_or(&range.text));
+        let parsed = parse_doc_body(inner);
+
+        let content = if parsed.content.is_empty() {
+            Vec::new()
+        } else {
+            vec![self.add_node_with_flags(
+                SyntaxKind::DocText,
+                inner_pos,
+                inner_end,
+                NodeFlags::NONE,
+                NodeData::DocText {
+                    text: parsed.content,
+                },
+            )]
+        };
+
+        let tags = parsed
+            .tags
+            .into_iter()
+            .map(|tag| self.create_doc_tag(tag, inner_pos, inner_end))
+            .collect();
+
+        self.add_node_with_flags(
+            SyntaxKind::Doc,
+            range.pos,
+            range.end,
+            NodeFlags::NONE,
+            NodeData::Doc { content, tags },
+        )
+    }
+
+    fn create_doc_tag(&mut self, tag: ParsedDocTag, default_pos: u32, default_end: u32) -> NodeId {
+        let tag_name_end = default_pos + utf16_len(&tag.tag_name);
+        let tag_name = self.add_node_with_flags(
+            SyntaxKind::Identifier,
+            default_pos.saturating_add(1),
+            tag_name_end.saturating_add(1),
+            NodeFlags::NONE,
+            NodeData::Identifier {
+                sv: tag.tag_name.clone(),
+            },
+        );
+        let param_name = tag.name.map(|name| {
+            let end = default_pos + utf16_len(&name);
+            self.add_node_with_flags(
+                SyntaxKind::Identifier,
+                default_pos,
+                end,
+                NodeFlags::NONE,
+                NodeData::Identifier { sv: name },
+            )
+        });
+        let content = vec![self.add_node_with_flags(
+            SyntaxKind::DocText,
+            default_pos,
+            default_end,
+            NodeFlags::NONE,
+            NodeData::DocText { text: tag.content },
+        )];
+        self.add_node_with_flags(
+            tag.kind,
+            default_pos,
+            default_end,
+            NodeFlags::NONE,
+            NodeData::DocTag {
+                tag_name,
+                param_name,
+                content,
+            },
+        )
+    }
+
     fn parse_identifier_or_member_expression(
         &mut self,
         allow_reserved_identifier: bool,
@@ -1604,9 +1752,14 @@ impl<'src> Parser<'src> {
             NodeData::StringTemplateLiteral { token_flags, .. } => *token_flags,
             _ => 0,
         };
+        let span_token_flags = if head_flags & TokenFlags::TRIPLE_QUOTED.bits() != 0 {
+            TokenFlags::TRIPLE_QUOTED
+        } else {
+            TokenFlags::NONE
+        };
         let mut spans = Vec::new();
         loop {
-            let span = self.parse_template_type_span(TokenFlags::NONE);
+            let span = self.parse_template_type_span(span_token_flags);
             let literal = match &self.arena.get(span).data {
                 NodeData::StringTemplateSpan { literal, .. } => *literal,
                 _ => unreachable!(),
@@ -1629,8 +1782,12 @@ impl<'src> Parser<'src> {
 
     fn parse_string_template_head(&mut self) -> NodeId {
         let pos = self.token_pos();
-        let flags_bits = self.scanner.token_flags().bits();
-        let value = self.current_token_value();
+        let token_flags = self.scanner.token_flags();
+        let flags_bits = token_flags.bits();
+        let mut value = self.current_token_value();
+        if token_flags.contains(TokenFlags::TRIPLE_QUOTED) {
+            value = dedent_triple_template_head(&value);
+        }
         self.parse_expected(Token::StringTemplateHead);
         let (end, flags) = self.finish_node(pos);
         self.add_node_with_flags(
@@ -1645,10 +1802,10 @@ impl<'src> Parser<'src> {
         )
     }
 
-    fn parse_template_type_span(&mut self, _head_token_flags: TokenFlags) -> NodeId {
+    fn parse_template_type_span(&mut self, head_token_flags: TokenFlags) -> NodeId {
         let pos = self.token_pos();
         let expression = self.parse_expression();
-        let literal = self.parse_literal_of_template_span(TokenFlags::NONE);
+        let literal = self.parse_literal_of_template_span(head_token_flags);
         let (end, flags) = self.finish_node(pos);
         self.add_node_with_flags(
             SyntaxKind::StringTemplateSpan,
@@ -2084,6 +2241,7 @@ impl<'src> Parser<'src> {
 
     fn next_token(&mut self) -> Token {
         self.previous_token_end = self.scanner.position() as i64;
+        self.doc_ranges.clear();
         loop {
             let token = self.scanner.scan();
             if !self.is_trivia(token) {
@@ -2091,6 +2249,17 @@ impl<'src> Parser<'src> {
             }
             if !self.new_line_is_trivia && token == Token::NewLine {
                 return token;
+            }
+            if matches!(token, Token::SingleLineComment | Token::MultiLineComment) {
+                let comment = self.collect_comment(token);
+                if self.scanner.token_flags().contains(TokenFlags::DOC_COMMENT) {
+                    self.doc_ranges.push(DocRange {
+                        pos: self.scanner.token_position(),
+                        end: self.scanner.position(),
+                        text: self.scanner.token_text(),
+                        comment,
+                    });
+                }
             }
         }
     }
@@ -2104,6 +2273,28 @@ impl<'src> Parser<'src> {
                 | Token::MultiLineComment
                 | Token::ConflictMarker
         )
+    }
+
+    fn collect_comment(&mut self, token: Token) -> Option<NodeId> {
+        if !self.options.comments {
+            return None;
+        }
+        let kind = if token == Token::SingleLineComment {
+            SyntaxKind::LineComment
+        } else {
+            SyntaxKind::BlockComment
+        };
+        let node = self.add_node_with_flags(
+            kind,
+            self.scanner.token_position(),
+            self.scanner.position(),
+            NodeFlags::NONE,
+            NodeData::Comment {
+                parsed_as_docs: false,
+            },
+        );
+        self.comments.push(node);
+        Some(node)
     }
 
     fn create_missing_identifier(&mut self) -> NodeId {
@@ -2239,7 +2430,8 @@ impl<'src> Parser<'src> {
         if expected.contains(&tok) {
             tok
         } else {
-            self.error("token-expected", Some("one of expected tokens"));
+            let detail = format_token_list(expected);
+            self.error("token-expected", Some(&detail));
             Token::None
         }
     }
@@ -2280,10 +2472,7 @@ impl<'src> Parser<'src> {
             return;
         }
         self.real_position_of_last_error = span.pos as i64;
-        let message = match detail {
-            Some(detail) => format!("{code}: {detail}"),
-            None => code.to_string(),
-        };
+        let message = diagnostic_message(code, detail);
         self.diagnostics.borrow_mut().push(Diagnostic {
             severity: DiagnosticSeverity::Error,
             code,
@@ -2334,6 +2523,254 @@ fn parse_js_number(text: &str) -> f64 {
             .unwrap_or(f64::NAN)
     } else {
         text.parse::<f64>().unwrap_or(f64::NAN)
+    }
+}
+
+struct ParsedDoc {
+    content: String,
+    tags: Vec<ParsedDocTag>,
+}
+
+struct ParsedDocTag {
+    kind: SyntaxKind,
+    tag_name: String,
+    name: Option<String>,
+    content: String,
+}
+
+fn parse_doc_body(body: &str) -> ParsedDoc {
+    let normalized = normalize_doc_comment_body(body);
+    let has_inline_tag_padding =
+        body.chars().next().is_some_and(|ch| ch.is_whitespace()) && normalized.starts_with('@');
+    let mut content_lines = Vec::new();
+    let mut tags = Vec::new();
+    let mut current_tag: Option<ParsedDocTag> = None;
+    let mut in_code_fence = false;
+
+    for line in normalized.lines() {
+        let escaped_tag = line.starts_with("\\@");
+        let code_fence = line.trim_start().starts_with("```");
+        if code_fence {
+            in_code_fence = !in_code_fence;
+        }
+
+        if !in_code_fence && line.starts_with('@') && !escaped_tag {
+            if let Some(tag) = current_tag.take() {
+                tags.push(tag);
+            }
+            current_tag = Some(parse_doc_tag_line(line));
+        } else if let Some(tag) = &mut current_tag {
+            if !tag.content.is_empty() {
+                tag.content.push('\n');
+            }
+            tag.content
+                .push_str(line.strip_prefix("\\@").unwrap_or(line));
+        } else {
+            content_lines.push(line.strip_prefix("\\@").unwrap_or(line).to_string());
+        }
+    }
+    if let Some(tag) = current_tag {
+        tags.push(tag);
+    }
+
+    let mut content = trim_doc_text(&content_lines.join("\n"));
+    if content.is_empty() && has_inline_tag_padding {
+        content = " ".to_string();
+    }
+
+    ParsedDoc {
+        content,
+        tags: tags
+            .into_iter()
+            .map(|mut tag| {
+                tag.content = trim_doc_text(&tag.content);
+                tag
+            })
+            .collect(),
+    }
+}
+
+fn normalize_doc_comment_body(body: &str) -> String {
+    let body = body.replace("\r\n", "\n").replace('\r', "\n");
+    let mut normalized = Vec::new();
+    let mut in_code_fence = false;
+    for (index, line) in body.lines().enumerate() {
+        let mut text = line;
+        if index > 0 {
+            text = text.trim_start_matches([' ', '\t']);
+            if let Some(after_star) = text.strip_prefix('*') {
+                text = after_star;
+                if let Some(after_space) = text.strip_prefix([' ', '\t']) {
+                    text = after_space;
+                }
+            }
+        }
+        if text.trim_start().starts_with("```") {
+            in_code_fence = !in_code_fence;
+        }
+        let _ = in_code_fence;
+        normalized.push(text.to_string());
+    }
+    trim_doc_text(&normalized.join("\n"))
+}
+
+fn parse_doc_tag_line(line: &str) -> ParsedDocTag {
+    let rest = &line[1..];
+    let (tag_name, after_tag) = take_doc_word(rest);
+    let (kind, name, content) = match tag_name {
+        "param" => parse_doc_param_like(after_tag, SyntaxKind::DocParamTag),
+        "template" => parse_doc_param_like(after_tag, SyntaxKind::DocTemplateTag),
+        "prop" => parse_doc_param_like(after_tag, SyntaxKind::DocPropTag),
+        "return" | "returns" => (
+            SyntaxKind::DocReturnsTag,
+            None,
+            after_tag.trim_start().to_string(),
+        ),
+        "errors" => (
+            SyntaxKind::DocErrorsTag,
+            None,
+            after_tag.trim_start().to_string(),
+        ),
+        _ => (
+            SyntaxKind::DocUnknownTag,
+            None,
+            after_tag.trim_start().to_string(),
+        ),
+    };
+    ParsedDocTag {
+        kind,
+        tag_name: tag_name.to_string(),
+        name,
+        content,
+    }
+}
+
+fn parse_doc_param_like(rest: &str, kind: SyntaxKind) -> (SyntaxKind, Option<String>, String) {
+    let rest = rest.trim_start();
+    let (name, content) = if let Some(after_tick) = rest.strip_prefix('`') {
+        if let Some(end) = after_tick.find('`') {
+            (
+                after_tick[..end].to_string(),
+                after_tick[end + 1..].trim_start().to_string(),
+            )
+        } else {
+            take_doc_word_owned(rest)
+        }
+    } else {
+        take_doc_word_owned(rest)
+    };
+    let content = content
+        .trim_start()
+        .strip_prefix('-')
+        .map(str::trim_start)
+        .unwrap_or(content.trim_start())
+        .to_string();
+    (kind, Some(name), content)
+}
+
+fn take_doc_word(input: &str) -> (&str, &str) {
+    let end = input
+        .char_indices()
+        .find_map(|(idx, ch)| ch.is_whitespace().then_some(idx))
+        .unwrap_or(input.len());
+    (&input[..end], &input[end..])
+}
+
+fn take_doc_word_owned(input: &str) -> (String, String) {
+    let (word, rest) = take_doc_word(input);
+    (word.to_string(), rest.to_string())
+}
+
+fn trim_doc_text(text: &str) -> String {
+    text.trim_matches(|ch: char| ch.is_whitespace()).to_string()
+}
+
+fn utf16_len(text: &str) -> u32 {
+    text.encode_utf16().count() as u32
+}
+
+fn dedent_triple_template_head(value: &str) -> String {
+    let Some((first, rest)) = value.split_once('\n') else {
+        return value.trim_start_matches([' ', '\t']).to_string();
+    };
+    let indent = rest
+        .chars()
+        .take_while(|ch| matches!(ch, ' ' | '\t'))
+        .collect::<String>();
+    if indent.is_empty() {
+        return value.to_string();
+    }
+    let mut lines = vec![first.to_string()];
+    lines.extend(
+        rest.split('\n')
+            .map(|line| line.strip_prefix(&indent).unwrap_or(line).to_string()),
+    );
+    lines.join("\n")
+}
+
+fn diagnostic_message(code: &'static str, detail: Option<&str>) -> String {
+    match code {
+        "token-expected" => match detail {
+            Some("identifier") => "Identifier expected.".to_string(),
+            Some("expression") => "Expression expected.".to_string(),
+            Some("statement") => "Statement expected.".to_string(),
+            Some("property") => "Property expected.".to_string(),
+            Some("enumMember") => "Enum member expected.".to_string(),
+            Some("numericOrStringLiteral") => "Expected numeric or string literal.".to_string(),
+            Some("typeofTarget") => {
+                "Typeof expects a value literal or value reference.".to_string()
+            }
+            Some(token) => format!("{token} expected."),
+            None => "Token expected.".to_string(),
+        },
+        "reserved-identifier" => "Keyword cannot be used as identifier.".to_string(),
+        "invalid-decorator-location" => {
+            format!("Cannot decorate {}.", detail.unwrap_or("this node"))
+        }
+        "invalid-directive-location" => {
+            format!(
+                "Cannot place directive on {}.",
+                detail.unwrap_or("this node")
+            )
+        }
+        "augment-decorator-target" => {
+            "Augment decorator first argument must be a type reference.".to_string()
+        }
+        "decorator-decl-target" => {
+            "Decorator declaration must have a target parameter.".to_string()
+        }
+        "invalid-template-argument-name" => {
+            "Template argument name must be an identifier.".to_string()
+        }
+        "import-first" => {
+            "Imports must come prior to any other declarations or namespaces.".to_string()
+        }
+        _ => match detail {
+            Some(detail) => format!("{code}: {detail}"),
+            None => code.to_string(),
+        },
+    }
+}
+
+fn format_token_list(tokens: &[Token]) -> String {
+    let displays: Vec<&str> = tokens.iter().map(|token| token_display(*token)).collect();
+    match displays.as_slice() {
+        [] => "token".to_string(),
+        [one] => (*one).to_string(),
+        [first, second] => format!("{first}, or {second}"),
+        _ => {
+            let mut text = String::new();
+            for (index, display) in displays.iter().enumerate() {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                if index == displays.len() - 1 {
+                    text.push_str("or ");
+                }
+                text.push_str(display);
+            }
+            text
+        }
     }
 }
 

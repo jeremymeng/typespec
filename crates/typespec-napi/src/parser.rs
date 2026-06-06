@@ -1,6 +1,6 @@
 use napi_derive::napi;
 use typespec_parser::ast::{NamespaceBody, NodeData};
-use typespec_parser::parse as parse_typespec;
+use typespec_parser::{parse_with_options, ParseOptions as RustParseOptions};
 use typespec_source::{Diagnostic, DiagnosticSeverity, SourceFile};
 
 use crate::scanner::DiagnosticInfo;
@@ -59,6 +59,7 @@ pub struct SerializedNode {
     pub parameters: Option<Vec<u32>>,
     pub return_type: Option<u32>,
     pub rest: Option<bool>,
+    pub parsed_as_docs: Option<bool>,
 }
 
 #[napi(object)]
@@ -66,12 +67,28 @@ pub struct SerializedAst {
     pub root: u32,
     pub nodes: Vec<SerializedNode>,
     pub diagnostics: Vec<DiagnosticInfo>,
+    pub comments: Vec<u32>,
+}
+
+#[napi(object)]
+#[derive(Default)]
+pub struct ParseOptions {
+    pub comments: Option<bool>,
+    pub docs: Option<bool>,
 }
 
 #[napi]
-pub fn parse(source: String) -> SerializedAst {
+pub fn parse(source: String, options: Option<ParseOptions>) -> SerializedAst {
     let source = SourceFile::new(source);
-    let result = parse_typespec(&source);
+    let options = options.unwrap_or_default();
+    let result = parse_with_options(
+        &source,
+        RustParseOptions {
+            comments: options.comments.unwrap_or(false),
+            docs: options.docs.unwrap_or(true),
+        },
+    );
+    let comments = result.comments.iter().map(|id| id.as_u32()).collect();
     let nodes = result.arena.nodes().iter().map(serialize_node).collect();
     SerializedAst {
         root: result.root.as_u32(),
@@ -81,6 +98,7 @@ pub fn parse(source: String) -> SerializedAst {
             .into_iter()
             .map(convert_diagnostic)
             .collect(),
+        comments,
     }
 }
 
@@ -138,6 +156,7 @@ fn serialize_node(node: &typespec_parser::ast::Node) -> SerializedNode {
         parameters: None,
         return_type: None,
         rest: None,
+        parsed_as_docs: None,
     };
 
     match &node.data {
@@ -521,6 +540,9 @@ fn serialize_node(node: &typespec_parser::ast::Node) -> SerializedNode {
             serialized.target = Some(tag_name.as_u32());
             serialized.name = param_name.map(|id| id.as_u32());
             serialized.values = some_ids(content);
+        }
+        NodeData::Comment { parsed_as_docs } => {
+            serialized.parsed_as_docs = parsed_as_docs.then_some(true);
         }
     }
     serialized

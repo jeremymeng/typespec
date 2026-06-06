@@ -10,7 +10,12 @@ export interface DiagnosticInfo {
 
 export declare function hello(): string
 
-export declare function parse(source: string): SerializedAst
+export declare function parse(source: string, options?: ParseOptions | undefined | null): SerializedAst
+
+export interface ParseOptions {
+  comments?: boolean
+  docs?: boolean
+}
 
 export declare function scan(source: string): ScanResult
 
@@ -23,6 +28,7 @@ export interface SerializedAst {
   root: number
   nodes: Array<SerializedNode>
   diagnostics: Array<DiagnosticInfo>
+  comments: Array<number>
 }
 
 export interface SerializedNode {
@@ -78,6 +84,7 @@ export interface SerializedNode {
   parameters?: Array<number>
   returnType?: number
   rest?: boolean
+  parsedAsDocs?: boolean
 }
 
 export interface TokenInfo {

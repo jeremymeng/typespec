@@ -388,6 +388,9 @@ pub enum NodeData {
         param_name: Option<NodeId>,
         content: Vec<NodeId>,
     },
+    Comment {
+        parsed_as_docs: bool,
+    },
 }
 
 impl NodeData {
@@ -630,7 +633,8 @@ impl NodeData {
             | NodeData::BooleanLiteral { .. }
             | NodeData::StringTemplateLiteral { .. }
             | NodeData::Keyword
-            | NodeData::DocText { .. } => {}
+            | NodeData::DocText { .. }
+            | NodeData::Comment { .. } => {}
             NodeData::UnionExpression { options }
             | NodeData::IntersectionExpression { options } => {
                 children.extend(options.iter().copied());
