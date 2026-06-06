@@ -4,12 +4,12 @@ This directory contains the planning and tracking artifacts for porting the Type
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| [`plan.md`](./plan.md) | The detailed plan: scope, design decisions, milestones, acceptance criteria |
-| [`tasks.json`](./tasks.json) | Machine-readable task tracker. **This is the source of truth for "what's in flight."** |
-| [`tasks.schema.json`](./tasks.schema.json) | JSON schema for `tasks.json` (editor autocomplete + validation) |
-| `spike-napi-roundtrip.md` | (created during M1.5) Findings from the napi-rs round-trip spike |
+| File                                       | Purpose                                                                                |
+| ------------------------------------------ | -------------------------------------------------------------------------------------- |
+| [`plan.md`](./plan.md)                     | The detailed plan: scope, design decisions, milestones, acceptance criteria            |
+| [`tasks.json`](./tasks.json)               | Machine-readable task tracker. **This is the source of truth for "what's in flight."** |
+| [`tasks.schema.json`](./tasks.schema.json) | JSON schema for `tasks.json` (editor autocomplete + validation)                        |
+| `spike-napi-roundtrip.md`                  | (created during M1.5) Findings from the napi-rs round-trip spike                       |
 
 Related: [`docs/adr/0001-arena-based-type-graph.md`](../adr/0001-arena-based-type-graph.md) — ADR for the arena allocation decision.
 

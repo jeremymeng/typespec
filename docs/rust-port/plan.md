@@ -8,21 +8,21 @@ Port the TypeSpec compiler's scanner, parser, binder, and checker from TypeScrip
 
 ## Resolved Decisions
 
-| Decision | Choice | Alternatives Rejected |
-|----------|--------|-----------------------|
-| Primary goal | Learning Rust | Production migration, performance |
-| Location | In monorepo under `crates/` + `packages/compiler-rust` | Standalone repo |
-| Scope | Scanner + Parser + Binder + Checker | Scanner/Parser only; full compiler including emitters |
-| AST/type representation | Arena allocator with index-based references (`bumpalo`) | `Rc<RefCell<T>>`, raw pointers |
-| napi-rs API surface | Fine-grained per-phase (`scan`, `parse`, `check`) | Coarse `compile()` only |
-| Decorator handling | JS callbacks from Rust via napi-rs | Skip decorators; reimplement in Rust |
-| Test strategy | Comparison tests + dual-runner where tests aren't TS-specific | Rewrite tests in Rust; comparison only |
-| Stdlib/intrinsics | Hard-code intrinsics in Rust, parse stdlib `.tsp` files | Load everything from JS |
-| Scanner approach | Hand-written (matching TS design) | Use `logos` crate |
-| `SourceFile` abstraction | Replicate in Rust — scanner owns line/character mapping | Pass raw strings, reconstruct positions on JS side |
-| napi-rs threading | Synchronous on main JS thread — `check()` is invoked from JS and stays there; decorator callbacks are direct `JsFunction` calls (not `ThreadsafeFunction`) | Async checker with `ThreadsafeFunction` |
-| CI / prebuilt binaries | Use `@napi-rs/cli`'s standard cross-platform build matrix; publish prebuilds per platform | Build from source on install; single-platform support |
-| Key crates | `napi`, `napi-derive`, `napi-build`, `bumpalo`, `string-interner` | `typed-arena`, `logos`, `miette` |
+| Decision                 | Choice                                                                                                                                                     | Alternatives Rejected                                 |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Primary goal             | Learning Rust                                                                                                                                              | Production migration, performance                     |
+| Location                 | In monorepo under `crates/` + `packages/compiler-rust`                                                                                                     | Standalone repo                                       |
+| Scope                    | Scanner + Parser + Binder + Checker                                                                                                                        | Scanner/Parser only; full compiler including emitters |
+| AST/type representation  | Arena allocator with index-based references (`bumpalo`)                                                                                                    | `Rc<RefCell<T>>`, raw pointers                        |
+| napi-rs API surface      | Fine-grained per-phase (`scan`, `parse`, `check`)                                                                                                          | Coarse `compile()` only                               |
+| Decorator handling       | JS callbacks from Rust via napi-rs                                                                                                                         | Skip decorators; reimplement in Rust                  |
+| Test strategy            | Comparison tests + dual-runner where tests aren't TS-specific                                                                                              | Rewrite tests in Rust; comparison only                |
+| Stdlib/intrinsics        | Hard-code intrinsics in Rust, parse stdlib `.tsp` files                                                                                                    | Load everything from JS                               |
+| Scanner approach         | Hand-written (matching TS design)                                                                                                                          | Use `logos` crate                                     |
+| `SourceFile` abstraction | Replicate in Rust — scanner owns line/character mapping                                                                                                    | Pass raw strings, reconstruct positions on JS side    |
+| napi-rs threading        | Synchronous on main JS thread — `check()` is invoked from JS and stays there; decorator callbacks are direct `JsFunction` calls (not `ThreadsafeFunction`) | Async checker with `ThreadsafeFunction`               |
+| CI / prebuilt binaries   | Use `@napi-rs/cli`'s standard cross-platform build matrix; publish prebuilds per platform                                                                  | Build from source on install; single-platform support |
+| Key crates               | `napi`, `napi-derive`, `napi-build`, `bumpalo`, `string-interner`                                                                                          | `typed-arena`, `logos`, `miette`                      |
 
 ## Cross-cutting Design Constraints
 
@@ -145,6 +145,7 @@ typespec/
 ### Toolchain pinning
 
 `crates/rust-toolchain.toml`:
+
 ```toml
 [toolchain]
 channel = "1.75.0"  # or current stable at start
@@ -160,12 +161,14 @@ Since this is a learning project, define explicit decision points. At the end of
 3. **Is the napi-rs ergonomics still tolerable?** If you find yourself hating the bindings layer, consider abandoning the SxS approach and continuing as a pure Rust learning exercise.
 
 Suggested natural stopping points:
+
 - **After M2 (Scanner)** — you've learned Rust basics, napi-rs basics, ownership for simple cases. Honorable place to stop.
 - **After M3 (Parser)** — you've tackled arena allocation, recursive descent in Rust, complex AST design. Major learning milestone.
 - **After M5d (Type relations)** — you've grappled with cyclic graphs and complex type theory in Rust. Most of the learning value is captured.
 - **After M6 (Decorator callbacks)** — full FFI mastery achieved.
 
 **Explicit non-goals** (do not pursue, even if tempting):
+
 - Production performance benchmarks beating the TS compiler
 - WASM compilation target
 - Port of the formatter, linter, emitter framework, language server, or CLI
@@ -182,6 +185,7 @@ Each milestone is independently deliverable and testable. Agents can work on the
 **Goal**: Set up Cargo workspace, napi-rs build pipeline, and the `compiler-rust` npm package with a trivial "hello" binding that proves the JS↔Rust bridge works.
 
 **Deliverables**:
+
 - `crates/Cargo.toml` (workspace definition)
 - `crates/rust-toolchain.toml` (pinned Rust version)
 - `crates/typespec-napi/` with a trivial `#[napi] fn hello() -> String`
@@ -191,6 +195,7 @@ Each milestone is independently deliverable and testable. Agents can work on the
 - `.github/workflows/rust-port.yml` with `cargo fmt --check`, `cargo clippy`, `cargo test`, and `napi build` on Ubuntu
 
 **Acceptance criteria**:
+
 - `cargo build` succeeds in `crates/`
 - `pnpm build` in `packages/compiler-rust` produces a `.node` native module
 - `pnpm test` in `packages/compiler-rust` passes the hello-world test
@@ -205,6 +210,7 @@ Each milestone is independently deliverable and testable. Agents can work on the
 **Goal**: Before committing to the per-phase API design, validate that napi-rs can efficiently move arena-allocated AST-like structures across the JS boundary. This is a 1-day spike, not a production milestone.
 
 **What to build**:
+
 - A toy "mini-AST" in Rust: ~5 node types, arena-allocated with `bumpalo`, with parent/child references via `NodeId`
 - A napi binding that exposes:
   - `parse_mini(source: String) → MiniAst` — returns the whole tree to JS
@@ -214,12 +220,14 @@ Each milestone is independently deliverable and testable. Agents can work on the
   - **Lazy**: receive just a root handle, call back into Rust for each child
 
 **Questions this spike must answer**:
+
 1. How expensive is serializing a 10K-node arena to JS objects? (Affects M3 API design)
 2. Does the lazy handle pattern work cleanly with napi-rs `External<T>`?
 3. How does arena lifetime interact with JS object lifetime — can we free the arena while JS still holds references?
 4. Are there ergonomic issues with passing arena-allocated structs across the FFI boundary?
 
 **Output**:
+
 - A short writeup in `docs/rust-port/spike-napi-roundtrip.md` summarizing findings
 - Decision: eager serialization, lazy handles, or hybrid? Documented in plan if it changes M3.
 - If the spike reveals a blocker (e.g., serialization is unacceptably slow), revisit the per-phase API decision before M3.
@@ -233,10 +241,12 @@ Each milestone is independently deliverable and testable. Agents can work on the
 **Goal**: Port the TypeSpec scanner from TS to Rust. Expose `scan(source: string) → TokenInfo[]` via napi-rs. Validate against existing scanner tests.
 
 **Key source files to port from**:
+
 - `packages/compiler/src/core/scanner.ts` (1,560 lines)
 - `packages/compiler/src/core/charcode.ts` (character classification)
 
 **Deliverables**:
+
 - `crates/typespec-source/src/lib.rs` — `SourceFile`, `Position`, `Diagnostic` (shared by all crates)
 - `crates/typespec-scanner/src/lib.rs` — `Scanner` struct with `scan()` method
 - `crates/typespec-scanner/src/token.rs` — `Token` enum matching all tokens in TS `Token` enum
@@ -246,6 +256,7 @@ Each milestone is independently deliverable and testable. Agents can work on the
 - Pure Rust unit tests in `crates/typespec-scanner/src/`
 
 **Implementation guidance**:
+
 - The TS scanner is a stateful, single-pass scanner. Mirror this design in Rust.
 - `Token` is a numeric enum in TS — use a Rust `#[repr(u32)]` enum.
 - The scanner handles string templates, multi-line strings, numeric literals, doc comments. Port all of these.
@@ -253,12 +264,14 @@ Each milestone is independently deliverable and testable. Agents can work on the
 - The TS `createScanner` returns an object with methods like `.scan()`, `.getTokenText()`, `.getTokenValue()`. In Rust, this becomes a `Scanner` struct with methods.
 
 **Test strategy**:
+
 - Create comparison tests that call both `createScanner` (TS) and `scan` (Rust) with the same inputs
 - Compare: token types, token text, token positions (line/character)
 - Use test inputs from `packages/compiler/test/scanner.test.ts` (468 lines of test data)
 - Also generate fuzz inputs: random TypeSpec snippets, edge cases (empty strings, unicode, unterminated strings)
 
 **Acceptance criteria**:
+
 - Rust scanner produces identical token streams (type + text + position) for all inputs in scanner.test.ts
 - Rust scanner handles all edge cases: string templates, multi-line strings, doc comments, numeric literals, unicode identifiers
 - Diagnostic messages for malformed inputs match TS scanner diagnostics
@@ -272,10 +285,12 @@ Each milestone is independently deliverable and testable. Agents can work on the
 **Goal**: Port the TypeSpec parser from TS to Rust. Expose `parse(source: string) → AST` via napi-rs. Define the arena-based AST.
 
 **Key source files to port from**:
+
 - `packages/compiler/src/core/parser.ts` (3,085 lines)
 - `packages/compiler/src/core/types.ts` (AST node type definitions)
 
 **Deliverables**:
+
 - `crates/typespec-parser/src/ast.rs` — Arena-allocated AST node types
 - `crates/typespec-parser/src/syntax_kind.rs` — `SyntaxKind` enum matching TS
 - `crates/typespec-parser/src/lib.rs` — `Parser` struct, `parse()` function
@@ -283,6 +298,7 @@ Each milestone is independently deliverable and testable. Agents can work on the
 - Comparison tests + dual-runner tests
 
 **Implementation guidance**:
+
 - The TS parser is a recursive-descent parser. Mirror this design in Rust.
 - AST nodes reference each other. Use `NodeId` (index into arena) instead of direct references.
 - The TS `SyntaxKind` enum has ~130 variants — port them all.
@@ -291,6 +307,7 @@ Each milestone is independently deliverable and testable. Agents can work on the
 - The API shape (eager vs lazy serialization) is determined by M1.5's spike findings.
 
 **Arena design**:
+
 ```rust
 use bumpalo::Bump;
 
@@ -310,11 +327,13 @@ pub struct Node {
 ```
 
 **Test strategy**:
+
 - Comparison tests: parse same source with both compilers, compare AST structure (node kinds, positions, child relationships)
 - Dual-runner: adapt tests from `parser.test.ts` that only check structure (not TS object identity)
 - Snapshot tests: serialize Rust AST to JSON and snapshot it
 
 **Acceptance criteria**:
+
 - Rust parser produces structurally identical ASTs for all inputs in parser.test.ts
 - Error recovery produces matching diagnostics
 - All SyntaxKind variants are represented
@@ -328,26 +347,31 @@ pub struct Node {
 **Goal**: Port the binder and name resolver. These create the symbol table that maps names to declarations.
 
 **Key source files to port from**:
+
 - `packages/compiler/src/core/binder.ts` (649 lines)
 - `packages/compiler/src/core/name-resolver.ts` (1,226 lines)
 
 **Deliverables**:
+
 - `crates/typespec-checker/src/binder.rs` — Symbol creation, scope building
 - `crates/typespec-checker/src/name_resolver.rs` — Name resolution across scopes
 - `crates/typespec-checker/src/types.rs` — Symbol and Scope types (arena-allocated)
 - napi bindings for name resolution queries (resolve a name → declaration location)
 
 **Implementation guidance**:
+
 - The binder walks the AST and creates `Symbol` objects for each declaration
 - Symbols are organized into `Scope` trees (namespaces, models, interfaces create scopes)
 - Name resolution handles: qualified names (`A.B.C`), using statements, augment decorators
 - Use the same arena pattern: `SymbolId` and `ScopeId` as indices (newtype-wrapped)
 
 **Test strategy**:
+
 - Create tests that resolve names in TypeSpec sources and compare results with TS compiler
 - Test: simple names, qualified names, imports, using statements, shadowing, duplicate detection
 
 **Acceptance criteria**:
+
 - Names resolve to the same declarations as the TS compiler
 - Duplicate name diagnostics match
 - Scope hierarchy matches TS for all test inputs
@@ -361,6 +385,7 @@ pub struct Node {
 The checker is too large to deliver as a single milestone. It's subdivided into M5a–M5e, each ~1–2K LOC of TS source equivalent. **Each sub-milestone is a separate handoff** and produces working, tested code that builds on the previous.
 
 **Shared across M5a–M5e**:
+
 - `crates/typespec-checker/src/checker.rs` — grows incrementally
 - `crates/typespec-checker/src/intrinsics.rs` — built-in types (string, int32, etc.) — populated in M5a
 - `crates/typespec-checker/src/types.rs` — `Type` enum, type arena — grows incrementally
@@ -411,6 +436,7 @@ The checker is too large to deliver as a single milestone. It's subdivided into 
 - **Source**: ~2,000 LOC — this is the trickiest part of the checker
 
 **Acceptance criteria (cumulative through M5)**:
+
 - All non-decorator checker tests produce identical diagnostics
 - Type relation checks match TS for all test cases
 - Templates instantiate correctly with structural identity preserved
@@ -424,12 +450,14 @@ The checker is too large to deliver as a single milestone. It's subdivided into 
 **Goal**: Wire up the napi-rs callback mechanism so the Rust checker can call JS decorator implementations during type checking.
 
 **Deliverables**:
+
 - Callback infrastructure in `crates/typespec-napi/src/checker.rs`
 - JS-side decorator registry that Rust can call into
 - Integration with the checker: when encountering `@decorator`, call the JS implementation
 - Tests that verify built-in decorators (`@doc`, `@route`, `@visibility`) work through the bridge
 
 **Implementation guidance**:
+
 - napi-rs supports `JsFunction` for synchronous JS callbacks on the main thread (the threading model decision in Cross-cutting Constraints)
 - The Rust checker needs a `DecoratorCallback` trait or function pointer that calls into JS
 - The JS side registers decorator implementations via something like `registerDecorator(name, fn)`; Rust looks them up by name through a JS-side registry held as a `JsObject`
@@ -439,11 +467,13 @@ The checker is too large to deliver as a single milestone. It's subdivided into 
 **Key challenge**: The TS checker calls `marshalTypeForJs` to convert internal types to JS-friendly objects. You'll need an equivalent in Rust that creates napi-rs `JsObject` values from your arena-allocated types. The lazy-handle pattern from the M1.5 spike may be relevant here.
 
 **Test strategy**:
+
 - Test specific decorators: `@doc("hello")` should attach documentation
 - Compare decorator effects between TS and Rust compilers
 - Test error cases: invalid decorator arguments, missing decorators
 
 **Acceptance criteria**:
+
 - Built-in decorators execute correctly through the Rust→JS→Rust bridge
 - Decorator validation errors match TS output
 - No memory safety issues with the callback mechanism
@@ -465,6 +495,7 @@ Each milestone depends on the previous one. They cannot be parallelized.
 ## Agent Handoff Notes
 
 When handing off to agents:
+
 1. Each milestone is a self-contained task with clear inputs, outputs, and acceptance criteria
 2. Agents should reference the TS source files listed in each milestone as the "specification"
 3. Agents should run `cargo test` for Rust unit tests and `pnpm test` in `packages/compiler-rust` for comparison tests
