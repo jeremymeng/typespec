@@ -1,4 +1,6 @@
 [package]
+# Frozen on napi v2 — this spike crate produced the M1.5 writeup.
+# Do not upgrade; kept as historical reference. See docs/rust-port/spike-napi-roundtrip.md.
 name = "_spike_napi_roundtrip"
 version.workspace = true
 edition.workspace = true

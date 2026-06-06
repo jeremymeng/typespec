@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Learning-project Rust port scaffold for the TypeSpec compiler.",
-  "type": "commonjs",
+  "type": "module",
   "main": "index.js",
   "files": [
     "index.js",
@@ -11,19 +11,22 @@
     "*.node"
   ],
   "scripts": {
-    "build": "napi build --platform --release --cargo-cwd ../../crates/typespec-napi",
-    "build:debug": "napi build --platform --cargo-cwd ../../crates/typespec-napi",
-    "build:spike": "napi build spike --platform --release --cargo-cwd ../../crates/_spike_napi_roundtrip --config spike/package.json --js false",
+    "build": "napi build --platform --release --esm --manifest-path ../../crates/typespec-napi/Cargo.toml --output-dir .",
+    "build:debug": "napi build --platform --esm --manifest-path ../../crates/typespec-napi/Cargo.toml --output-dir .",
+    "build:spike": "node -e \"console.log('Spike crate is frozen on napi v2; see docs/rust-port/spike-napi-roundtrip.md')\"",
     "test": "vitest run"
   },
   "napi": {
-    "name": "compiler-rust",
-    "triples": {
-      "defaults": true
-    }
+    "binaryName": "compiler-rust",
+    "targets": [
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc",
+      "x86_64-unknown-linux-gnu"
+    ]
   },
   "devDependencies": {
-    "@napi-rs/cli": "^2.18.4",
+    "@napi-rs/cli": "^3.7.0",
     "vitest": "catalog:"
   }
 }

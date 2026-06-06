@@ -11,8 +11,8 @@ path = "src/lib.rs"
 test = false
 
 [dependencies]
-napi = { version = "2", default-features = false, features = ["napi8"] }
-napi-derive = "2"
+napi = { version = "3", default-features = false, features = ["napi8"] }
+napi-derive = "3"
 typespec-scanner = { path = "../typespec-scanner" }
 typespec-source = { path = "../typespec-source" }
 
