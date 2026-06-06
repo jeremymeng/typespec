@@ -1,0 +1,249 @@
+#![allow(non_upper_case_globals)]
+
+use std::collections::{HashMap, HashSet};
+
+use typespec_parser::ast::NodeId;
+use typespec_source::Diagnostic;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SymbolId(u32);
+
+impl SymbolId {
+    pub fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ScopeId(u32);
+
+impl ScopeId {
+    pub fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct SymbolFlags: u32 {
+        const None = 0;
+        const Model = 1 << 1;
+        const Scalar = 1 << 2;
+        const Operation = 1 << 3;
+        const Enum = 1 << 4;
+        const Interface = 1 << 5;
+        const Union = 1 << 6;
+        const Alias = 1 << 7;
+        const Namespace = 1 << 8;
+        const Decorator = 1 << 9;
+        const TemplateParameter = 1 << 10;
+        const Function = 1 << 11;
+        const FunctionParameter = 1 << 12;
+        const Using = 1 << 13;
+        const DuplicateUsing = 1 << 14;
+        const SourceFile = 1 << 15;
+        const Member = 1 << 16;
+        const Const = 1 << 17;
+        const Declaration = 1 << 20;
+        const Implementation = 1 << 21;
+        const LateBound = 1 << 22;
+        const Internal = 1 << 23;
+    }
+}
+
+impl SymbolFlags {
+    pub const ExportContainer: Self =
+        Self::from_bits_retain(Self::Namespace.bits() | Self::SourceFile.bits());
+    pub const MemberContainer: Self = Self::from_bits_retain(
+        Self::Model.bits()
+            | Self::Enum.bits()
+            | Self::Union.bits()
+            | Self::Interface.bits()
+            | Self::Scalar.bits(),
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeKind {
+    Global,
+    Namespace,
+    Model,
+    ModelExpression,
+    Interface,
+    Operation,
+    Enum,
+    Union,
+    Scalar,
+    Alias,
+    Const,
+    Function,
+}
+
+impl ScopeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScopeKind::Global => "Global",
+            ScopeKind::Namespace => "Namespace",
+            ScopeKind::Model => "Model",
+            ScopeKind::ModelExpression => "ModelExpression",
+            ScopeKind::Interface => "Interface",
+            ScopeKind::Operation => "Operation",
+            ScopeKind::Enum => "Enum",
+            ScopeKind::Union => "Union",
+            ScopeKind::Scalar => "Scalar",
+            ScopeKind::Alias => "Alias",
+            ScopeKind::Const => "Const",
+            ScopeKind::Function => "Function",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Symbol {
+    pub name: String,
+    pub flags: SymbolFlags,
+    pub declarations: Vec<NodeId>,
+    pub parent_scope: ScopeId,
+    pub parent_symbol: Option<SymbolId>,
+    pub members: Option<ScopeId>,
+    pub symbol_source: Option<SymbolId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Scope {
+    pub parent: Option<ScopeId>,
+    pub kind: ScopeKind,
+    pub symbols: HashMap<String, SymbolId>,
+    pub usings: Vec<ScopeId>,
+    pub using_statements: Vec<NodeId>,
+    pub owning_node: Option<NodeId>,
+    pub owning_symbol: Option<SymbolId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SymbolTable {
+    pub symbols: Vec<Symbol>,
+    pub scopes: Vec<Scope>,
+    pub global_scope: ScopeId,
+    pub diagnostics: Vec<Diagnostic>,
+    pub node_symbols: HashMap<NodeId, SymbolId>,
+    pub node_scopes: HashMap<NodeId, ScopeId>,
+    pub using_statements: Vec<NodeId>,
+    pub augment_decorators: Vec<NodeId>,
+    pub duplicate_symbols_reported: HashSet<SymbolId>,
+}
+
+impl SymbolTable {
+    pub fn new() -> Self {
+        let global_scope = ScopeId::new(0);
+        Self {
+            symbols: Vec::new(),
+            scopes: vec![Scope {
+                parent: None,
+                kind: ScopeKind::Global,
+                symbols: HashMap::new(),
+                usings: Vec::new(),
+                using_statements: Vec::new(),
+                owning_node: None,
+                owning_symbol: None,
+            }],
+            global_scope,
+            diagnostics: Vec::new(),
+            node_symbols: HashMap::new(),
+            node_scopes: HashMap::new(),
+            using_statements: Vec::new(),
+            augment_decorators: Vec::new(),
+            duplicate_symbols_reported: HashSet::new(),
+        }
+    }
+
+    pub fn add_scope(
+        &mut self,
+        parent: Option<ScopeId>,
+        kind: ScopeKind,
+        owning_node: Option<NodeId>,
+        owning_symbol: Option<SymbolId>,
+    ) -> ScopeId {
+        let id = ScopeId::new(self.scopes.len() as u32);
+        self.scopes.push(Scope {
+            parent,
+            kind,
+            symbols: HashMap::new(),
+            usings: Vec::new(),
+            using_statements: Vec::new(),
+            owning_node,
+            owning_symbol,
+        });
+        if let Some(node) = owning_node {
+            self.node_scopes.insert(node, id);
+        }
+        id
+    }
+
+    pub fn add_symbol(
+        &mut self,
+        name: String,
+        flags: SymbolFlags,
+        declaration: Option<NodeId>,
+        parent_scope: ScopeId,
+        parent_symbol: Option<SymbolId>,
+    ) -> SymbolId {
+        let id = SymbolId::new(self.symbols.len() as u32);
+        let declarations = declaration.into_iter().collect();
+        self.symbols.push(Symbol {
+            name,
+            flags,
+            declarations,
+            parent_scope,
+            parent_symbol,
+            members: None,
+            symbol_source: None,
+        });
+        if let Some(node) = declaration {
+            self.node_symbols.insert(node, id);
+        }
+        id
+    }
+
+    pub fn add_using_symbol(
+        &mut self,
+        name: String,
+        parent_scope: ScopeId,
+        symbol_source: SymbolId,
+    ) -> SymbolId {
+        let id = SymbolId::new(self.symbols.len() as u32);
+        let parent_symbol = self.scopes[parent_scope.index()].owning_symbol;
+        self.symbols.push(Symbol {
+            name,
+            flags: SymbolFlags::Using,
+            declarations: Vec::new(),
+            parent_scope,
+            parent_symbol,
+            members: None,
+            symbol_source: Some(symbol_source),
+        });
+        id
+    }
+}
+
+impl Default for SymbolTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}

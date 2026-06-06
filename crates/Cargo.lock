@@ -468,6 +468,11 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "typespec-checker"
 version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "typespec-parser",
+ "typespec-source",
+]
 
 [[package]]
 name = "typespec-napi"
@@ -476,6 +481,7 @@ dependencies = [
  "napi 3.9.0",
  "napi-build",
  "napi-derive 3.5.6",
+ "typespec-checker",
  "typespec-parser",
  "typespec-scanner",
  "typespec-source",
