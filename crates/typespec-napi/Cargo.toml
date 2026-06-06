@@ -15,6 +15,7 @@ napi = { version = "3", default-features = false, features = ["napi8"] }
 napi-derive = "3"
 typespec-scanner = { path = "../typespec-scanner" }
 typespec-parser = { path = "../typespec-parser" }
+typespec-checker = { path = "../typespec-checker" }
 typespec-source = { path = "../typespec-source" }
 
 [build-dependencies]

@@ -1,5 +1,6 @@
 use napi_derive::napi;
 
+pub mod binder;
 pub mod parser;
 pub mod scanner;
 
