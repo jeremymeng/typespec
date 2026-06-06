@@ -29,6 +29,10 @@ impl TokenFlags {
         self.0 & other.0 != 0
     }
 
+    pub fn bits(self) -> u32 {
+        self.0
+    }
+
     fn insert(&mut self, other: Self) {
         self.0 |= other.0;
     }

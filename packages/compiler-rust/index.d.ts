@@ -10,11 +10,74 @@ export interface DiagnosticInfo {
 
 export declare function hello(): string
 
+export declare function parse(source: string): SerializedAst
+
 export declare function scan(source: string): ScanResult
 
 export interface ScanResult {
   tokens: Array<TokenInfo>
   diagnostics: Array<DiagnosticInfo>
+}
+
+export interface SerializedAst {
+  root: number
+  nodes: Array<SerializedNode>
+  diagnostics: Array<DiagnosticInfo>
+}
+
+export interface SerializedNode {
+  kind: number
+  pos: number
+  end: number
+  flags: number
+  children: Array<number>
+  sv?: string
+  value?: string
+  valueAsString?: string
+  numericValue?: number
+  booleanValue?: boolean
+  id?: number
+  path?: number
+  target?: number
+  targetType?: number
+  base?: number
+  selector?: string
+  name?: number
+  argument?: number
+  arguments?: Array<number>
+  statements?: Array<number>
+  decorators?: Array<number>
+  directives?: Array<number>
+  docs?: Array<number>
+  modifiers?: Array<number>
+  modifierFlags?: number
+  templateParameters?: Array<number>
+  templateParametersRangePos?: number
+  templateParametersRangeEnd?: number
+  properties?: Array<number>
+  bodyRangePos?: number
+  bodyRangeEnd?: number
+  extends?: Array<number>
+  extendsSingle?: number
+  is?: number
+  operations?: Array<number>
+  options?: Array<number>
+  members?: Array<number>
+  valueNode?: number
+  default?: number
+  optional?: boolean
+  elementType?: number
+  values?: Array<number>
+  head?: number
+  spans?: Array<number>
+  expression?: number
+  literal?: number
+  tokenFlags?: number
+  constraint?: number
+  typeRef?: number
+  parameters?: Array<number>
+  returnType?: number
+  rest?: boolean
 }
 
 export interface TokenInfo {

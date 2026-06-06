@@ -476,6 +476,7 @@ dependencies = [
  "napi 3.9.0",
  "napi-build",
  "napi-derive 3.5.6",
+ "typespec-parser",
  "typespec-scanner",
  "typespec-source",
 ]
@@ -483,6 +484,11 @@ dependencies = [
 [[package]]
 name = "typespec-parser"
 version = "0.1.0"
+dependencies = [
+ "bumpalo",
+ "typespec-scanner",
+ "typespec-source",
+]
 
 [[package]]
 name = "typespec-scanner"
