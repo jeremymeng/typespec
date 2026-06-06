@@ -1,0 +1,103 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TypeSpec Rust Port — Task Tracker",
+  "description": "Local task tracker for the TypeSpec compiler Rust port. Updated by agents as they pick up and complete work.",
+  "type": "object",
+  "required": ["schema_version", "project", "plan", "updated_at", "tasks"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "project": { "type": "string" },
+    "plan": { "type": "string", "description": "Path to the plan markdown" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "updated_by": { "type": "string", "description": "Username or agent name of last updater" },
+    "tasks": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/task" }
+    }
+  },
+  "definitions": {
+    "task": {
+      "type": "object",
+      "required": ["id", "title", "status", "depends_on", "checklist"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^M[0-9]+(\\.[0-9]+)?[a-z]?$",
+          "description": "Milestone ID like M1, M1.5, M5a"
+        },
+        "title": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["not_started", "in_progress", "blocked", "done", "cancelled"]
+        },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Task IDs that must be 'done' before this task can start"
+        },
+        "plan_section": {
+          "type": "string",
+          "description": "Anchor link into plan.md for full context"
+        },
+        "complexity": {
+          "type": "string",
+          "enum": ["small", "medium", "large", "very_large"]
+        },
+        "assignee": {
+          "type": ["string", "null"],
+          "description": "GitHub username or agent identifier currently working on this task"
+        },
+        "branch": {
+          "type": ["string", "null"],
+          "description": "Git branch where the work is happening"
+        },
+        "pr": {
+          "type": ["string", "null"],
+          "description": "PR number or URL once raised"
+        },
+        "started_at": { "type": ["string", "null"], "format": "date-time" },
+        "completed_at": { "type": ["string", "null"], "format": "date-time" },
+        "key_source_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "TypeScript source/test files to use as the specification"
+        },
+        "checklist": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["done", "text"],
+            "properties": {
+              "done": { "type": "boolean" },
+              "text": { "type": "string" }
+            }
+          }
+        },
+        "log": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["timestamp", "author", "text"],
+            "properties": {
+              "timestamp": { "type": "string", "format": "date-time" },
+              "author": { "type": "string" },
+              "text": { "type": "string" }
+            }
+          },
+          "description": "Append-only narrative log of progress, decisions, and blockers"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["description"],
+            "properties": {
+              "description": { "type": "string" },
+              "blocking_task": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

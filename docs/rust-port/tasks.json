@@ -1,0 +1,334 @@
+{
+  "$schema": "./tasks.schema.json",
+  "schema_version": 1,
+  "project": "typespec-rust-port",
+  "plan": "docs/rust-port/plan.md",
+  "updated_at": "2026-06-05T17:06:00Z",
+  "updated_by": "jeremymeng",
+  "tasks": [
+    {
+      "id": "M1",
+      "title": "Project Scaffolding",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "docs/rust-port/plan.md#m1--project-scaffolding",
+      "complexity": "small",
+      "assignee": null,
+      "branch": null,
+      "pr": null,
+      "started_at": null,
+      "completed_at": null,
+      "checklist": [
+        { "done": false, "text": "crates/Cargo.toml (workspace definition) exists" },
+        { "done": false, "text": "crates/rust-toolchain.toml pins Rust version" },
+        { "done": false, "text": "crates/typespec-napi/ has #[napi] fn hello() -> String" },
+        { "done": false, "text": "packages/compiler-rust/package.json with napi build script" },
+        { "done": false, "text": "vitest test calls hello() and asserts return value" },
+        { "done": false, "text": ".gitignore updated for target/ and *.node" },
+        { "done": false, "text": ".github/workflows/rust-port.yml runs cargo fmt/clippy/test + napi build on Ubuntu" },
+        { "done": false, "text": "cargo build succeeds in crates/" },
+        { "done": false, "text": "pnpm build in packages/compiler-rust produces .node module" },
+        { "done": false, "text": "pnpm test passes hello-world test" },
+        { "done": false, "text": "CI workflow runs green on a sample PR" }
+      ],
+      "log": []
+    },
+    {
+      "id": "M1.5",
+      "title": "napi-rs Round-trip Spike",
+      "status": "not_started",
+      "depends_on": ["M1"],
+      "plan_section": "docs/rust-port/plan.md#m15--napi-rs-round-trip-spike",
+      "complexity": "small",
+      "assignee": null,
+      "branch": null,
+      "pr": null,
+      "started_at": null,
+      "completed_at": null,
+      "checklist": [
+        { "done": false, "text": "Mini-AST in Rust with 5 node types, bumpalo-allocated, NodeId references" },
+        { "done": false, "text": "napi binding parse_mini(source) -> MiniAst (eager)" },
+        { "done": false, "text": "napi binding get_node(id) -> NodeInfo (lazy)" },
+        { "done": false, "text": "JS test compares eager vs lazy traversal performance on ~10K nodes" },
+        { "done": false, "text": "Answer: serialization cost of 10K-node arena to JS" },
+        { "done": false, "text": "Answer: does lazy External<T> handle pattern work cleanly?" },
+        { "done": false, "text": "Answer: arena lifetime vs JS object lifetime — can arena be freed safely?" },
+        { "done": false, "text": "Answer: ergonomic issues with arena-allocated structs at FFI boundary" },
+        { "done": false, "text": "Writeup at docs/rust-port/spike-napi-roundtrip.md" },
+        { "done": false, "text": "Decision recorded: eager / lazy / hybrid (update plan.md if changes M3 API)" }
+      ],
+      "log": []
+    },
+    {
+      "id": "M2",
+      "title": "Scanner Parity",
+      "status": "not_started",
+      "depends_on": ["M1.5"],
+      "plan_section": "docs/rust-port/plan.md#m2--scanner-parity",
+      "complexity": "medium",
+      "assignee": null,
+      "branch": null,
+      "pr": null,
+      "started_at": null,
+      "completed_at": null,
+      "key_source_files": [
+        "packages/compiler/src/core/scanner.ts",
+        "packages/compiler/src/core/charcode.ts",
+        "packages/compiler/test/scanner.test.ts"
+      ],
+      "checklist": [
+        { "done": false, "text": "crates/typespec-source/src/lib.rs: SourceFile, Position, Diagnostic" },
+        { "done": false, "text": "crates/typespec-scanner/src/token.rs: Token enum matching TS Token" },
+        { "done": false, "text": "crates/typespec-scanner/src/charcode.rs: character classification" },
+        { "done": false, "text": "crates/typespec-scanner/src/lib.rs: Scanner struct with scan() method" },
+        { "done": false, "text": "string-interner integration for identifiers" },
+        { "done": false, "text": "Handles string templates, multi-line strings, numeric literals, doc comments" },
+        { "done": false, "text": "crates/typespec-napi/src/scanner.rs: scan(source) -> Vec<TokenInfo>" },
+        { "done": false, "text": "Pure Rust unit tests pass (cargo test)" },
+        { "done": false, "text": "Comparison tests in packages/compiler-rust/test/comparison/scanner.comparison.test.ts" },
+        { "done": false, "text": "Identical token streams for all inputs in scanner.test.ts (468 LOC of test data)" },
+        { "done": false, "text": "Diagnostic messages match TS for malformed inputs" },
+        { "done": false, "text": "Fuzz inputs tested: unicode, unterminated strings, empty input, edge cases" }
+      ],
+      "log": []
+    },
+    {
+      "id": "M3",
+      "title": "Parser Parity",
+      "status": "not_started",
+      "depends_on": ["M2"],
+      "plan_section": "docs/rust-port/plan.md#m3--parser-parity",
+      "complexity": "large",
+      "assignee": null,
+      "branch": null,
+      "pr": null,
+      "started_at": null,
+      "completed_at": null,
+      "key_source_files": [
+        "packages/compiler/src/core/parser.ts",
+        "packages/compiler/src/core/types.ts",
+        "packages/compiler/test/parser.test.ts"
+      ],
+      "checklist": [
+        { "done": false, "text": "crates/typespec-parser/src/syntax_kind.rs: SyntaxKind enum (~130 variants)" },
+        { "done": false, "text": "crates/typespec-parser/src/ast.rs: AST node types, bumpalo arena, NodeId newtype" },
+        { "done": false, "text": "crates/typespec-parser/src/lib.rs: Parser struct + parse() function" },
+        { "done": false, "text": "Recursive-descent parser mirrors TS structure" },
+        { "done": false, "text": "Error recovery matches TS (insert missing tokens, continue parsing)" },
+        { "done": false, "text": "All statement node types: TypeSpecScriptNode, Model, Enum, Union, Operation, Interface, Scalar, Alias, Namespace" },
+        { "done": false, "text": "All expression node types ported" },
+        { "done": false, "text": "crates/typespec-napi/src/parser.rs: parse(source) -> SerializedAST (per M1.5 decision)" },
+        { "done": false, "text": "Pure Rust unit tests pass" },
+        { "done": false, "text": "Comparison tests: structurally identical ASTs for all parser.test.ts inputs (1490 LOC)" },
+        { "done": false, "text": "Error recovery produces matching diagnostics" }
+      ],
+      "log": []
+    },
+    {
+      "id": "M4",
+      "title": "Binder + Name Resolution",
+      "status": "not_started",
+      "depends_on": ["M3"],
+      "plan_section": "docs/rust-port/plan.md#m4--binder--name-resolution",
+      "complexity": "medium",
+      "assignee": null,
+      "branch": null,
+      "pr": null,
+      "started_at": null,
+      "completed_at": null,
+      "key_source_files": [
+        "packages/compiler/src/core/binder.ts",
+        "packages/compiler/src/core/name-resolver.ts"
+      ],
+      "checklist": [
+        { "done": false, "text": "crates/typespec-checker/src/types.rs: Symbol, Scope types (arena-allocated, newtype IDs)" },
+        { "done": false, "text": "crates/typespec-checker/src/binder.rs: Symbol creation, scope building" },
+        { "done": false, "text": "crates/typespec-checker/src/name_resolver.rs: name resolution across scopes" },
+        { "done": false, "text": "Handles qualified names (A.B.C)" },
+        { "done": false, "text": "Handles using statements" },
+        { "done": false, "text": "Handles augment decorators" },
+        { "done": false, "text": "Duplicate name detection produces matching diagnostics" },
+        { "done": false, "text": "napi binding for name resolution queries (name -> declaration location)" },
+        { "done": false, "text": "Comparison tests: names resolve to same declarations as TS" },
+        { "done": false, "text": "Scope hierarchy matches TS for all test inputs" }
+      ],
+      "log": []
+    },
+    {
+      "id": "M5a",
+      "title": "Checker: Models, Scalars, Intrinsics",
+      "status": "not_started",
+      "depends_on": ["M4"],
+      "plan_section": "docs/rust-port/plan.md#m5a--models-scalars-and-intrinsics",
+      "complexity": "medium",
+      "assignee": null,
+      "branch": null,
+      "pr": null,
+      "started_at": null,
+      "completed_at": null,
+      "key_source_files": [
+        "packages/compiler/src/core/checker.ts",
+        "packages/compiler/src/core/intrinsic-type-state.ts",
+        "packages/compiler/test/checker/model.test.ts",
+        "packages/compiler/test/checker/scalar.test.ts",
+        "packages/compiler/test/checker/model-circular-references.test.ts"
+      ],
+      "checklist": [
+        { "done": false, "text": "crates/typespec-checker/src/types.rs: Type enum with Scalar, Model, ModelProperty variants" },
+        { "done": false, "text": "crates/typespec-checker/src/intrinsics.rs: string, int8-int64, uint8-uint64, float32/64, boolean, bytes, void, never, unknown, null" },
+        { "done": false, "text": "Model type creation from ModelStatementNode" },
+        { "done": false, "text": "Scalar type creation from ScalarStatementNode" },
+        { "done": false, "text": "Model property type resolution (handles circular refs via arena IDs)" },
+        { "done": false, "text": "Decorators recognized and validated structurally (NOT executed)" },
+        { "done": false, "text": "napi binding check(source) -> { diagnostics, types } (partial)" },
+        { "done": false, "text": "Comparison tests: model.test.ts, scalar.test.ts (decorator-free subset) match TS diagnostics" },
+        { "done": false, "text": "model-circular-references.test.ts passes (validates arena approach)" }
+      ],
+      "log": []
+    },
+    {
+      "id": "M5b",
+      "title": "Checker: Enums, Unions, Aliases",
+      "status": "not_started",
+      "depends_on": ["M5a"],
+      "plan_section": "docs/rust-port/plan.md#m5b--enums-unions-aliases",
+      "complexity": "medium",
+      "assignee": null,
+      "branch": null,
+      "pr": null,
+      "started_at": null,
+      "completed_at": null,
+      "key_source_files": [
+        "packages/compiler/src/core/checker.ts",
+        "packages/compiler/test/checker/enum.test.ts",
+        "packages/compiler/test/checker/union.test.ts",
+        "packages/compiler/test/checker/alias.test.ts"
+      ],
+      "checklist": [
+        { "done": false, "text": "Type enum extended: Enum, EnumMember, Union, UnionVariant, Alias" },
+        { "done": false, "text": "Enum type creation + member resolution" },
+        { "done": false, "text": "Union type creation + variant resolution" },
+        { "done": false, "text": "Alias expansion (alias may reference any type)" },
+        { "done": false, "text": "Comparison tests: enum.test.ts, union.test.ts, alias.test.ts match TS" }
+      ],
+      "log": []
+    },
+    {
+      "id": "M5c",
+      "title": "Checker: Operations, Interfaces, Namespaces",
+      "status": "not_started",
+      "depends_on": ["M5b"],
+      "plan_section": "docs/rust-port/plan.md#m5c--operations-interfaces-namespaces",
+      "complexity": "medium",
+      "assignee": null,
+      "branch": null,
+      "pr": null,
+      "started_at": null,
+      "completed_at": null,
+      "key_source_files": [
+        "packages/compiler/src/core/checker.ts",
+        "packages/compiler/test/checker/operations.test.ts",
+        "packages/compiler/test/checker/interface.test.ts",
+        "packages/compiler/test/checker/namespaces.test.ts",
+        "packages/compiler/test/checker/global-namespace.test.ts"
+      ],
+      "checklist": [
+        { "done": false, "text": "Type enum extended: Operation, Interface, Namespace" },
+        { "done": false, "text": "Operation parameter types (anonymous models)" },
+        { "done": false, "text": "Interface operation membership" },
+        { "done": false, "text": "Namespace nesting and merging" },
+        { "done": false, "text": "Comparison tests for operations, interfaces, namespaces match TS" }
+      ],
+      "log": []
+    },
+    {
+      "id": "M5d",
+      "title": "Checker: Type Relations and Assignability",
+      "status": "not_started",
+      "depends_on": ["M5c"],
+      "plan_section": "docs/rust-port/plan.md#m5d--type-relations-and-assignability",
+      "complexity": "medium",
+      "assignee": null,
+      "branch": null,
+      "pr": null,
+      "started_at": null,
+      "completed_at": null,
+      "key_source_files": [
+        "packages/compiler/src/core/type-relation-checker.ts",
+        "packages/compiler/test/checker/relation.test.ts",
+        "packages/compiler/test/checker/intersections.test.ts",
+        "packages/compiler/test/checker/effective-type.test.ts"
+      ],
+      "checklist": [
+        { "done": false, "text": "crates/typespec-checker/src/type_relation.rs (1122 LOC port)" },
+        { "done": false, "text": "Subtype check implemented" },
+        { "done": false, "text": "Assignability check implemented" },
+        { "done": false, "text": "Identity check implemented" },
+        { "done": false, "text": "Numeric literal-to-scalar narrowing" },
+        { "done": false, "text": "Intersections of intrinsic ranges" },
+        { "done": false, "text": "Comparison tests: relation.test.ts, intersections.test.ts, effective-type.test.ts match TS" }
+      ],
+      "log": []
+    },
+    {
+      "id": "M5e",
+      "title": "Checker: Templates and Template Instantiation",
+      "status": "not_started",
+      "depends_on": ["M5d"],
+      "plan_section": "docs/rust-port/plan.md#m5e--templates-and-template-instantiation",
+      "complexity": "large",
+      "assignee": null,
+      "branch": null,
+      "pr": null,
+      "started_at": null,
+      "completed_at": null,
+      "key_source_files": [
+        "packages/compiler/src/core/checker.ts",
+        "packages/compiler/test/checker/templates.test.ts",
+        "packages/compiler/test/checker/unused-template-parameter.test.ts",
+        "packages/compiler/test/checker/references.test.ts"
+      ],
+      "checklist": [
+        { "done": false, "text": "Template parameter parsing and binding" },
+        { "done": false, "text": "Template parameter constraints" },
+        { "done": false, "text": "Template parameter defaults" },
+        { "done": false, "text": "Template instantiation with memoization (Foo<string> twice = same TypeId)" },
+        { "done": false, "text": "Template arg validation" },
+        { "done": false, "text": "Comparison tests: templates.test.ts, unused-template-parameter.test.ts, references.test.ts match TS" }
+      ],
+      "log": []
+    },
+    {
+      "id": "M6",
+      "title": "Decorator Callbacks via napi-rs",
+      "status": "not_started",
+      "depends_on": ["M5e"],
+      "plan_section": "docs/rust-port/plan.md#m6--decorator-callbacks-via-napi-rs",
+      "complexity": "large",
+      "assignee": null,
+      "branch": null,
+      "pr": null,
+      "started_at": null,
+      "completed_at": null,
+      "key_source_files": [
+        "packages/compiler/src/core/checker.ts",
+        "packages/compiler/src/core/js-marshaller.ts",
+        "packages/compiler/test/checker/decorators.test.ts",
+        "packages/compiler/test/checker/augment-decorators.test.ts"
+      ],
+      "checklist": [
+        { "done": false, "text": "JS-side decorator registry (registerDecorator(name, fn))" },
+        { "done": false, "text": "Rust DecoratorCallback trait / function pointer infrastructure" },
+        { "done": false, "text": "Rust looks up decorators by name via JS-side registry" },
+        { "done": false, "text": "Argument marshalling: Rust types -> JS objects" },
+        { "done": false, "text": "Effect marshalling: JS mutations -> Rust state updates" },
+        { "done": false, "text": "marshalTypeForJs equivalent in Rust (creates JsObject from arena types)" },
+        { "done": false, "text": "Built-in decorators work: @doc, @route, @visibility" },
+        { "done": false, "text": "Decorator validation errors match TS" },
+        { "done": false, "text": "Comparison tests: decorators.test.ts, augment-decorators.test.ts match TS effects" },
+        { "done": false, "text": "No memory safety issues (run under valgrind or asan if possible)" }
+      ],
+      "log": []
+    }
+  ]
+}
