@@ -1,11 +1,6 @@
-import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { createScanner, Token, TokenFlags } from "../../../compiler/src/core/scanner.js";
-
-const require = createRequire(import.meta.url);
-const native = require("../../index.js") as {
-  scan(source: string): ScanResult;
-};
+import { scan } from "../../index.js";
 
 interface TokenInfo {
   kind: number;
@@ -103,7 +98,7 @@ function tokenValue(token: Token, value: string): string | undefined {
 
 function compare(source: string) {
   const tsResult = scanWithTs(source);
-  const rustResult = native.scan(source);
+  const rustResult = scan(source) as ScanResult;
   expect(rustResult.diagnostics).toEqual(tsResult.diagnostics);
   expect(rustResult.tokens).toEqual(tsResult.tokens);
 }
@@ -125,12 +120,28 @@ describe("scanner comparison: Rust vs TS", () => {
     { name: "hash punctuation", source: "#{ #[ # @ @@ :: ... ; , ? :" },
     { name: "all braces", source: "{ } ( ) [ ]" },
     { name: "operators", source: "+ - * / ! = < > & |" },
-    { name: "keywords", source: "import model scalar namespace using op enum alias is interface union" },
-    { name: "other keywords", source: "extends fn true false return void never unknown valueof typeof" },
+    {
+      name: "keywords",
+      source: "import model scalar namespace using op enum alias is interface union",
+    },
+    {
+      name: "other keywords",
+      source: "extends fn true false return void never unknown valueof typeof",
+    },
     { name: "modifier keywords", source: "extern internal const init" },
-    { name: "reserved keywords", source: "statemachine macro package metadata env arg declare array struct" },
-    { name: "more reserved keywords", source: "record module mod sym context prop property scenario pub sub typeref trait" },
-    { name: "final reserved keywords", source: "this self super keyof with implements impl satisfies flag auto partial private public protected sealed local async" },
+    {
+      name: "reserved keywords",
+      source: "statemachine macro package metadata env arg declare array struct",
+    },
+    {
+      name: "more reserved keywords",
+      source: "record module mod sym context prop property scenario pub sub typeref trait",
+    },
+    {
+      name: "final reserved keywords",
+      source:
+        "this self super keyof with implements impl satisfies flag auto partial private public protected sealed local async",
+    },
     { name: "keyword collision", source: "outerface famespace notanamespace notaninterface" },
     { name: "numeric literals", source: "42 0xBEEF 0b1010 1.5e4 314.0e-2 1e+1000" },
     { name: "signed numeric literals", source: "+1 -2 +3.5e-1 -4e+2" },
@@ -155,11 +166,17 @@ describe("scanner comparison: Rust vs TS", () => {
     { name: "multi line comment", source: "/* foo\n*bar\n*/" },
     { name: "doc comment", source: "/** @tag hello */\nmodel Foo {}" },
     { name: "unterminated comment", source: "/* unterminated" },
-    { name: "position tracking", source: "a x\raa x\r\naaa x\naaaa x\u{2028}aaaaa x\u{2029}aaaaaa x" },
+    {
+      name: "position tracking",
+      source: "a x\raa x\r\naaa x\naaaa x\u{2028}aaaaa x\u{2029}aaaaaa x",
+    },
     { name: "non ascii whitespace", source: "a\u{2028}b\u{2029}c\u{200e}d\u{200f}e" },
     { name: "invalid ascii", source: "~ % ^ '" },
     { name: "invalid unicode", source: "😍" },
-    { name: "merge conflict head", source: "<<<<<<< HEAD\nmodel A {}\n=======\nmodel B {}\n>>>>>>> branch" },
+    {
+      name: "merge conflict head",
+      source: "<<<<<<< HEAD\nmodel A {}\n=======\nmodel B {}\n>>>>>>> branch",
+    },
   ];
 
   for (const testCase of cases) {
@@ -168,7 +185,8 @@ describe("scanner comparison: Rust vs TS", () => {
 
   it("fuzzes printable inputs without panics or token-count drift", () => {
     let seed = 0x5eed;
-    const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789{}()[]<>:=,.;@#&|!?+-*/\"` \t\r\nñΩ😍";
+    const chars =
+      'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789{}()[]<>:=,.;@#&|!?+-*/"` \t\r\nñΩ😍';
     const next = () => {
       seed = (seed * 1664525 + 1013904223) >>> 0;
       return seed;
@@ -181,7 +199,7 @@ describe("scanner comparison: Rust vs TS", () => {
         source += chars[next() % chars.length];
       }
       const tsResult = scanWithTs(source);
-      const rustResult = native.scan(source);
+      const rustResult = scan(source) as ScanResult;
       expect(rustResult.tokens.length, source).toBe(tsResult.tokens.length);
     }
   });
