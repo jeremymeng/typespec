@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T16:09:16Z",
+  "updated_at": "2026-06-06T16:18:40Z",
   "updated_by": "agent:rust-port-m3",
   "tasks": [
     {
@@ -335,7 +335,7 @@
     {
       "id": "M3",
       "title": "Parser Parity",
-      "status": "in_progress",
+      "status": "blocked",
       "depends_on": ["M2.5"],
       "plan_section": "docs/rust-port/plan.md#m3--parser-parity",
       "complexity": "large",
@@ -351,19 +351,19 @@
       ],
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-parser/src/syntax_kind.rs: SyntaxKind enum (~130 variants)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-parser/src/ast.rs: AST node types, bumpalo arena, NodeId newtype"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-parser/src/lib.rs: Parser struct + parse() function"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Recursive-descent parser mirrors TS structure"
         },
         {
@@ -371,19 +371,19 @@
           "text": "Error recovery matches TS (insert missing tokens, continue parsing)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "All statement node types: TypeSpecScriptNode, Model, Enum, Union, Operation, Interface, Scalar, Alias, Namespace"
         },
         {
-          "done": false,
+          "done": true,
           "text": "All expression node types ported"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-napi/src/parser.rs: parse(source) -> SerializedAST (per M1.5 decision)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Pure Rust unit tests pass"
         },
         {
@@ -400,7 +400,19 @@
           "timestamp": "2026-06-06T16:09:16Z",
           "author": "agent:rust-port-m3",
           "text": "Claimed M3 parser parity and started implementation on jeremymeng/rust-port-m3-parser."
+        },
+        {
+          "timestamp": "2026-06-06T16:18:40Z",
+          "author": "agent:rust-port-m3",
+          "text": "Implemented SyntaxKind (72/72 current TS variants), arena AST, hand-written recursive-descent parser, eager napi parse(source) serialization, 5 Rust parser unit tests, and 48 Rust-vs-TS parser comparison cases. cargo clippy, compiler-rust build, and compiler-rust test passed."
         }
+      ],
+      "blockers": [
+        "Full parser.test.ts parity is not complete; current comparison suite covers 48 representative parser cases, not all 1490 LOC of parser.test.ts inputs.",
+        "Parser diagnostics and error recovery are approximate and only count-matched in comparison tests; diagnostic messages/codes/positions are not fully TS-identical.",
+        "Doc comment parsing and comment collection are not implemented in the Rust parser yet.",
+        "String template support is implemented for simple cases but triple-quoted template value normalization is not ported.",
+        "Lazy External<T> parser API was skipped; only eager flat AST serialization is implemented."
       ]
     },
     {
