@@ -596,3 +596,4 @@ export { checkRelation }
 export { hello }
 export { parse }
 export { scan }
+export { createDecoratorRegistry, createIntrinsicDecoratorRegistry, intrinsicDecorators, registerDecorator } from './intrinsic-decorators.js'

@@ -6,6 +6,10 @@ use typespec_parser::syntax_kind::SyntaxKind;
 use typespec_parser::ParseResult;
 use typespec_source::{Diagnostic, DiagnosticSeverity, Span};
 
+use crate::decorator::{
+    decorator_state_key, DecoratorApplication, DecoratorArgument, DecoratorContext,
+    DecoratorRunner, DecoratorState, DecoratorValue,
+};
 use crate::instantiation::InstantiationMap;
 use crate::intrinsics::{register_intrinsics, Intrinsics};
 use crate::name_resolver::ResolutionResult;
@@ -38,6 +42,7 @@ pub struct Checker<'p> {
     reported_operation_cycles: HashSet<SymbolId>,
     template_instantiations: InstantiationMap,
     template_parameter_usage: HashMap<NodeId, bool>,
+    decorator_state: DecoratorState,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -65,6 +70,7 @@ pub struct CheckResult {
     pub symbol_to_type: HashMap<SymbolId, TypeId>,
     pub node_to_type: HashMap<NodeId, TypeId>,
     pub diagnostics: Vec<Diagnostic>,
+    pub decorator_state: DecoratorState,
 }
 
 pub fn check(
@@ -74,6 +80,20 @@ pub fn check(
 ) -> CheckResult {
     let mut checker = Checker::new(parse_result, symbol_table, resolutions);
     checker.check_script(parse_result.root);
+    checker.finish()
+}
+
+pub fn check_with_decorator_runner(
+    parse_result: &ParseResult,
+    symbol_table: &SymbolTable,
+    resolutions: &HashMap<NodeId, ResolutionResult>,
+    runner: &mut dyn DecoratorRunner,
+) -> CheckResult {
+    let mut checker = Checker::new(parse_result, symbol_table, resolutions);
+    checker.check_script(parse_result.root);
+    if runner.is_enabled() {
+        checker.apply_decorators(runner);
+    }
     checker.finish()
 }
 
@@ -122,6 +142,7 @@ impl<'p> Checker<'p> {
             reported_operation_cycles: HashSet::new(),
             template_instantiations: InstantiationMap::default(),
             template_parameter_usage: HashMap::new(),
+            decorator_state: HashMap::new(),
         }
     }
 
@@ -144,6 +165,7 @@ impl<'p> Checker<'p> {
             symbol_to_type: self.symbol_to_type,
             node_to_type: self.node_to_type,
             diagnostics: self.diagnostics,
+            decorator_state: self.decorator_state,
         }
     }
 
@@ -2214,12 +2236,149 @@ impl<'p> Checker<'p> {
             .filter_map(|decorator| match self.node(*decorator).data.clone() {
                 NodeData::DecoratorExpression { target, arguments } => Some(DecoratorRef {
                     node: *decorator,
-                    name: self.decorator_name(target),
+                    name: Self::normalize_decorator_name(&self.decorator_name(target)),
                     args: arguments,
                 }),
                 _ => None,
             })
             .collect()
+    }
+
+    fn apply_decorators(&mut self, runner: &mut dyn DecoratorRunner) {
+        let type_ids = (0..self.type_arena.types().len())
+            .map(|id| TypeId::new(id as u32))
+            .collect::<Vec<_>>();
+        for type_id in type_ids {
+            let mut applications = Vec::new();
+            if let Some(doc) = self.doc_comment_for_type(type_id) {
+                let node = self.type_node(type_id).unwrap_or(self.parse_result.root);
+                applications.push(DecoratorApplication {
+                    node,
+                    name: "@doc".to_string(),
+                    args: vec![DecoratorArgument::String(doc)],
+                });
+            }
+            applications.extend(
+                self.decorators_for_type(type_id)
+                    .into_iter()
+                    .map(|decorator| self.decorator_application(decorator)),
+            );
+            applications.extend(self.augment_decorator_applications_for_type(type_id));
+            for application in applications {
+                runner.call_decorator(self, type_id, &application);
+            }
+        }
+    }
+
+    fn decorators_for_type(&self, type_id: TypeId) -> Vec<DecoratorRef> {
+        match self.type_arena.get(type_id) {
+            Type::Scalar(ty) => ty.decorators.clone(),
+            Type::Model(ty) => ty.decorators.clone(),
+            Type::ModelProperty(ty) => ty.decorators.clone(),
+            Type::Enum(ty) => ty.decorators.clone(),
+            Type::EnumMember(ty) => ty.decorators.clone(),
+            Type::Union(ty) => ty.decorators.clone(),
+            Type::UnionVariant(ty) => ty.decorators.clone(),
+            Type::Operation(ty) => ty.decorators.clone(),
+            Type::Interface(ty) => ty.decorators.clone(),
+            Type::Namespace(ty) => ty.decorators.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn decorator_application(&mut self, decorator: DecoratorRef) -> DecoratorApplication {
+        let args = decorator
+            .args
+            .iter()
+            .copied()
+            .map(|arg| self.decorator_argument(arg))
+            .collect();
+        DecoratorApplication {
+            node: decorator.node,
+            name: decorator.name,
+            args,
+        }
+    }
+
+    fn augment_decorator_applications_for_type(
+        &mut self,
+        target_type_id: TypeId,
+    ) -> Vec<DecoratorApplication> {
+        let augment_nodes = self.symbol_table.augment_decorators.clone();
+        let mut result = Vec::new();
+        for augment_node in augment_nodes {
+            let NodeData::AugmentDecoratorStatement {
+                target,
+                target_type,
+                arguments,
+            } = self.node(augment_node).data.clone()
+            else {
+                continue;
+            };
+            if self.type_for_node(target_type) != target_type_id {
+                continue;
+            }
+            result.push(self.decorator_application(DecoratorRef {
+                node: augment_node,
+                name: Self::normalize_decorator_name(&self.decorator_name(target)),
+                args: arguments,
+            }));
+        }
+        result
+    }
+
+    fn decorator_argument(&mut self, node_id: NodeId) -> DecoratorArgument {
+        match self.node(node_id).data.clone() {
+            NodeData::StringLiteral { value } => DecoratorArgument::String(value),
+            NodeData::NumericLiteral { value, .. } => DecoratorArgument::Number(value),
+            NodeData::BooleanLiteral { value } => DecoratorArgument::Boolean(value),
+            NodeData::Identifier { sv } if sv == "null" => DecoratorArgument::None,
+            _ => {
+                let type_id = self.type_for_node(node_id);
+                match self.type_arena.get(type_id).clone() {
+                    Type::StringLiteral(value) => DecoratorArgument::String(value.value),
+                    Type::NumericLiteral(value) => DecoratorArgument::Number(value.value),
+                    Type::BooleanLiteral(value) => DecoratorArgument::Boolean(value.value),
+                    Type::Null => DecoratorArgument::None,
+                    _ => DecoratorArgument::TypeRef(type_id),
+                }
+            }
+        }
+    }
+
+    fn doc_comment_for_type(&self, type_id: TypeId) -> Option<String> {
+        let node_id = self.type_node(type_id)?;
+        let mut text = String::new();
+        for doc in &self.node(node_id).docs {
+            let NodeData::Doc { content, .. } = self.node(*doc).data.clone() else {
+                continue;
+            };
+            for content_node in content {
+                if let NodeData::DocText { text: chunk } = self.node(content_node).data.clone() {
+                    text.push_str(&chunk);
+                }
+            }
+        }
+        let trimmed = text.trim().to_string();
+        (!trimmed.is_empty()).then_some(trimmed)
+    }
+
+    fn type_node(&self, type_id: TypeId) -> Option<NodeId> {
+        match self.type_arena.get(type_id) {
+            Type::Scalar(ty) => ty.node,
+            Type::Model(ty) => ty.node,
+            Type::ModelProperty(ty) => ty.node,
+            Type::Enum(ty) => ty.node,
+            Type::EnumMember(ty) => ty.node,
+            Type::Union(ty) => ty.node,
+            Type::UnionVariant(ty) => ty.node,
+            Type::Alias(ty) => Some(ty.node),
+            Type::Operation(ty) => ty.node,
+            Type::Interface(ty) => ty.node,
+            Type::Namespace(ty) => ty.node,
+            Type::TemplateParameter(ty) => Some(ty.node),
+            _ => None,
+        }
     }
 
     fn decorator_name(&self, node_id: NodeId) -> String {
@@ -2235,6 +2394,17 @@ impl<'p> Checker<'p> {
                 )
             }
             _ => "<unknown>".to_string(),
+        }
+    }
+
+    fn normalize_decorator_name(name: &str) -> String {
+        if name.contains('@') {
+            return name.to_string();
+        }
+        if let Some((namespace, decorator)) = name.rsplit_once('.') {
+            format!("{namespace}.@{decorator}")
+        } else {
+            format!("@{name}")
         }
     }
 
@@ -2694,6 +2864,69 @@ impl<'p> Checker<'p> {
     }
 }
 
+impl DecoratorContext for Checker<'_> {
+    fn set_decorator_property(
+        &mut self,
+        decorator_name: &str,
+        target: TypeId,
+        property: &str,
+        value: DecoratorValue,
+    ) {
+        let key = if property.contains(':') {
+            property.to_string()
+        } else {
+            decorator_state_key(decorator_name, property)
+        };
+        self.decorator_state
+            .entry(target)
+            .or_default()
+            .insert(key, value);
+    }
+
+    fn get_decorator_property(
+        &self,
+        decorator_name: &str,
+        target: TypeId,
+        property: &str,
+    ) -> Option<DecoratorValue> {
+        let state = self.decorator_state.get(&target)?;
+        if property.contains(':') {
+            state.get(property).cloned()
+        } else {
+            state
+                .get(&decorator_state_key(decorator_name, property))
+                .or_else(|| state.get(property))
+                .cloned()
+        }
+    }
+
+    fn get_type_name(&self, target: TypeId) -> String {
+        type_name(&self.type_arena, target)
+    }
+
+    fn get_type_kind(&self, target: TypeId) -> String {
+        self.type_arena.get(target).kind_name().to_string()
+    }
+
+    fn report_decorator_diagnostic(
+        &mut self,
+        code: String,
+        message: String,
+        target: Option<TypeId>,
+        decorator_node: NodeId,
+    ) {
+        let target = target
+            .and_then(|type_id| self.type_node(type_id))
+            .unwrap_or(decorator_node);
+        self.diagnostics.push(Diagnostic {
+            severity: DiagnosticSeverity::Error,
+            code: Box::leak(code.into_boxed_str()),
+            message,
+            target: self.node_span(target),
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use typespec_parser::parse;
@@ -2710,6 +2943,61 @@ mod tests {
         let mut result = check(&parse_result, &table, &resolution.resolutions);
         result.diagnostics.extend(resolution.diagnostics);
         result
+    }
+
+    fn check_source_with_runner(source: &str, runner: &mut dyn DecoratorRunner) -> CheckResult {
+        let source = SourceFile::new(source.to_string());
+        let parse_result = parse(&source);
+        let mut table = bind(&parse_result);
+        let resolution = resolve_names(&parse_result, &mut table);
+        let mut result =
+            check_with_decorator_runner(&parse_result, &table, &resolution.resolutions, runner);
+        result.diagnostics.extend(resolution.diagnostics);
+        result
+    }
+
+    struct RecordingRunner;
+
+    impl DecoratorRunner for RecordingRunner {
+        fn is_enabled(&self) -> bool {
+            true
+        }
+
+        fn call_decorator(
+            &mut self,
+            context: &mut dyn DecoratorContext,
+            target: TypeId,
+            application: &DecoratorApplication,
+        ) {
+            match application.name.as_str() {
+                "@doc" => {
+                    if let Some(DecoratorArgument::String(value)) = application.args.first() {
+                        context.set_decorator_property(
+                            "@doc",
+                            target,
+                            "doc",
+                            DecoratorValue::String(value.clone()),
+                        );
+                    } else {
+                        context.report_decorator_diagnostic(
+                            "invalid-argument-count".to_string(),
+                            "Missing doc argument.".to_string(),
+                            Some(target),
+                            application.node,
+                        );
+                    }
+                }
+                "@key" if context.get_type_kind(target) != "ModelProperty" => {
+                    context.report_decorator_diagnostic(
+                        "decorator-wrong-target".to_string(),
+                        "@key can only target model properties.".to_string(),
+                        Some(target),
+                        application.node,
+                    );
+                }
+                _ => {}
+            }
+        }
     }
 
     fn find_named_model(result: &CheckResult, name: &str) -> TypeId {
@@ -3085,5 +3373,37 @@ mod tests {
             .iter()
             .any(|d| d.code == "invalid-template-args"
                 && d.message == "Template argument 'T' is required and not specified."));
+    }
+
+    #[test]
+    fn decorator_state_side_table_round_trips() {
+        let mut runner = RecordingRunner;
+        let result = check_source_with_runner(r#"@doc("hello") model Foo {}"#, &mut runner);
+        let foo = find_named_model(&result, "Foo");
+        assert_eq!(
+            result.decorator_state[&foo]["@doc:doc"],
+            DecoratorValue::String("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn doc_comment_synthesizes_doc_decorator() {
+        let mut runner = RecordingRunner;
+        let result = check_source_with_runner("/** hello */\nmodel Foo {}", &mut runner);
+        let foo = find_named_model(&result, "Foo");
+        assert_eq!(
+            result.decorator_state[&foo]["@doc:doc"],
+            DecoratorValue::String("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn decorator_runner_can_report_diagnostics() {
+        let mut runner = RecordingRunner;
+        let result = check_source_with_runner("@key model Foo {}", &mut runner);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "decorator-wrong-target"));
     }
 }

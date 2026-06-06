@@ -2,6 +2,7 @@
 
 pub mod binder;
 pub mod checker;
+pub mod decorator;
 pub mod instantiation;
 pub mod intrinsics;
 pub mod name_resolver;
@@ -10,7 +11,11 @@ pub mod type_relation;
 pub mod types;
 
 pub use binder::bind;
-pub use checker::{check, CheckResult};
+pub use checker::{check, check_with_decorator_runner, CheckResult};
+pub use decorator::{
+    DecoratorApplication, DecoratorArgument, DecoratorContext, DecoratorRunner, DecoratorState,
+    DecoratorValue,
+};
 pub use name_resolver::{resolve_names, NameResolution, ResolutionResult};
 pub use types::{
     AliasType, BooleanLiteralType, DecoratorRef, EnumMemberType, EnumMemberValue, EnumType,

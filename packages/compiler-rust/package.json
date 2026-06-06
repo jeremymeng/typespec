@@ -8,11 +8,13 @@
   "files": [
     "index.js",
     "index.d.ts",
+    "intrinsic-decorators.js",
+    "patch-index-exports.mjs",
     "*.node"
   ],
   "scripts": {
-    "build": "napi build --platform --release --esm --manifest-path ../../crates/typespec-napi/Cargo.toml --output-dir .",
-    "build:debug": "napi build --platform --esm --manifest-path ../../crates/typespec-napi/Cargo.toml --output-dir .",
+    "build": "napi build --platform --release --esm --manifest-path ../../crates/typespec-napi/Cargo.toml --output-dir . && node patch-index-exports.mjs",
+    "build:debug": "napi build --platform --esm --manifest-path ../../crates/typespec-napi/Cargo.toml --output-dir . && node patch-index-exports.mjs",
     "build:spike": "node -e \"console.log('Spike crate is frozen on napi v2; see docs/rust-port/spike-napi-roundtrip.md')\"",
     "test": "vitest run"
   },

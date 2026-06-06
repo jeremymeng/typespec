@@ -10,7 +10,7 @@ export interface BindResult {
   diagnostics: Array<DiagnosticInfo>
 }
 
-export declare function check(source: string): CheckResultJs
+export declare function check(source: string, decorators?: object | undefined | null): CheckResultJs
 
 export declare function checkRelation(source: string, sourceTypeName: string, targetTypeName: string): RelationCheckResult
 
@@ -19,6 +19,16 @@ export interface CheckResultJs {
   symbolToType: Array<SymbolToType>
   nodeToType: Array<NodeToType>
   diagnostics: Array<DiagnosticInfo>
+  decoratorState: Array<DecoratorStateEntry>
+}
+
+export interface DecoratorStateEntry {
+  typeId: number
+  key: string
+  valueString?: string
+  valueNumber?: number
+  valueBoolean?: boolean
+  valueTypeId?: number
 }
 
 export interface DiagnosticInfo {
@@ -216,3 +226,28 @@ export interface TokenInfo {
   text: string
   value?: string
 }
+
+export type DecoratorContext = {
+  getProperty(target: unknown, key: string): unknown;
+  setProperty(target: unknown, key: string, value: unknown): void;
+  getName(target: unknown): string | undefined;
+  getKind(target: unknown): string;
+  reportDiagnostic(diagnostic: { code?: string; message?: string; target?: unknown }): void;
+};
+
+export type DecoratorImplementation = (
+  context: DecoratorContext,
+  target: unknown,
+  ...args: unknown[]
+) => void;
+
+export declare const intrinsicDecorators: Record<string, DecoratorImplementation>;
+export declare function registerDecorator(
+  registry: Record<string, DecoratorImplementation>,
+  name: string,
+  fn: DecoratorImplementation,
+): Record<string, DecoratorImplementation>;
+export declare function createDecoratorRegistry(
+  decorators?: Record<string, DecoratorImplementation>,
+): Record<string, DecoratorImplementation>;
+export declare function createIntrinsicDecoratorRegistry(): Record<string, DecoratorImplementation>;

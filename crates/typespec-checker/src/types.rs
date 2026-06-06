@@ -324,6 +324,58 @@ pub enum Type {
     Error,
 }
 
+impl Type {
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Type::Scalar(_) => "Scalar",
+            Type::Model(_) => "Model",
+            Type::ModelProperty(_) => "ModelProperty",
+            Type::Enum(_) => "Enum",
+            Type::EnumMember(_) => "EnumMember",
+            Type::Union(_) => "Union",
+            Type::UnionVariant(_) => "UnionVariant",
+            Type::Alias(_) => "Alias",
+            Type::Operation(_) => "Operation",
+            Type::Interface(_) => "Interface",
+            Type::Namespace(_) => "Namespace",
+            Type::TemplateParameter(_) => "TemplateParameter",
+            Type::String => "String",
+            Type::Bytes => "Bytes",
+            Type::Int8 => "Int8",
+            Type::Int16 => "Int16",
+            Type::Int32 => "Int32",
+            Type::Int64 => "Int64",
+            Type::Uint8 => "Uint8",
+            Type::Uint16 => "Uint16",
+            Type::Uint32 => "Uint32",
+            Type::Uint64 => "Uint64",
+            Type::Float => "Float",
+            Type::Float32 => "Float32",
+            Type::Float64 => "Float64",
+            Type::Decimal => "Decimal",
+            Type::Decimal128 => "Decimal128",
+            Type::Integer => "Integer",
+            Type::Numeric => "Numeric",
+            Type::SafeInt => "SafeInt",
+            Type::Boolean => "Boolean",
+            Type::Url => "Url",
+            Type::PlainDate => "PlainDate",
+            Type::PlainTime => "PlainTime",
+            Type::UtcDateTime => "UtcDateTime",
+            Type::OffsetDateTime => "OffsetDateTime",
+            Type::Duration => "Duration",
+            Type::Void => "Void",
+            Type::Never => "Never",
+            Type::Unknown => "Unknown",
+            Type::Null => "Null",
+            Type::StringLiteral(_) => "StringLiteral",
+            Type::NumericLiteral(_) => "NumericLiteral",
+            Type::BooleanLiteral(_) => "BooleanLiteral",
+            Type::Error => "Error",
+        }
+    }
+}
+
 // Template convention used by the Rust checker:
 // - The original declaration (`model Foo<T> {}`) is a normal arena type with
 //   `is_template_declaration = true` and `template_parameters` pointing at

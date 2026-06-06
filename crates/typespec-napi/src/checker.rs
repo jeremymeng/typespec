@@ -1,12 +1,16 @@
+use napi::bindgen_prelude::Object;
+use napi::Env;
 use napi_derive::napi;
 use typespec_checker::{
-    bind as bind_parse_result, check as check_parse_result, resolve_names,
+    bind as bind_parse_result, check as check_parse_result, check_with_decorator_runner,
+    resolve_names,
     type_relation::{get_effective_model_type, type_name, TypeRelationChecker},
-    CheckResult, EnumMemberValue, Type, TypeId,
+    CheckResult, DecoratorValue, EnumMemberValue, Type, TypeId,
 };
 use typespec_parser::parse;
 use typespec_source::{Diagnostic, DiagnosticSeverity, SourceFile};
 
+use crate::decorator::NapiDecoratorRunner;
 use crate::scanner::DiagnosticInfo;
 
 #[napi(object)]
@@ -84,6 +88,17 @@ pub struct CheckResultJs {
     pub symbol_to_type: Vec<SymbolToType>,
     pub node_to_type: Vec<NodeToType>,
     pub diagnostics: Vec<DiagnosticInfo>,
+    pub decorator_state: Vec<DecoratorStateEntry>,
+}
+
+#[napi(object)]
+pub struct DecoratorStateEntry {
+    pub type_id: u32,
+    pub key: String,
+    pub value_string: Option<String>,
+    pub value_number: Option<f64>,
+    pub value_boolean: Option<bool>,
+    pub value_type_id: Option<u32>,
 }
 
 #[napi(object)]
@@ -95,12 +110,33 @@ pub struct RelationCheckResult {
 }
 
 #[napi]
-pub fn check(source: String) -> CheckResultJs {
+pub fn check(env: Env, source: String, decorators: Option<Object>) -> CheckResultJs {
     let source = SourceFile::new(source);
     let parse_result = parse(&source);
     let mut table = bind_parse_result(&parse_result);
     let resolution = resolve_names(&parse_result, &mut table);
-    let result = check_parse_result(&parse_result, &table, &resolution.resolutions);
+    let result = if decorators.is_some() {
+        match NapiDecoratorRunner::new(&env, decorators) {
+            Ok(mut runner) => check_with_decorator_runner(
+                &parse_result,
+                &table,
+                &resolution.resolutions,
+                &mut runner,
+            ),
+            Err(error) => {
+                let mut result = check_parse_result(&parse_result, &table, &resolution.resolutions);
+                result.diagnostics.push(Diagnostic {
+                    severity: DiagnosticSeverity::Error,
+                    code: "decorator-registry",
+                    message: format!("Invalid decorator registry: {error}"),
+                    target: typespec_source::Span { pos: 0, end: 0 },
+                });
+                result
+            }
+        }
+    } else {
+        check_parse_result(&parse_result, &table, &resolution.resolutions)
+    };
     serialize_check_result(result, resolution.diagnostics)
 }
 
@@ -160,6 +196,7 @@ fn serialize_check_result(
     result: CheckResult,
     resolution_diagnostics: Vec<Diagnostic>,
 ) -> CheckResultJs {
+    let decorator_state = serialize_decorator_state(&result);
     let mut diagnostics = result.diagnostics;
     diagnostics.extend(resolution_diagnostics);
 
@@ -194,7 +231,34 @@ fn serialize_check_result(
         symbol_to_type,
         node_to_type,
         diagnostics: diagnostics.into_iter().map(convert_diagnostic).collect(),
+        decorator_state,
     }
+}
+
+fn serialize_decorator_state(result: &CheckResult) -> Vec<DecoratorStateEntry> {
+    let mut entries = Vec::new();
+    for (type_id, state) in &result.decorator_state {
+        for (key, value) in state {
+            let mut entry = DecoratorStateEntry {
+                type_id: type_id.as_u32(),
+                key: key.clone(),
+                value_string: None,
+                value_number: None,
+                value_boolean: None,
+                value_type_id: None,
+            };
+            match value {
+                DecoratorValue::String(value) => entry.value_string = Some(value.clone()),
+                DecoratorValue::Number(value) => entry.value_number = Some(*value),
+                DecoratorValue::Boolean(value) => entry.value_boolean = Some(*value),
+                DecoratorValue::TypeRef(value) => entry.value_type_id = Some(value.as_u32()),
+                DecoratorValue::None => {}
+            }
+            entries.push(entry);
+        }
+    }
+    entries.sort_by(|a, b| (a.type_id, &a.key).cmp(&(b.type_id, &b.key)));
+    entries
 }
 
 fn find_type_by_name(result: &CheckResult, name: &str) -> Option<TypeId> {
@@ -226,7 +290,7 @@ fn find_type_by_name(result: &CheckResult, name: &str) -> Option<TypeId> {
 fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> SerializedType {
     let mut serialized = SerializedType {
         id,
-        kind: kind_name(ty).to_string(),
+        kind: ty.kind_name().to_string(),
         name: String::new(),
         node_id: None,
         symbol_id: None,
@@ -532,56 +596,6 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
         _ => {}
     }
     serialized
-}
-
-fn kind_name(ty: &Type) -> &'static str {
-    match ty {
-        Type::Scalar(_) => "Scalar",
-        Type::Model(_) => "Model",
-        Type::ModelProperty(_) => "ModelProperty",
-        Type::Enum(_) => "Enum",
-        Type::EnumMember(_) => "EnumMember",
-        Type::Union(_) => "Union",
-        Type::UnionVariant(_) => "UnionVariant",
-        Type::Alias(_) => "Alias",
-        Type::Operation(_) => "Operation",
-        Type::Interface(_) => "Interface",
-        Type::Namespace(_) => "Namespace",
-        Type::TemplateParameter(_) => "TemplateParameter",
-        Type::String => "String",
-        Type::Bytes => "Bytes",
-        Type::Int8 => "Int8",
-        Type::Int16 => "Int16",
-        Type::Int32 => "Int32",
-        Type::Int64 => "Int64",
-        Type::Uint8 => "Uint8",
-        Type::Uint16 => "Uint16",
-        Type::Uint32 => "Uint32",
-        Type::Uint64 => "Uint64",
-        Type::Float => "Float",
-        Type::Float32 => "Float32",
-        Type::Float64 => "Float64",
-        Type::Decimal => "Decimal",
-        Type::Decimal128 => "Decimal128",
-        Type::Integer => "Integer",
-        Type::Numeric => "Numeric",
-        Type::SafeInt => "SafeInt",
-        Type::Boolean => "Boolean",
-        Type::Url => "Url",
-        Type::PlainDate => "PlainDate",
-        Type::PlainTime => "PlainTime",
-        Type::UtcDateTime => "UtcDateTime",
-        Type::OffsetDateTime => "OffsetDateTime",
-        Type::Duration => "Duration",
-        Type::Void => "Void",
-        Type::Never => "Never",
-        Type::Unknown => "Unknown",
-        Type::Null => "Null",
-        Type::StringLiteral(_) => "StringLiteral",
-        Type::NumericLiteral(_) => "NumericLiteral",
-        Type::BooleanLiteral(_) => "BooleanLiteral",
-        Type::Error => "Error",
-    }
 }
 
 fn format_number(value: f64) -> String {

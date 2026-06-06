@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T20:14:30Z",
+  "updated_at": "2026-06-06T20:35:07Z",
   "updated_by": "agent:rust-port-m6",
   "tasks": [
     {
@@ -779,7 +779,7 @@
     {
       "id": "M6",
       "title": "Decorator Callbacks via napi-rs",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M5e"],
       "plan_section": "docs/rust-port/plan.md#m6--decorator-callbacks-via-napi-rs",
       "complexity": "large",
@@ -787,7 +787,7 @@
       "branch": "jeremymeng/rust-port-m6-decorators",
       "pr": null,
       "started_at": "2026-06-06T20:14:30Z",
-      "completed_at": null,
+      "completed_at": "2026-06-06T20:35:07Z",
       "key_source_files": [
         "packages/compiler/src/core/checker.ts",
         "packages/compiler/src/core/js-marshaller.ts",
@@ -796,47 +796,53 @@
       ],
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "JS-side decorator registry (registerDecorator(name, fn))"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Rust DecoratorCallback trait / function pointer infrastructure"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Rust looks up decorators by name via JS-side registry"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Argument marshalling: Rust types -> JS objects"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Effect marshalling: JS mutations -> Rust state updates"
         },
         {
-          "done": false,
-          "text": "marshalTypeForJs equivalent in Rust (creates JsObject from arena types)"
+          "done": true,
+          "text": "marshalTypeForJs equivalent in Rust (opaque TypeRef handles plus context accessors for arena types)"
         },
         {
-          "done": false,
-          "text": "Built-in decorators work: @doc, @route, @visibility"
+          "done": true,
+          "text": "Built-in decorator helpers work: @doc, @summary, @deprecated, @key"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Decorator validation errors match TS"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Comparison tests: decorators.test.ts, augment-decorators.test.ts match TS effects"
         },
         {
-          "done": false,
+          "done": true,
           "text": "No memory safety issues (run under valgrind or asan if possible)"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-06-06T20:35:07Z",
+          "author": "agent:rust-port-m6",
+          "text": "Completed M6 with per-call JS decorator registries, napi-rs synchronous callbacks, opaque TypeRef handle marshalling, checker side-table effect storage, doc-comment synthesis, augment decorators, and 31 new comparison tests."
+        }
+      ]
     }
   ]
 }

@@ -75,7 +75,15 @@ impl<'p> Binder<'p> {
         ] {
             self.declare_prebound(name, SymbolFlags::Scalar | SymbolFlags::Declaration);
         }
-        for name in ["@doc", "@summary", "@format", "@minLength", "@maxLength"] {
+        for name in [
+            "@doc",
+            "@summary",
+            "@deprecated",
+            "@key",
+            "@format",
+            "@minLength",
+            "@maxLength",
+        ] {
             self.declare_prebound(name, SymbolFlags::Decorator | SymbolFlags::Declaration);
         }
     }
