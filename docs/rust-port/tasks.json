@@ -3,8 +3,8 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T17:07:59Z",
-  "updated_by": "agent:rust-port-m4",
+  "updated_at": "2026-06-06T17:32:48Z",
+  "updated_by": "agent:rust-port-m5a",
   "tasks": [
     {
       "id": "M1",
@@ -499,14 +499,14 @@
     {
       "id": "M5a",
       "title": "Checker: Models, Scalars, Intrinsics",
-      "status": "not_started",
+      "status": "in_progress",
       "depends_on": ["M4"],
       "plan_section": "docs/rust-port/plan.md#m5a--models-scalars-and-intrinsics",
       "complexity": "medium",
-      "assignee": null,
-      "branch": null,
+      "assignee": "agent:rust-port-m5a",
+      "branch": "jeremymeng/rust-port-m5a-checker-models",
       "pr": null,
-      "started_at": null,
+      "started_at": "2026-06-06T17:32:48Z",
       "completed_at": null,
       "key_source_files": [
         "packages/compiler/src/core/checker.ts",
