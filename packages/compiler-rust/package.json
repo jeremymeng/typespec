@@ -1,0 +1,28 @@
+{
+  "name": "@typespec/compiler-rust",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Learning-project Rust port scaffold for the TypeSpec compiler.",
+  "type": "commonjs",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
+  "scripts": {
+    "build": "napi build --platform --release --cargo-cwd ../../crates/typespec-napi",
+    "build:debug": "napi build --platform --cargo-cwd ../../crates/typespec-napi",
+    "test": "vitest run"
+  },
+  "napi": {
+    "name": "compiler-rust",
+    "triples": {
+      "defaults": true
+    }
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4",
+    "vitest": "catalog:"
+  }
+}

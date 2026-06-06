@@ -161,6 +161,8 @@ export default defineConfig(
       "packages/http-client-js/test/e2e/generated", // Ignore the generated http client
       "packages/http-client-js/sample/output/**/*", // Ignore the generated http client
       "packages/http-server-js/test/e2e/generated", // Ignore the generated http server
+      "packages/compiler-rust/index.js", // Ignore generated napi-rs loader
+      "packages/compiler-rust/index.d.ts", // Ignore generated napi-rs types
       "**/venv/**/*", // Ignore python virtual env
       "**/.vscode-test-web/**/*", // Ignore VSCode test web project
       "packages/typespec-vscode/swagger-ui/swagger-ui*", // Ignore swagger-ui-dist files

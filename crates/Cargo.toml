@@ -1,0 +1,15 @@
+[workspace]
+members = [
+  "typespec-source",
+  "typespec-scanner",
+  "typespec-parser",
+  "typespec-checker",
+  "typespec-napi",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+publish = false
+version = "0.1.0"

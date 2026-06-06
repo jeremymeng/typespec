@@ -243,3 +243,7 @@ packages/http-client-python/tests/.wheels/
 
 # Turborepo
 .turbo
+
+# Rust port
+crates/target/
+**/*.node

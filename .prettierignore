@@ -58,6 +58,10 @@ packages/compiler/test/e2e/cli/scenarios/unformatted/
 # Tm Grammars generated files
 grammars/
 
+# Auto generated napi-rs bindings
+packages/compiler-rust/index.js
+packages/compiler-rust/index.d.ts
+
 # auto generated code model files
 **/tspCodeModel.json
 
