@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T17:32:48Z",
+  "updated_at": "2026-06-06T17:43:45Z",
   "updated_by": "agent:rust-port-m5a",
   "tasks": [
     {
@@ -499,7 +499,7 @@
     {
       "id": "M5a",
       "title": "Checker: Models, Scalars, Intrinsics",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M4"],
       "plan_section": "docs/rust-port/plan.md#m5a--models-scalars-and-intrinsics",
       "complexity": "medium",
@@ -507,7 +507,7 @@
       "branch": "jeremymeng/rust-port-m5a-checker-models",
       "pr": null,
       "started_at": "2026-06-06T17:32:48Z",
-      "completed_at": null,
+      "completed_at": "2026-06-06T17:43:45Z",
       "key_source_files": [
         "packages/compiler/src/core/checker.ts",
         "packages/compiler/src/core/intrinsic-type-state.ts",
@@ -517,43 +517,54 @@
       ],
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-checker/src/types.rs: Type enum with Scalar, Model, ModelProperty variants"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-checker/src/intrinsics.rs: string, int8-int64, uint8-uint64, float32/64, boolean, bytes, void, never, unknown, null"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Model type creation from ModelStatementNode"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Scalar type creation from ScalarStatementNode"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Model property type resolution (handles circular refs via arena IDs)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Decorators recognized and validated structurally (NOT executed)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "napi binding check(source) -> { diagnostics, types } (partial)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Comparison tests: model.test.ts, scalar.test.ts (decorator-free subset) match TS diagnostics"
         },
         {
-          "done": false,
+          "done": true,
           "text": "model-circular-references.test.ts passes (validates arena approach)"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-06-06T17:43:45Z",
+          "author": "agent:rust-port-m5a",
+          "text": "Implemented TypeId/TypeArena with Scalar, Model, ModelProperty, intrinsic variants, literal defaults, symbol_to_type/node_to_type maps, and placeholder TypeId circular-reference handling."
+        },
+        {
+          "timestamp": "2026-06-06T17:43:45Z",
+          "author": "agent:rust-port-m5a",
+          "text": "Added napi check(source) serialization plus 58 checker-model comparison tests covering intrinsics, scalars, models, defaults, model is/extends, arrays, decorators, diagnostics, and circular model references."
+        }
+      ]
     },
     {
       "id": "M5b",
