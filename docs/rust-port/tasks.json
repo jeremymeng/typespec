@@ -3,8 +3,8 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T15:48:58.901Z",
-  "updated_by": "jeremymeng",
+  "updated_at": "2026-06-06T15:53:48Z",
+  "updated_by": "agent:rust-port-m2-5",
   "tasks": [
     {
       "id": "M1",
@@ -242,14 +242,14 @@
     {
       "id": "M2.5",
       "title": "Upgrade @napi-rs/cli to v3 (with ESM output)",
-      "status": "not_started",
+      "status": "in_progress",
       "depends_on": ["M2"],
       "plan_section": "docs/rust-port/plan.md#m25--upgrade-napi-rscli-to-v3-with-esm-output",
       "complexity": "small",
-      "assignee": null,
-      "branch": null,
+      "assignee": "agent:rust-port-m2-5",
+      "branch": "jeremymeng/rust-port-m2.5-napi-v3-esm",
       "pr": null,
-      "started_at": null,
+      "started_at": "2026-06-06T15:53:48Z",
       "completed_at": null,
       "checklist": [
         {
