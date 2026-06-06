@@ -268,6 +268,7 @@ impl SymbolTable {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Type {
     Scalar(ScalarType),
@@ -278,6 +279,9 @@ pub enum Type {
     Union(UnionType),
     UnionVariant(UnionVariantType),
     Alias(AliasType),
+    Operation(OperationType),
+    Interface(InterfaceType),
+    Namespace(NamespaceType),
 
     // Intrinsics are separate variants rather than `Intrinsic(IntrinsicKind)`
     // so common checker matches stay exhaustive and adding non-intrinsic M5b-e
@@ -407,6 +411,47 @@ pub struct AliasType {
     pub symbol: SymbolId,
     pub target: TypeId,
     pub namespace: Option<TypeId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OperationType {
+    pub name: String,
+    pub node: Option<NodeId>,
+    pub symbol: Option<SymbolId>,
+    pub parameters: TypeId,
+    pub return_type: TypeId,
+    pub decorators: Vec<DecoratorRef>,
+    pub interface: Option<TypeId>,
+    pub namespace: Option<TypeId>,
+    pub source_operation: Option<TypeId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceType {
+    pub name: String,
+    pub node: Option<NodeId>,
+    pub symbol: Option<SymbolId>,
+    pub operations: IndexMap<String, TypeId>,
+    pub source_interfaces: Vec<TypeId>,
+    pub decorators: Vec<DecoratorRef>,
+    pub namespace: Option<TypeId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NamespaceType {
+    pub name: String,
+    pub node: Option<NodeId>,
+    pub symbol: Option<SymbolId>,
+    pub namespace: Option<TypeId>,
+    pub models: IndexMap<String, TypeId>,
+    pub scalars: IndexMap<String, TypeId>,
+    pub enums: IndexMap<String, TypeId>,
+    pub unions: IndexMap<String, TypeId>,
+    pub aliases: IndexMap<String, TypeId>,
+    pub operations: IndexMap<String, TypeId>,
+    pub interfaces: IndexMap<String, TypeId>,
+    pub namespaces: IndexMap<String, TypeId>,
+    pub decorators: Vec<DecoratorRef>,
 }
 
 #[derive(Debug, Clone)]

@@ -148,12 +148,34 @@ export interface SerializedType {
   baseTypeId?: number
   sourceModelId?: number
   indexerTypeId?: number
+  namespaceId?: number
   propertyTypeId?: number
   optional?: boolean
   defaultTypeId?: number
   decoratorNodeIds: Array<number>
   memberIds: Array<number>
   memberNames: Array<string>
+  operationIds: Array<number>
+  operationNames: Array<string>
+  sourceInterfaceIds: Array<number>
+  modelIds: Array<number>
+  modelNames: Array<string>
+  scalarIds: Array<number>
+  scalarNames: Array<string>
+  enumIds: Array<number>
+  enumNames: Array<string>
+  unionIds: Array<number>
+  unionNames: Array<string>
+  aliasIds: Array<number>
+  aliasNames: Array<string>
+  interfaceIds: Array<number>
+  interfaceNames: Array<string>
+  namespaceIds: Array<number>
+  namespaceNames: Array<string>
+  parametersTypeId?: number
+  returnTypeId?: number
+  interfaceId?: number
+  sourceOperationId?: number
   variantTypeId?: number
   targetId?: number
   literalString?: string

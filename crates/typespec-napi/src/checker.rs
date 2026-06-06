@@ -20,12 +20,34 @@ pub struct SerializedType {
     pub base_type_id: Option<u32>,
     pub source_model_id: Option<u32>,
     pub indexer_type_id: Option<u32>,
+    pub namespace_id: Option<u32>,
     pub property_type_id: Option<u32>,
     pub optional: Option<bool>,
     pub default_type_id: Option<u32>,
     pub decorator_node_ids: Vec<u32>,
     pub member_ids: Vec<u32>,
     pub member_names: Vec<String>,
+    pub operation_ids: Vec<u32>,
+    pub operation_names: Vec<String>,
+    pub source_interface_ids: Vec<u32>,
+    pub model_ids: Vec<u32>,
+    pub model_names: Vec<String>,
+    pub scalar_ids: Vec<u32>,
+    pub scalar_names: Vec<String>,
+    pub enum_ids: Vec<u32>,
+    pub enum_names: Vec<String>,
+    pub union_ids: Vec<u32>,
+    pub union_names: Vec<String>,
+    pub alias_ids: Vec<u32>,
+    pub alias_names: Vec<String>,
+    pub interface_ids: Vec<u32>,
+    pub interface_names: Vec<String>,
+    pub namespace_ids: Vec<u32>,
+    pub namespace_names: Vec<String>,
+    pub parameters_type_id: Option<u32>,
+    pub return_type_id: Option<u32>,
+    pub interface_id: Option<u32>,
+    pub source_operation_id: Option<u32>,
     pub variant_type_id: Option<u32>,
     pub target_id: Option<u32>,
     pub literal_string: Option<String>,
@@ -119,12 +141,34 @@ fn serialize_type(id: u32, ty: &Type) -> SerializedType {
         base_type_id: None,
         source_model_id: None,
         indexer_type_id: None,
+        namespace_id: None,
         property_type_id: None,
         optional: None,
         default_type_id: None,
         decorator_node_ids: Vec::new(),
         member_ids: Vec::new(),
         member_names: Vec::new(),
+        operation_ids: Vec::new(),
+        operation_names: Vec::new(),
+        source_interface_ids: Vec::new(),
+        model_ids: Vec::new(),
+        model_names: Vec::new(),
+        scalar_ids: Vec::new(),
+        scalar_names: Vec::new(),
+        enum_ids: Vec::new(),
+        enum_names: Vec::new(),
+        union_ids: Vec::new(),
+        union_names: Vec::new(),
+        alias_ids: Vec::new(),
+        alias_names: Vec::new(),
+        interface_ids: Vec::new(),
+        interface_names: Vec::new(),
+        namespace_ids: Vec::new(),
+        namespace_names: Vec::new(),
+        parameters_type_id: None,
+        return_type_id: None,
+        interface_id: None,
+        source_operation_id: None,
         variant_type_id: None,
         target_id: None,
         literal_string: None,
@@ -141,6 +185,7 @@ fn serialize_type(id: u32, ty: &Type) -> SerializedType {
             serialized.node_id = scalar.node.map(|id| id.as_u32());
             serialized.symbol_id = scalar.symbol.map(|id| id.as_u32());
             serialized.base_type_id = scalar.base_scalar.map(|id| id.as_u32());
+            serialized.namespace_id = scalar.namespace.map(|id| id.as_u32());
             serialized.decorator_node_ids =
                 scalar.decorators.iter().map(|d| d.node.as_u32()).collect();
         }
@@ -153,6 +198,7 @@ fn serialize_type(id: u32, ty: &Type) -> SerializedType {
             serialized.base_type_id = model.base_model.map(|id| id.as_u32());
             serialized.source_model_id = model.source_model.map(|id| id.as_u32());
             serialized.indexer_type_id = model.indexer.map(|id| id.as_u32());
+            serialized.namespace_id = model.namespace.map(|id| id.as_u32());
             serialized.decorator_node_ids =
                 model.decorators.iter().map(|d| d.node.as_u32()).collect();
         }
@@ -173,6 +219,7 @@ fn serialize_type(id: u32, ty: &Type) -> SerializedType {
             serialized.symbol_id = en.symbol.map(|id| id.as_u32());
             serialized.member_names = en.members.keys().cloned().collect();
             serialized.member_ids = en.members.values().map(|id| id.as_u32()).collect();
+            serialized.namespace_id = en.namespace.map(|id| id.as_u32());
             serialized.decorator_node_ids = en.decorators.iter().map(|d| d.node.as_u32()).collect();
         }
         Type::EnumMember(member) => {
@@ -198,6 +245,7 @@ fn serialize_type(id: u32, ty: &Type) -> SerializedType {
             serialized.member_names = union.variants.keys().cloned().collect();
             serialized.member_ids = union.variants.values().map(|id| id.as_u32()).collect();
             serialized.expression = Some(union.expression);
+            serialized.namespace_id = union.namespace.map(|id| id.as_u32());
             serialized.decorator_node_ids =
                 union.decorators.iter().map(|d| d.node.as_u32()).collect();
         }
@@ -214,6 +262,83 @@ fn serialize_type(id: u32, ty: &Type) -> SerializedType {
             serialized.node_id = Some(alias.node.as_u32());
             serialized.symbol_id = Some(alias.symbol.as_u32());
             serialized.target_id = Some(alias.target.as_u32());
+            serialized.namespace_id = alias.namespace.map(|id| id.as_u32());
+        }
+        Type::Operation(operation) => {
+            serialized.name = operation.name.clone();
+            serialized.node_id = operation.node.map(|id| id.as_u32());
+            serialized.symbol_id = operation.symbol.map(|id| id.as_u32());
+            serialized.parameters_type_id = Some(operation.parameters.as_u32());
+            serialized.return_type_id = Some(operation.return_type.as_u32());
+            serialized.interface_id = operation.interface.map(|id| id.as_u32());
+            serialized.namespace_id = operation.namespace.map(|id| id.as_u32());
+            serialized.source_operation_id = operation.source_operation.map(|id| id.as_u32());
+            serialized.decorator_node_ids = operation
+                .decorators
+                .iter()
+                .map(|d| d.node.as_u32())
+                .collect();
+        }
+        Type::Interface(interface) => {
+            serialized.name = interface.name.clone();
+            serialized.node_id = interface.node.map(|id| id.as_u32());
+            serialized.symbol_id = interface.symbol.map(|id| id.as_u32());
+            serialized.operation_names = interface.operations.keys().cloned().collect();
+            serialized.operation_ids = interface
+                .operations
+                .values()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.source_interface_ids = interface
+                .source_interfaces
+                .iter()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.namespace_id = interface.namespace.map(|id| id.as_u32());
+            serialized.decorator_node_ids = interface
+                .decorators
+                .iter()
+                .map(|d| d.node.as_u32())
+                .collect();
+        }
+        Type::Namespace(namespace) => {
+            serialized.name = namespace.name.clone();
+            serialized.node_id = namespace.node.map(|id| id.as_u32());
+            serialized.symbol_id = namespace.symbol.map(|id| id.as_u32());
+            serialized.namespace_id = namespace.namespace.map(|id| id.as_u32());
+            serialized.model_names = namespace.models.keys().cloned().collect();
+            serialized.model_ids = namespace.models.values().map(|id| id.as_u32()).collect();
+            serialized.scalar_names = namespace.scalars.keys().cloned().collect();
+            serialized.scalar_ids = namespace.scalars.values().map(|id| id.as_u32()).collect();
+            serialized.enum_names = namespace.enums.keys().cloned().collect();
+            serialized.enum_ids = namespace.enums.values().map(|id| id.as_u32()).collect();
+            serialized.union_names = namespace.unions.keys().cloned().collect();
+            serialized.union_ids = namespace.unions.values().map(|id| id.as_u32()).collect();
+            serialized.alias_names = namespace.aliases.keys().cloned().collect();
+            serialized.alias_ids = namespace.aliases.values().map(|id| id.as_u32()).collect();
+            serialized.operation_names = namespace.operations.keys().cloned().collect();
+            serialized.operation_ids = namespace
+                .operations
+                .values()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.interface_names = namespace.interfaces.keys().cloned().collect();
+            serialized.interface_ids = namespace
+                .interfaces
+                .values()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.namespace_names = namespace.namespaces.keys().cloned().collect();
+            serialized.namespace_ids = namespace
+                .namespaces
+                .values()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.decorator_node_ids = namespace
+                .decorators
+                .iter()
+                .map(|d| d.node.as_u32())
+                .collect();
         }
         Type::StringLiteral(value) => {
             serialized.name = value.value.clone();
@@ -242,6 +367,9 @@ fn kind_name(ty: &Type) -> &'static str {
         Type::Union(_) => "Union",
         Type::UnionVariant(_) => "UnionVariant",
         Type::Alias(_) => "Alias",
+        Type::Operation(_) => "Operation",
+        Type::Interface(_) => "Interface",
+        Type::Namespace(_) => "Namespace",
         Type::String => "String",
         Type::Bytes => "Bytes",
         Type::Int8 => "Int8",

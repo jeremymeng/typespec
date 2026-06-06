@@ -10,8 +10,9 @@ use crate::intrinsics::{register_intrinsics, Intrinsics};
 use crate::name_resolver::ResolutionResult;
 use crate::types::{
     AliasType, BooleanLiteralType, DecoratorRef, EnumMemberType, EnumMemberValue, EnumType,
-    ModelPropertyType, ModelType, NumericLiteralType, ScalarType, StringLiteralType, SymbolId,
-    SymbolTable, Type, TypeArena, TypeId, UnionType, UnionVariantType,
+    InterfaceType, ModelPropertyType, ModelType, NamespaceType, NumericLiteralType, OperationType,
+    ScalarType, StringLiteralType, SymbolFlags, SymbolId, SymbolTable, Type, TypeArena, TypeId,
+    UnionType, UnionVariantType,
 };
 
 pub struct Checker<'p> {
@@ -20,6 +21,7 @@ pub struct Checker<'p> {
     resolutions: &'p HashMap<NodeId, ResolutionResult>,
     type_arena: TypeArena,
     intrinsics: Intrinsics,
+    global_namespace: TypeId,
     diagnostics: Vec<Diagnostic>,
     type_cache: HashMap<NodeId, TypeId>,
     symbol_to_type: HashMap<SymbolId, TypeId>,
@@ -30,6 +32,20 @@ pub struct Checker<'p> {
     alias_stack: Vec<SymbolId>,
     reported_alias_cycles: HashSet<SymbolId>,
     alias_structural_depth: usize,
+    operation_stack: Vec<SymbolId>,
+    reported_operation_cycles: HashSet<SymbolId>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NamespaceMemberKind {
+    Model,
+    Scalar,
+    Enum,
+    Union,
+    Alias,
+    Operation,
+    Interface,
+    Namespace,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -66,12 +82,28 @@ impl<'p> Checker<'p> {
         let mut type_arena = TypeArena::new();
         let mut symbol_to_type = HashMap::new();
         let intrinsics = register_intrinsics(&mut type_arena, symbol_table, &mut symbol_to_type);
+        let global_namespace = type_arena.add(Type::Namespace(NamespaceType {
+            name: String::new(),
+            node: None,
+            symbol: None,
+            namespace: None,
+            models: IndexMap::new(),
+            scalars: IndexMap::new(),
+            enums: IndexMap::new(),
+            unions: IndexMap::new(),
+            aliases: IndexMap::new(),
+            operations: IndexMap::new(),
+            interfaces: IndexMap::new(),
+            namespaces: IndexMap::new(),
+            decorators: Vec::new(),
+        }));
         Self {
             parse_result,
             symbol_table,
             resolutions,
             type_arena,
             intrinsics,
+            global_namespace,
             diagnostics: Vec::new(),
             type_cache: HashMap::new(),
             symbol_to_type,
@@ -82,6 +114,8 @@ impl<'p> Checker<'p> {
             alias_stack: Vec::new(),
             reported_alias_cycles: HashSet::new(),
             alias_structural_depth: 0,
+            operation_stack: Vec::new(),
+            reported_operation_cycles: HashSet::new(),
         }
     }
 
@@ -118,6 +152,7 @@ impl<'p> Checker<'p> {
     fn check_node(&mut self, node_id: NodeId) -> Option<TypeId> {
         match self.node(node_id).data.clone() {
             NodeData::NamespaceStatement { statements, .. } => {
+                let namespace_id = self.check_namespace(node_id);
                 match statements {
                     Some(NamespaceBody::Statements(statements)) => {
                         for statement in statements {
@@ -129,7 +164,7 @@ impl<'p> Checker<'p> {
                     }
                     None => {}
                 }
-                None
+                Some(namespace_id)
             }
             NodeData::ModelStatement { .. } => Some(self.check_model_statement(node_id)),
             NodeData::ScalarStatement { .. } => Some(self.check_scalar(node_id)),
@@ -137,10 +172,7 @@ impl<'p> Checker<'p> {
             NodeData::UnionStatement { .. } => Some(self.check_union_statement(node_id)),
             NodeData::AliasStatement { .. } => Some(self.check_alias(node_id)),
             NodeData::ModelExpression { .. } => Some(self.check_model_expression(node_id)),
-            NodeData::OperationStatement { signature, .. } => {
-                self.check_node(signature);
-                None
-            }
+            NodeData::OperationStatement { .. } => Some(self.check_operation(node_id, None)),
             NodeData::OperationSignatureDeclaration {
                 parameters,
                 return_type,
@@ -149,14 +181,77 @@ impl<'p> Checker<'p> {
                 self.type_for_node(return_type);
                 None
             }
-            NodeData::InterfaceStatement { operations, .. } => {
-                for operation in operations {
-                    self.check_node(operation);
-                }
-                None
-            }
+            NodeData::InterfaceStatement { .. } => Some(self.check_interface(node_id)),
             _ => None,
         }
+    }
+
+    fn check_namespace(&mut self, node_id: NodeId) -> TypeId {
+        if let Some(cached) = self.type_cache.get(&node_id).copied() {
+            return cached;
+        }
+        let symbol = self
+            .symbol_for_node(node_id)
+            .expect("namespace statement should have symbol");
+        let namespace_id = self.get_or_create_namespace(symbol);
+        self.cache_type(node_id, namespace_id);
+        namespace_id
+    }
+
+    fn get_or_create_namespace(&mut self, symbol: SymbolId) -> TypeId {
+        if let Some(type_id) = self.symbol_to_type.get(&symbol).copied() {
+            return type_id;
+        }
+
+        let parent_namespace = self.parent_namespace_for_namespace_symbol(symbol);
+        let node = self.symbol_table.symbols[symbol.index()]
+            .declarations
+            .first()
+            .copied();
+        let declarations = self.symbol_table.symbols[symbol.index()]
+            .declarations
+            .clone();
+        let decorators = declarations
+            .iter()
+            .filter_map(|declaration| match self.node(*declaration).data.clone() {
+                NodeData::NamespaceStatement { decorators, .. } => Some(decorators),
+                _ => None,
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        let decorators = self.collect_decorators(&decorators);
+        let name = self.symbol_table.symbols[symbol.index()].name.clone();
+
+        let type_id = self.type_arena.reserve();
+        self.symbol_to_type.insert(symbol, type_id);
+        for declaration in declarations {
+            self.cache_type(declaration, type_id);
+        }
+        self.type_arena.replace(
+            type_id,
+            Type::Namespace(NamespaceType {
+                name: name.clone(),
+                node,
+                symbol: Some(symbol),
+                namespace: Some(parent_namespace),
+                models: IndexMap::new(),
+                scalars: IndexMap::new(),
+                enums: IndexMap::new(),
+                unions: IndexMap::new(),
+                aliases: IndexMap::new(),
+                operations: IndexMap::new(),
+                interfaces: IndexMap::new(),
+                namespaces: IndexMap::new(),
+                decorators,
+            }),
+        );
+        self.register_namespace_member(
+            parent_namespace,
+            name,
+            type_id,
+            NamespaceMemberKind::Namespace,
+        );
+        type_id
     }
 
     fn check_model_statement(&mut self, node_id: NodeId) -> TypeId {
@@ -177,6 +272,7 @@ impl<'p> Checker<'p> {
         };
 
         let symbol = self.symbol_for_node(node_id);
+        let namespace = self.namespace_for_symbol(symbol);
         let type_id = self.type_arena.reserve();
         self.cache_type(node_id, type_id);
         if let Some(symbol) = symbol {
@@ -193,7 +289,7 @@ impl<'p> Checker<'p> {
             source_model,
             indexer: None,
             decorators: self.collect_decorators(&decorators),
-            namespace: None,
+            namespace,
             derived_models: Vec::new(),
         };
 
@@ -224,7 +320,16 @@ impl<'p> Checker<'p> {
         }
 
         let base_model = model.base_model;
+        let model_name = model.name.clone();
         self.type_arena.replace(type_id, Type::Model(model));
+        if let Some(namespace) = namespace {
+            self.register_namespace_member(
+                namespace,
+                model_name,
+                type_id,
+                NamespaceMemberKind::Model,
+            );
+        }
         if let Some(base_model) = base_model {
             if let Type::Model(base) = self.type_arena.get_mut(base_model) {
                 if !base.derived_models.contains(&type_id) {
@@ -243,6 +348,7 @@ impl<'p> Checker<'p> {
             panic!("expected model expression");
         };
         let symbol = self.symbol_for_node(node_id);
+        let namespace = self.namespace_for_symbol(symbol);
         let type_id = self.type_arena.reserve();
         self.cache_type(node_id, type_id);
         if let Some(symbol) = symbol {
@@ -258,7 +364,7 @@ impl<'p> Checker<'p> {
             source_model: None,
             indexer: None,
             decorators: Vec::new(),
-            namespace: None,
+            namespace,
             derived_models: Vec::new(),
         };
         for property in properties {
@@ -293,6 +399,7 @@ impl<'p> Checker<'p> {
             panic!("expected scalar statement");
         };
         let symbol = self.symbol_for_node(node_id);
+        let namespace = self.namespace_for_symbol(symbol);
         let type_id = self.type_arena.reserve();
         self.cache_type(node_id, type_id);
         if let Some(symbol) = symbol {
@@ -302,6 +409,7 @@ impl<'p> Checker<'p> {
         let base_scalar = extends.and_then(|extends| self.check_scalar_extends(symbol, extends));
         let decorators = self.collect_decorators(&decorators);
         let name = self.identifier_name(id);
+        let register_name = name.clone();
         self.type_arena.replace(
             type_id,
             Type::Scalar(ScalarType {
@@ -310,9 +418,17 @@ impl<'p> Checker<'p> {
                 symbol,
                 base_scalar,
                 decorators,
-                namespace: None,
+                namespace,
             }),
         );
+        if let Some(namespace) = namespace {
+            self.register_namespace_member(
+                namespace,
+                register_name,
+                type_id,
+                NamespaceMemberKind::Scalar,
+            );
+        }
         type_id
     }
 
@@ -331,6 +447,7 @@ impl<'p> Checker<'p> {
             panic!("expected enum statement");
         };
         let symbol = self.symbol_for_node(node_id);
+        let namespace = self.namespace_for_symbol(symbol);
         let type_id = self.type_arena.reserve();
         self.cache_type(node_id, type_id);
         if let Some(symbol) = symbol {
@@ -343,7 +460,7 @@ impl<'p> Checker<'p> {
             symbol,
             members: IndexMap::new(),
             decorators: self.collect_decorators(&decorators),
-            namespace: None,
+            namespace,
         };
 
         for member in members {
@@ -368,7 +485,16 @@ impl<'p> Checker<'p> {
             }
         }
 
+        let enum_name = enum_type.name.clone();
         self.type_arena.replace(type_id, Type::Enum(enum_type));
+        if let Some(namespace) = namespace {
+            self.register_namespace_member(
+                namespace,
+                enum_name,
+                type_id,
+                NamespaceMemberKind::Enum,
+            );
+        }
         type_id
     }
 
@@ -477,6 +603,7 @@ impl<'p> Checker<'p> {
             panic!("expected union statement");
         };
         let symbol = self.symbol_for_node(node_id);
+        let namespace = self.namespace_for_symbol(symbol);
         let type_id = self.type_arena.reserve();
         self.cache_type(node_id, type_id);
         if let Some(symbol) = symbol {
@@ -490,7 +617,7 @@ impl<'p> Checker<'p> {
             variants: IndexMap::new(),
             expression: false,
             decorators: self.collect_decorators(&decorators),
-            namespace: None,
+            namespace,
         };
 
         for (index, variant) in options.into_iter().enumerate() {
@@ -510,7 +637,16 @@ impl<'p> Checker<'p> {
             }
         }
 
+        let union_name = union_type.name.clone();
         self.type_arena.replace(type_id, Type::Union(union_type));
+        if let Some(namespace) = namespace {
+            self.register_namespace_member(
+                namespace,
+                union_name,
+                type_id,
+                NamespaceMemberKind::Union,
+            );
+        }
         type_id
     }
 
@@ -628,6 +764,7 @@ impl<'p> Checker<'p> {
         let symbol = self
             .symbol_for_node(node_id)
             .expect("alias statement should have symbol");
+        let namespace = self.namespace_for_symbol(Some(symbol));
         let type_id = self.type_arena.reserve();
         self.cache_type(node_id, type_id);
         self.symbol_to_type.insert(symbol, type_id);
@@ -636,16 +773,248 @@ impl<'p> Checker<'p> {
         let target = self.type_for_node(value);
         self.alias_stack.pop();
 
+        let name = self.identifier_name(id);
+        let register_name = name.clone();
         self.type_arena.replace(
             type_id,
             Type::Alias(AliasType {
-                name: self.identifier_name(id),
+                name,
                 node: node_id,
                 symbol,
                 target,
-                namespace: None,
+                namespace,
             }),
         );
+        if let Some(namespace) = namespace {
+            self.register_namespace_member(
+                namespace,
+                register_name,
+                type_id,
+                NamespaceMemberKind::Alias,
+            );
+        }
+        type_id
+    }
+
+    fn check_operation(&mut self, node_id: NodeId, parent_interface: Option<TypeId>) -> TypeId {
+        if let Some(cached) = self.type_cache.get(&node_id).copied() {
+            return cached;
+        }
+        let NodeData::OperationStatement {
+            id,
+            decorators,
+            signature,
+            ..
+        } = self.node(node_id).data.clone()
+        else {
+            panic!("expected operation statement");
+        };
+
+        let symbol = self.symbol_for_node(node_id);
+        let interface = parent_interface.or_else(|| self.interface_for_operation_symbol(symbol));
+        let namespace = self.namespace_for_symbol(symbol);
+        let type_id = self.type_arena.reserve();
+        self.cache_type(node_id, type_id);
+        if let Some(symbol) = symbol {
+            self.symbol_to_type.insert(symbol, type_id);
+        }
+
+        let name = self.identifier_name(id);
+        let mut operation = OperationType {
+            name: name.clone(),
+            node: Some(node_id),
+            symbol,
+            parameters: self.intrinsics.unknown,
+            return_type: self.intrinsics.void,
+            decorators: Vec::new(),
+            interface,
+            namespace,
+            source_operation: None,
+        };
+
+        match self.node(signature).data.clone() {
+            NodeData::OperationSignatureDeclaration {
+                parameters,
+                return_type,
+            } => {
+                operation.parameters = self.type_for_node(parameters);
+                self.set_model_namespace(operation.parameters, namespace);
+                operation.return_type = self.type_for_node(return_type);
+                operation.decorators = self.collect_decorators(&decorators);
+            }
+            NodeData::OperationSignatureReference { base_operation } => {
+                if let Some(base) = self.check_operation_is(symbol, base_operation) {
+                    operation.source_operation = Some(base);
+                    operation.parameters = self.clone_parameter_model(base, namespace);
+                    operation.return_type = self
+                        .operation_type(base)
+                        .map(|source| source.return_type)
+                        .unwrap_or(self.intrinsics.void);
+                    operation.decorators = self
+                        .operation_type(base)
+                        .map(|source| source.decorators.clone())
+                        .unwrap_or_default();
+                    operation
+                        .decorators
+                        .extend(self.collect_decorators(&decorators));
+                } else {
+                    operation.parameters = self.empty_parameter_model(namespace);
+                    operation.return_type = self.intrinsics.void;
+                    operation.decorators = self.collect_decorators(&decorators);
+                }
+            }
+            _ => {}
+        }
+
+        self.type_arena.replace(type_id, Type::Operation(operation));
+        if interface.is_none() {
+            if let Some(namespace) = namespace {
+                self.register_namespace_member(
+                    namespace,
+                    name,
+                    type_id,
+                    NamespaceMemberKind::Operation,
+                );
+            }
+        }
+        type_id
+    }
+
+    fn check_operation_is(
+        &mut self,
+        operation_symbol: Option<SymbolId>,
+        base_operation: NodeId,
+    ) -> Option<TypeId> {
+        if let Some(symbol) = operation_symbol {
+            self.operation_stack.push(symbol);
+        }
+        let target_symbol = self.resolved_symbol(base_operation);
+        if let Some(target_symbol) = target_symbol {
+            if self.operation_stack.contains(&target_symbol) {
+                self.report_operation_cycle(target_symbol, base_operation);
+                if operation_symbol.is_some() {
+                    self.operation_stack.pop();
+                }
+                return None;
+            }
+        }
+
+        let base = self.type_for_node(base_operation);
+        if operation_symbol.is_some() {
+            self.operation_stack.pop();
+        }
+        let base = self.get_non_alias_type(base);
+        if matches!(self.type_arena.get(base), Type::Operation(_)) {
+            Some(base)
+        } else if !matches!(self.type_arena.get(base), Type::Error | Type::Unknown) {
+            self.report(
+                "is-operation",
+                "Operation can only reuse the signature of another operation.",
+                base_operation,
+            );
+            None
+        } else {
+            None
+        }
+    }
+
+    fn check_interface(&mut self, node_id: NodeId) -> TypeId {
+        if let Some(cached) = self.type_cache.get(&node_id).copied() {
+            return cached;
+        }
+        let NodeData::InterfaceStatement {
+            id,
+            decorators,
+            extends,
+            operations,
+            ..
+        } = self.node(node_id).data.clone()
+        else {
+            panic!("expected interface statement");
+        };
+        let symbol = self
+            .symbol_for_node(node_id)
+            .expect("interface statement should have symbol");
+        let namespace = self.namespace_for_symbol(Some(symbol));
+        let type_id = self.type_arena.reserve();
+        self.cache_type(node_id, type_id);
+        self.symbol_to_type.insert(symbol, type_id);
+
+        let mut own_members = IndexMap::new();
+        for operation_node in operations {
+            let operation_id = self.check_operation(operation_node, Some(type_id));
+            let Some(operation) = self.operation_type(operation_id) else {
+                continue;
+            };
+            let name = operation.name.clone();
+            if own_members.contains_key(&name) {
+                self.report(
+                    "interface-duplicate",
+                    &format!("Interface already has a member named {name}"),
+                    operation_node,
+                );
+            } else {
+                own_members.insert(name, operation_id);
+            }
+        }
+
+        let mut interface_type = InterfaceType {
+            name: self.identifier_name(id),
+            node: Some(node_id),
+            symbol: Some(symbol),
+            operations: IndexMap::new(),
+            source_interfaces: Vec::new(),
+            decorators: self.collect_decorators(&decorators),
+            namespace,
+        };
+
+        for extends_node in extends {
+            let extends_type = self.type_for_node(extends_node);
+            let extends_type = self.get_non_alias_type(extends_type);
+            let Some(source_interface) = self.interface_type(extends_type).cloned() else {
+                if !matches!(
+                    self.type_arena.get(extends_type),
+                    Type::Error | Type::Unknown
+                ) {
+                    self.report(
+                        "extends-interface",
+                        "Interfaces can only extend other interfaces",
+                        extends_node,
+                    );
+                }
+                continue;
+            };
+            for (name, operation_id) in source_interface.operations {
+                if interface_type.operations.contains_key(&name) {
+                    self.report(
+                        "extends-interface-duplicate",
+                        &format!(
+                            "Interface extends cannot have duplicate members. The duplicate member is named {name}"
+                        ),
+                        extends_node,
+                    );
+                }
+                let cloned = self.clone_operation_for_interface(operation_id, type_id, namespace);
+                interface_type.operations.insert(name, cloned);
+            }
+            interface_type.source_interfaces.push(extends_type);
+        }
+
+        for (name, operation_id) in own_members {
+            interface_type.operations.insert(name, operation_id);
+        }
+
+        let interface_name = interface_type.name.clone();
+        self.type_arena
+            .replace(type_id, Type::Interface(interface_type));
+        if let Some(namespace) = namespace {
+            self.register_namespace_member(
+                namespace,
+                interface_name,
+                type_id,
+                NamespaceMemberKind::Interface,
+            );
+        }
         type_id
     }
 
@@ -713,6 +1082,9 @@ impl<'p> Checker<'p> {
             NodeData::EnumStatement { .. } => self.check_enum(node_id),
             NodeData::UnionStatement { .. } => self.check_union_statement(node_id),
             NodeData::AliasStatement { .. } => self.check_alias(node_id),
+            NodeData::OperationStatement { .. } => self.check_operation(node_id, None),
+            NodeData::InterfaceStatement { .. } => self.check_interface(node_id),
+            NodeData::NamespaceStatement { .. } => self.check_namespace(node_id),
             NodeData::Keyword => self.type_for_keyword(node_id),
             _ => self.intrinsics.unknown,
         }
@@ -794,6 +1166,9 @@ impl<'p> Checker<'p> {
             NodeData::EnumStatement { .. } => self.check_enum(node),
             NodeData::UnionStatement { .. } => self.check_union_statement(node),
             NodeData::AliasStatement { .. } => self.check_alias(node),
+            NodeData::OperationStatement { .. } => self.check_operation(node, None),
+            NodeData::InterfaceStatement { .. } => self.check_interface(node),
+            NodeData::NamespaceStatement { .. } => self.check_namespace(node),
             NodeData::ModelProperty { .. } => self
                 .type_cache
                 .get(&node)
@@ -1100,6 +1475,185 @@ impl<'p> Checker<'p> {
         }
     }
 
+    fn operation_type(&self, type_id: TypeId) -> Option<&OperationType> {
+        match self.type_arena.get(type_id) {
+            Type::Operation(operation) => Some(operation),
+            _ => None,
+        }
+    }
+
+    fn interface_type(&self, type_id: TypeId) -> Option<&InterfaceType> {
+        match self.type_arena.get(type_id) {
+            Type::Interface(interface) => Some(interface),
+            _ => None,
+        }
+    }
+
+    fn empty_parameter_model(&mut self, namespace: Option<TypeId>) -> TypeId {
+        self.type_arena.add(Type::Model(ModelType {
+            name: String::new(),
+            node: None,
+            symbol: None,
+            properties: IndexMap::new(),
+            base_model: None,
+            source_model: None,
+            indexer: None,
+            decorators: Vec::new(),
+            namespace,
+            derived_models: Vec::new(),
+        }))
+    }
+
+    fn clone_parameter_model(&mut self, operation_id: TypeId, namespace: Option<TypeId>) -> TypeId {
+        let Some(operation) = self.operation_type(operation_id).cloned() else {
+            return self.empty_parameter_model(namespace);
+        };
+        let Some(source_model) = self.model_type(operation.parameters).cloned() else {
+            return self.empty_parameter_model(namespace);
+        };
+        let model_id = self.type_arena.reserve();
+        let mut model = ModelType {
+            name: String::new(),
+            node: source_model.node,
+            symbol: None,
+            properties: IndexMap::new(),
+            base_model: source_model.base_model,
+            source_model: source_model.source_model,
+            indexer: source_model.indexer,
+            decorators: source_model.decorators,
+            namespace,
+            derived_models: Vec::new(),
+        };
+        for (name, prop_id) in source_model.properties {
+            let Some(prop) = self.model_property_type(prop_id).cloned() else {
+                continue;
+            };
+            let cloned = self.type_arena.add(Type::ModelProperty(ModelPropertyType {
+                name: name.clone(),
+                node: prop.node,
+                symbol: None,
+                model: model_id,
+                property_type: prop.property_type,
+                optional: prop.optional,
+                default: prop.default,
+                decorators: prop.decorators,
+            }));
+            model.properties.insert(name, cloned);
+        }
+        self.type_arena.replace(model_id, Type::Model(model));
+        model_id
+    }
+
+    fn clone_operation_for_interface(
+        &mut self,
+        operation_id: TypeId,
+        interface_id: TypeId,
+        namespace: Option<TypeId>,
+    ) -> TypeId {
+        let Some(source) = self.operation_type(operation_id).cloned() else {
+            return operation_id;
+        };
+        let parameters = self.clone_parameter_model(operation_id, namespace);
+        self.type_arena.add(Type::Operation(OperationType {
+            name: source.name,
+            node: source.node,
+            symbol: None,
+            parameters,
+            return_type: source.return_type,
+            decorators: source.decorators,
+            interface: Some(interface_id),
+            namespace,
+            source_operation: Some(operation_id),
+        }))
+    }
+
+    fn set_model_namespace(&mut self, model_id: TypeId, namespace: Option<TypeId>) {
+        if let Type::Model(model) = self.type_arena.get_mut(model_id) {
+            model.namespace = namespace;
+        }
+    }
+
+    fn namespace_for_symbol(&mut self, symbol: Option<SymbolId>) -> Option<TypeId> {
+        let mut current =
+            symbol.and_then(|symbol| self.symbol_table.symbols[symbol.index()].parent_symbol);
+        while let Some(symbol_id) = current {
+            let symbol = &self.symbol_table.symbols[symbol_id.index()];
+            if symbol.flags.contains(SymbolFlags::Namespace) {
+                return Some(self.get_or_create_namespace(symbol_id));
+            }
+            current = symbol.parent_symbol;
+        }
+        symbol
+            .map(|_| self.global_namespace)
+            .or(Some(self.global_namespace))
+            .filter(|_| symbol.is_some())
+    }
+
+    fn parent_namespace_for_namespace_symbol(&mut self, symbol: SymbolId) -> TypeId {
+        let mut current = self.symbol_table.symbols[symbol.index()].parent_symbol;
+        while let Some(symbol_id) = current {
+            let parent = &self.symbol_table.symbols[symbol_id.index()];
+            if parent.flags.contains(SymbolFlags::Namespace) {
+                return self.get_or_create_namespace(symbol_id);
+            }
+            current = parent.parent_symbol;
+        }
+        self.global_namespace
+    }
+
+    fn interface_for_operation_symbol(&mut self, symbol: Option<SymbolId>) -> Option<TypeId> {
+        let parent =
+            symbol.and_then(|symbol| self.symbol_table.symbols[symbol.index()].parent_symbol)?;
+        if !self.symbol_table.symbols[parent.index()]
+            .flags
+            .contains(SymbolFlags::Interface)
+        {
+            return None;
+        }
+        if let Some(type_id) = self.symbol_to_type.get(&parent).copied() {
+            return Some(type_id);
+        }
+        Some(self.type_for_symbol(parent))
+    }
+
+    fn register_namespace_member(
+        &mut self,
+        namespace_id: TypeId,
+        name: String,
+        type_id: TypeId,
+        kind: NamespaceMemberKind,
+    ) {
+        let Type::Namespace(namespace) = self.type_arena.get_mut(namespace_id) else {
+            return;
+        };
+        match kind {
+            NamespaceMemberKind::Model => {
+                namespace.models.entry(name).or_insert(type_id);
+            }
+            NamespaceMemberKind::Scalar => {
+                namespace.scalars.entry(name).or_insert(type_id);
+            }
+            NamespaceMemberKind::Enum => {
+                namespace.enums.entry(name).or_insert(type_id);
+            }
+            NamespaceMemberKind::Union => {
+                namespace.unions.entry(name).or_insert(type_id);
+            }
+            NamespaceMemberKind::Alias => {
+                namespace.aliases.entry(name).or_insert(type_id);
+            }
+            NamespaceMemberKind::Operation => {
+                namespace.operations.entry(name).or_insert(type_id);
+            }
+            NamespaceMemberKind::Interface => {
+                namespace.interfaces.entry(name).or_insert(type_id);
+            }
+            NamespaceMemberKind::Namespace => {
+                namespace.namespaces.entry(name).or_insert(type_id);
+            }
+        };
+    }
+
     fn add_and_cache(&mut self, node_id: NodeId, ty: Type) -> TypeId {
         let type_id = self.type_arena.add(ty);
         self.cache_type(node_id, type_id);
@@ -1226,6 +1780,18 @@ impl<'p> Checker<'p> {
         );
     }
 
+    fn report_operation_cycle(&mut self, symbol: SymbolId, target: NodeId) {
+        if !self.reported_operation_cycles.insert(symbol) {
+            return;
+        }
+        let name = self.symbol_table.symbols[symbol.index()].name.clone();
+        self.report(
+            "circular-op-signature",
+            &format!("Operation '{name}' recursively references itself."),
+            target,
+        );
+    }
+
     fn report(&mut self, code: &'static str, message: &str, target: NodeId) {
         self.diagnostics.push(Diagnostic {
             severity: DiagnosticSeverity::Error,
@@ -1298,6 +1864,15 @@ mod tests {
                 ("Enum", Type::Enum(en)) if en.name == name => Some(TypeId::new(id as u32)),
                 ("Union", Type::Union(union)) if union.name == name => Some(TypeId::new(id as u32)),
                 ("Alias", Type::Alias(alias)) if alias.name == name => Some(TypeId::new(id as u32)),
+                ("Operation", Type::Operation(operation)) if operation.name == name => {
+                    Some(TypeId::new(id as u32))
+                }
+                ("Interface", Type::Interface(interface)) if interface.name == name => {
+                    Some(TypeId::new(id as u32))
+                }
+                ("Namespace", Type::Namespace(namespace)) if namespace.name == name => {
+                    Some(TypeId::new(id as u32))
+                }
                 _ => None,
             })
             .expect("type should exist")
@@ -1474,5 +2049,79 @@ mod tests {
             panic!("expected model");
         };
         assert!(model.properties.contains_key("x"));
+    }
+
+    #[test]
+    fn creates_global_namespace() {
+        let result = check_source("model Foo {}");
+        let Type::Namespace(global) = result.type_arena.get(TypeId::new(29)) else {
+            panic!("expected global namespace after intrinsics");
+        };
+        assert_eq!(global.name, "");
+        assert!(global.namespace.is_none());
+        assert!(global.models.contains_key("Foo"));
+    }
+
+    #[test]
+    fn creates_nested_namespace_parent_chain() {
+        let result = check_source("namespace A.B.C { model Foo {} }");
+        let a = find_named_type(&result, "A", "Namespace");
+        let b = find_named_type(&result, "B", "Namespace");
+        let c = find_named_type(&result, "C", "Namespace");
+        let Type::Namespace(ns_b) = result.type_arena.get(b) else {
+            panic!("expected namespace B");
+        };
+        let Type::Namespace(ns_c) = result.type_arena.get(c) else {
+            panic!("expected namespace C");
+        };
+        assert_eq!(ns_b.namespace, Some(a));
+        assert_eq!(ns_c.namespace, Some(b));
+    }
+
+    #[test]
+    fn operation_parameters_are_anonymous_model() {
+        let result = check_source("op foo(name: string, age: int32): void;");
+        let op = find_named_type(&result, "foo", "Operation");
+        let Type::Operation(operation) = result.type_arena.get(op) else {
+            panic!("expected operation");
+        };
+        let Type::Model(parameters) = result.type_arena.get(operation.parameters) else {
+            panic!("expected parameter model");
+        };
+        assert_eq!(parameters.name, "");
+        assert_eq!(
+            parameters.properties.keys().cloned().collect::<Vec<_>>(),
+            vec!["name", "age"]
+        );
+    }
+
+    #[test]
+    fn interface_inheritance_copies_operations() {
+        let result =
+            check_source("interface Base { list(): string; } interface Child extends Base {}");
+        let child = find_named_type(&result, "Child", "Interface");
+        let Type::Interface(interface) = result.type_arena.get(child) else {
+            panic!("expected interface");
+        };
+        assert!(interface.operations.contains_key("list"));
+        assert_eq!(interface.source_interfaces.len(), 1);
+    }
+
+    #[test]
+    fn namespace_reopening_merges_into_single_type() {
+        let result = check_source("namespace A { model X {} } namespace A { model Y {} }");
+        let namespaces = result
+            .type_arena
+            .types()
+            .iter()
+            .filter(|ty| matches!(ty, Type::Namespace(ns) if ns.name == "A"))
+            .count();
+        assert_eq!(namespaces, 1);
+        let a = find_named_type(&result, "A", "Namespace");
+        let Type::Namespace(namespace) = result.type_arena.get(a) else {
+            panic!("expected namespace");
+        };
+        assert!(namespace.models.contains_key("X"));
+        assert!(namespace.models.contains_key("Y"));
     }
 }

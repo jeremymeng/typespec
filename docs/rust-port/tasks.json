@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T18:15:17Z",
+  "updated_at": "2026-06-06T18:29:30Z",
   "updated_by": "agent:rust-port-m5c",
   "tasks": [
     {
@@ -617,7 +617,7 @@
     {
       "id": "M5c",
       "title": "Checker: Operations, Interfaces, Namespaces",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M5b"],
       "plan_section": "docs/rust-port/plan.md#m5c--operations-interfaces-namespaces",
       "complexity": "medium",
@@ -625,7 +625,7 @@
       "branch": "jeremymeng/rust-port-m5c-checker-ops-ifaces-namespaces",
       "pr": null,
       "started_at": "2026-06-06T18:15:17Z",
-      "completed_at": null,
+      "completed_at": "2026-06-06T18:29:30Z",
       "key_source_files": [
         "packages/compiler/src/core/checker.ts",
         "packages/compiler/test/checker/operations.test.ts",
@@ -635,27 +635,33 @@
       ],
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "Type enum extended: Operation, Interface, Namespace"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Operation parameter types (anonymous models)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Interface operation membership"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Namespace nesting and merging"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Comparison tests for operations, interfaces, namespaces match TS"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-06-06T18:29:30Z",
+          "author": "agent:rust-port-m5c",
+          "text": "Implemented Operation, Interface, and Namespace types; global/nested namespace graph and namespace member registration; anonymous operation parameter models; op is; interface extends; napi serialization; comparison and Rust unit tests."
+        }
+      ]
     },
     {
       "id": "M5d",
