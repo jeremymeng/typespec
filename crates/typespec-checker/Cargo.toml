@@ -10,5 +10,6 @@ path = "src/lib.rs"
 
 [dependencies]
 bitflags = "2"
+indexmap = "2"
 typespec-parser = { path = "../typespec-parser" }
 typespec-source = { path = "../typespec-source" }

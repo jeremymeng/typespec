@@ -1,12 +1,18 @@
 #![doc = "Checker crate for the TypeSpec Rust port."]
 
 pub mod binder;
+pub mod checker;
+pub mod intrinsics;
 pub mod name_resolver;
 pub mod types;
 
 pub use binder::bind;
+pub use checker::{check, CheckResult};
 pub use name_resolver::{resolve_names, NameResolution, ResolutionResult};
-pub use types::{Scope, ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolId, SymbolTable};
+pub use types::{
+    DecoratorRef, ModelPropertyType, ModelType, ScalarType, Scope, ScopeId, ScopeKind, Symbol,
+    SymbolFlags, SymbolId, SymbolTable, Type, TypeArena, TypeId,
+};
 
 #[cfg(test)]
 mod tests {

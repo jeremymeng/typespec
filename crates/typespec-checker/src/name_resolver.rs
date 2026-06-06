@@ -442,6 +442,9 @@ impl<'p, 't> NameResolver<'p, 't> {
                 }
                 result
             }
+            NodeData::ArrayExpression { element_type } => {
+                self.resolve_qualified_name_in_scope(element_type, scope, resolve_decorator, report)
+            }
             NodeData::Identifier { sv } => {
                 let lookup = if resolve_decorator {
                     self.lookup_name(scope, &format!("@{sv}"))

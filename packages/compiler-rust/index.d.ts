@@ -10,6 +10,15 @@ export interface BindResult {
   diagnostics: Array<DiagnosticInfo>
 }
 
+export declare function check(source: string): CheckResultJs
+
+export interface CheckResultJs {
+  types: Array<SerializedType>
+  symbolToType: Array<SymbolToType>
+  nodeToType: Array<NodeToType>
+  diagnostics: Array<DiagnosticInfo>
+}
+
 export interface DiagnosticInfo {
   severity: string
   code: string
@@ -19,6 +28,11 @@ export interface DiagnosticInfo {
 }
 
 export declare function hello(): string
+
+export interface NodeToType {
+  nodeId: number
+  typeId: number
+}
 
 export declare function parse(source: string, options?: ParseOptions | undefined | null): SerializedAst
 
@@ -121,6 +135,28 @@ export interface SerializedSymbol {
   declarationNodeIds: Array<number>
   parentScopeId: number
   membersScopeId?: number
+}
+
+export interface SerializedType {
+  id: number
+  kind: string
+  name: string
+  nodeId?: number
+  symbolId?: number
+  propertyIds: Array<number>
+  propertyNames: Array<string>
+  baseTypeId?: number
+  sourceModelId?: number
+  indexerTypeId?: number
+  propertyTypeId?: number
+  optional?: boolean
+  defaultTypeId?: number
+  decoratorNodeIds: Array<number>
+}
+
+export interface SymbolToType {
+  symbolId: number
+  typeId: number
 }
 
 export interface TokenInfo {

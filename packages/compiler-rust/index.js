@@ -589,8 +589,9 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { bind, hello, parse, scan } = nativeBinding
+const { bind, check, hello, parse, scan } = nativeBinding
 export { bind }
+export { check }
 export { hello }
 export { parse }
 export { scan }

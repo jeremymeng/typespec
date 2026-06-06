@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use indexmap::IndexMap;
 use typespec_parser::ast::NodeId;
 use typespec_source::Diagnostic;
 
@@ -26,6 +27,23 @@ impl SymbolId {
 pub struct ScopeId(u32);
 
 impl ScopeId {
+    pub fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TypeId(u32);
+
+impl TypeId {
     pub fn new(value: u32) -> Self {
         Self(value)
     }
@@ -123,6 +141,12 @@ pub struct Symbol {
     pub parent_symbol: Option<SymbolId>,
     pub members: Option<ScopeId>,
     pub symbol_source: Option<SymbolId>,
+    /// Type arena entry linked to this symbol during checking.
+    ///
+    /// M4 pre-binds intrinsic names as symbols before a type arena exists. M5a
+    /// keeps the symbol shape ready for that link; `CheckResult::symbol_to_type`
+    /// is the immutable per-check view exposed by the current checker API.
+    pub r#type: Option<TypeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -214,6 +238,7 @@ impl SymbolTable {
             parent_symbol,
             members: None,
             symbol_source: None,
+            r#type: None,
         });
         if let Some(node) = declaration {
             self.node_symbols.insert(node, id);
@@ -237,8 +262,141 @@ impl SymbolTable {
             parent_symbol,
             members: None,
             symbol_source: Some(symbol_source),
+            r#type: None,
         });
         id
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Type {
+    Scalar(ScalarType),
+    Model(ModelType),
+    ModelProperty(ModelPropertyType),
+
+    // Intrinsics are separate variants rather than `Intrinsic(IntrinsicKind)`
+    // so common checker matches stay exhaustive and adding non-intrinsic M5b-e
+    // variants does not require a second dispatch enum.
+    String,
+    Bytes,
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    Uint8,
+    Uint16,
+    Uint32,
+    Uint64,
+    Float,
+    Float32,
+    Float64,
+    Decimal,
+    Decimal128,
+    Integer,
+    Numeric,
+    SafeInt,
+    Boolean,
+    Url,
+    PlainDate,
+    PlainTime,
+    UtcDateTime,
+    OffsetDateTime,
+    Duration,
+    Void,
+    Never,
+    Unknown,
+    Null,
+
+    StringLiteral(String),
+    NumericLiteral(String),
+    BooleanLiteral(bool),
+
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScalarType {
+    pub name: String,
+    pub node: Option<NodeId>,
+    pub symbol: Option<SymbolId>,
+    pub base_scalar: Option<TypeId>,
+    pub decorators: Vec<DecoratorRef>,
+    pub namespace: Option<TypeId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelType {
+    pub name: String,
+    pub node: Option<NodeId>,
+    pub symbol: Option<SymbolId>,
+    pub properties: IndexMap<String, TypeId>,
+    pub base_model: Option<TypeId>,
+    pub source_model: Option<TypeId>,
+    pub indexer: Option<TypeId>,
+    pub decorators: Vec<DecoratorRef>,
+    pub namespace: Option<TypeId>,
+    pub derived_models: Vec<TypeId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelPropertyType {
+    pub name: String,
+    pub node: Option<NodeId>,
+    pub symbol: Option<SymbolId>,
+    pub model: TypeId,
+    pub property_type: TypeId,
+    pub optional: bool,
+    pub default: Option<TypeId>,
+    pub decorators: Vec<DecoratorRef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DecoratorRef {
+    pub node: NodeId,
+    pub name: String,
+    pub args: Vec<NodeId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeArena {
+    types: Vec<Type>,
+}
+
+impl TypeArena {
+    pub fn new() -> Self {
+        Self { types: Vec::new() }
+    }
+
+    pub fn add(&mut self, ty: Type) -> TypeId {
+        let id = TypeId::new(self.types.len() as u32);
+        self.types.push(ty);
+        id
+    }
+
+    pub fn reserve(&mut self) -> TypeId {
+        self.add(Type::Error)
+    }
+
+    pub fn replace(&mut self, id: TypeId, ty: Type) {
+        self.types[id.index()] = ty;
+    }
+
+    pub fn get(&self, id: TypeId) -> &Type {
+        &self.types[id.index()]
+    }
+
+    pub fn get_mut(&mut self, id: TypeId) -> &mut Type {
+        &mut self.types[id.index()]
+    }
+
+    pub fn types(&self) -> &[Type] {
+        &self.types
+    }
+}
+
+impl Default for TypeArena {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

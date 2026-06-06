@@ -75,6 +75,9 @@ impl<'p> Binder<'p> {
         ] {
             self.declare_prebound(name, SymbolFlags::Scalar | SymbolFlags::Declaration);
         }
+        for name in ["@doc", "@summary", "@format", "@minLength", "@maxLength"] {
+            self.declare_prebound(name, SymbolFlags::Decorator | SymbolFlags::Declaration);
+        }
     }
 
     fn declare_prebound(&mut self, name: &str, flags: SymbolFlags) {
@@ -667,6 +670,12 @@ impl<'p> Binder<'p> {
             return;
         }
         let existing = existing.expect("checked above");
+        if self.table.symbols[existing.index()].declarations.is_empty() {
+            self.table.scopes[scope.index()]
+                .symbols
+                .insert(name, symbol);
+            return;
+        }
         self.report_duplicate(existing);
         self.report_duplicate(symbol);
     }
