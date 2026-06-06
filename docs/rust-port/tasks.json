@@ -3,8 +3,8 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T00:29:54Z",
-  "updated_by": "agent:rust-port-m1",
+  "updated_at": "2026-06-06T00:36:23Z",
+  "updated_by": "agent:rust-port-m1-5",
   "tasks": [
     {
       "id": "M1",
@@ -90,14 +90,14 @@
     {
       "id": "M1.5",
       "title": "napi-rs Round-trip Spike",
-      "status": "not_started",
+      "status": "in_progress",
       "depends_on": ["M1"],
       "plan_section": "docs/rust-port/plan.md#m15--napi-rs-round-trip-spike",
       "complexity": "small",
-      "assignee": null,
-      "branch": null,
+      "assignee": "agent:rust-port-m1-5",
+      "branch": "jeremymeng/rust-port-m1.5-napi-spike",
       "pr": null,
-      "started_at": null,
+      "started_at": "2026-06-06T00:36:23Z",
       "completed_at": null,
       "checklist": [
         {
@@ -126,7 +126,7 @@
         },
         {
           "done": false,
-          "text": "Answer: arena lifetime vs JS object lifetime \u00e2\u20ac\u201d can arena be freed safely?"
+          "text": "Answer: arena lifetime vs JS object lifetime â€” can arena be freed safely?"
         },
         {
           "done": false,
