@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T15:53:48Z",
+  "updated_at": "2026-06-06T16:00:56Z",
   "updated_by": "agent:rust-port-m2-5",
   "tasks": [
     {
@@ -242,7 +242,7 @@
     {
       "id": "M2.5",
       "title": "Upgrade @napi-rs/cli to v3 (with ESM output)",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M2"],
       "plan_section": "docs/rust-port/plan.md#m25--upgrade-napi-rscli-to-v3-with-esm-output",
       "complexity": "small",
@@ -250,66 +250,87 @@
       "branch": "jeremymeng/rust-port-m2.5-napi-v3-esm",
       "pr": null,
       "started_at": "2026-06-06T15:53:48Z",
-      "completed_at": null,
+      "completed_at": "2026-06-06T16:00:56Z",
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "@napi-rs/cli upgraded to ^3 in packages/compiler-rust/package.json"
         },
         {
-          "done": false,
+          "done": true,
           "text": "package.json: \"type\": \"module\", \"main\": \"index.js\""
         },
         {
-          "done": false,
+          "done": true,
           "text": "package.json: napi.binaryName replaces napi.name (no deprecation warning)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "package.json: napi.targets replaces napi.triples (no deprecation warning)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "build scripts include --esm flag and use --manifest-path + --output-dir"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-napi/Cargo.toml: napi = \"3\", napi-derive = \"3\""
         },
         {
-          "done": false,
+          "done": true,
           "text": "Spike crate handled (upgraded to v3 or frozen with comment)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Generated index.js uses ESM (import/export, no require/module.exports)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Generated index.d.ts is non-empty and includes all exported symbols"
         },
         {
-          "done": false,
+          "done": true,
           "text": "pnpm -C packages/compiler-rust build succeeds with zero deprecation warnings"
         },
         {
-          "done": false,
+          "done": true,
           "text": "pnpm -C packages/compiler-rust test: all 51 scanner comparison tests green"
         },
         {
-          "done": false,
+          "done": true,
           "text": "cargo build / test / clippy -D warnings / fmt --check all green"
         },
         {
-          "done": false,
+          "done": true,
           "text": ".github/workflows/rust-port.yml updated for new CLI args and validated"
         },
         {
-          "done": false,
+          "done": true,
           "text": "pnpm-lock.yaml regenerated"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-06-06T16:00:56Z",
+          "author": "agent:rust-port-m2-5",
+          "text": "Upgraded compiler-rust to @napi-rs/cli ^3.7.0, switched the package to ESM, and migrated napi config from name/triples to binaryName/targets using the v3 default target list."
+        },
+        {
+          "timestamp": "2026-06-06T16:00:56Z",
+          "author": "agent:rust-port-m2-5",
+          "text": "Upgraded crates/typespec-napi to napi/napi-derive v3 with napi-build staying on v2. No source-code changes were required in crates/typespec-napi/src because the #[napi] exports and object structs remained compatible."
+        },
+        {
+          "timestamp": "2026-06-06T16:00:56Z",
+          "author": "agent:rust-port-m2-5",
+          "text": "Chose spike Option B: froze crates/_spike_napi_roundtrip on napi v2 and made build:spike an explanatory no-op because the throwaway spike uses External<T>/Env::create_external APIs that changed in napi v3."
+        },
+        {
+          "timestamp": "2026-06-06T16:00:56Z",
+          "author": "agent:rust-port-m2-5",
+          "text": "Verified pnpm install, napi CLI v3 resolution, cargo build/test/clippy/fmt, compiler-rust ESM build/test, generated index.js/index.d.ts contents, and docs prettier check."
+        }
+      ]
     },
     {
       "id": "M3",
