@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T16:58:09Z",
+  "updated_at": "2026-06-06T17:07:59Z",
   "updated_by": "agent:rust-port-m4",
   "tasks": [
     {
@@ -422,7 +422,7 @@
     {
       "id": "M4",
       "title": "Binder + Name Resolution",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M3"],
       "plan_section": "docs/rust-port/plan.md#m4--binder--name-resolution",
       "complexity": "medium",
@@ -430,54 +430,71 @@
       "branch": "jeremymeng/rust-port-m4-binder",
       "pr": null,
       "started_at": "2026-06-06T16:58:09Z",
-      "completed_at": null,
+      "completed_at": "2026-06-06T17:07:59Z",
       "key_source_files": [
         "packages/compiler/src/core/binder.ts",
         "packages/compiler/src/core/name-resolver.ts"
       ],
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-checker/src/types.rs: Symbol, Scope types (arena-allocated, newtype IDs)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-checker/src/binder.rs: Symbol creation, scope building"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-checker/src/name_resolver.rs: name resolution across scopes"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Handles qualified names (A.B.C)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Handles using statements"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Handles augment decorators"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Duplicate name detection produces matching diagnostics"
         },
         {
-          "done": false,
+          "done": true,
           "text": "napi binding for name resolution queries (name -> declaration location)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Comparison tests: names resolve to same declarations as TS"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Scope hierarchy matches TS for all test inputs"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-06-06T17:07:59Z",
+          "author": "agent:rust-port-m4",
+          "text": "Implemented arena-backed SymbolId/ScopeId tables, binder scope construction, namespace merging, duplicate diagnostics, using-aware name resolution, augment decorator target resolution, and eager napi bind(source) serialization."
+        },
+        {
+          "timestamp": "2026-06-06T17:07:59Z",
+          "author": "agent:rust-port-m4",
+          "text": "Stubbed common intrinsic symbols in the global scope for M4 so references such as string, int32, Type, and value constraint helpers resolve before the M5a intrinsic type arena exists."
+        },
+        {
+          "timestamp": "2026-06-06T17:07:59Z",
+          "author": "agent:rust-port-m4",
+          "text": "Added 42 binder comparison tests: symbol/scope/resolution assertions use end-to-end Rust bind output, while binder/resolver diagnostics compare against the full TS checker where practical; member duplicate and unused-using cases are asserted directly because TS full checker/linter coverage differs."
+        }
+      ],
+      "blockers": []
     },
     {
       "id": "M5a",
