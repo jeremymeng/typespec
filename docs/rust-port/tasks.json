@@ -3,8 +3,8 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T19:45:00Z",
-  "updated_by": "agent:rust-port-m5e",
+  "updated_at": "2026-06-06T20:14:30Z",
+  "updated_by": "agent:rust-port-m6",
   "tasks": [
     {
       "id": "M1",
@@ -126,7 +126,7 @@
         },
         {
           "done": true,
-          "text": "Answer: arena lifetime vs JS object lifetime \u00e2\u20ac\u201d can arena be freed safely?"
+          "text": "Answer: arena lifetime vs JS object lifetime â€” can arena be freed safely?"
         },
         {
           "done": true,
@@ -779,14 +779,14 @@
     {
       "id": "M6",
       "title": "Decorator Callbacks via napi-rs",
-      "status": "not_started",
+      "status": "in_progress",
       "depends_on": ["M5e"],
       "plan_section": "docs/rust-port/plan.md#m6--decorator-callbacks-via-napi-rs",
       "complexity": "large",
-      "assignee": null,
-      "branch": null,
+      "assignee": "agent:rust-port-m6",
+      "branch": "jeremymeng/rust-port-m6-decorators",
       "pr": null,
-      "started_at": null,
+      "started_at": "2026-06-06T20:14:30Z",
       "completed_at": null,
       "key_source_files": [
         "packages/compiler/src/core/checker.ts",
