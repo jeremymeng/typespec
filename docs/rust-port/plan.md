@@ -280,6 +280,60 @@ Each milestone is independently deliverable and testable. Agents can work on the
 
 ---
 
+### M2.5 — Upgrade @napi-rs/cli to v3 (with ESM output)
+
+**Goal**: Upgrade `@napi-rs/cli` from v2.x to v3.x and switch the generated bindings from CommonJS to ESM. Align with the rest of the TypeSpec monorepo, which is all ESM. Do this before M3 so the parser's larger surface area is built on the modern toolchain.
+
+**Background / spike findings** (validated against current code on 2026-06-06):
+
+- `--esm` flag exists in `@napi-rs/cli` v3.x only (not v2.x)
+- Requires the Rust `napi` and `napi-derive` crates to also be on v3 — v2 Rust crates produced an empty `.d.ts` and no JS binding with the v3 CLI
+- `napi-build` stays on v2 (shared between v2/v3 of the macro crates)
+- v3 CLI replaces v2's verbose per-platform `switch` loader with a single-file ESM binding (`import { createRequire } from 'node:module'` + `export { ... }`); the native `.node` is still loaded via `createRequire` (Node platform limitation, not napi-rs)
+- v3 CLI also generates a proper `.d.ts` with full type info (struct/enum/function signatures) — v2 in our setup produced 0 bytes
+- v3 deprecates `napi.name` → `napi.binaryName` and `napi.triples` → `napi.targets` in `package.json`
+- v3 CLI args differ from v2: `--cargo-cwd` → `--manifest-path`; output defaults to the **crate folder** unless `--output-dir` is specified
+
+**Deliverables**:
+
+- `packages/compiler-rust/package.json`:
+  - `devDependencies["@napi-rs/cli"]`: `"^3"`
+  - `"type": "module"`
+  - `"main": "index.js"` (v3 emits ESM into `index.js` when `type: module`)
+  - `"files"`: include `index.js`, `index.d.ts`, `*.node`
+  - `napi.binaryName` instead of `napi.name`; `napi.targets` instead of `napi.triples`
+  - `scripts.build`: includes `--esm --manifest-path ../../crates/typespec-napi/Cargo.toml --output-dir .`
+  - Apply equivalent treatment to `scripts.build:debug`
+  - `scripts.build:spike`: bring along — either also upgrade the spike crate to v3 (preferred for consistency) or leave it pinned to v2 with explanatory comment (spike is throwaway)
+- `crates/typespec-napi/Cargo.toml`:
+  - `napi`: `"3"` (with `default-features = false` and existing feature set re-validated against v3)
+  - `napi-derive`: `"3"`
+  - `napi-build` stays on `"2"`
+- `crates/_spike_napi_roundtrip/Cargo.toml`: same treatment, OR a comment noting it's frozen on v2 for historical reference
+- Any source-code changes required by napi v3 API differences (most v2 macros are compatible; spot-check `External<T>`, `JsObject`, error types, the `Env::create_external` signature)
+- `packages/compiler-rust/test/`: update imports to ESM-style if needed (vitest handles both; verify no breakage)
+- `.github/workflows/rust-port.yml`: re-validate the build step works with new CLI args
+- `pnpm-lock.yaml`: regenerated via `pnpm install`
+
+**Acceptance criteria**:
+
+- `pnpm exec napi --help` resolves a v3 binary (`node -e "console.log(require('@napi-rs/cli/package.json').version)"` reports `3.x.y`)
+- `pnpm -C packages/compiler-rust build` succeeds with **zero deprecation warnings** (`napi.binaryName` / `napi.targets` correctly migrated)
+- Generated `index.js` contains `import` / `export` statements, not `require` / `module.exports`
+- Generated `index.d.ts` is non-empty and includes all exported functions/types
+- `pnpm -C packages/compiler-rust test` passes — all 51 scanner comparison tests still green
+- `cargo build`, `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` all green
+- `.github/workflows/rust-port.yml` runs green on a sample PR (or locally simulated)
+
+**Out of scope**:
+
+- Functional changes to scanner, source, or napi bindings — this is purely a toolchain upgrade
+- WASM target enablement (separate decision)
+
+**Estimated complexity**: Small (toolchain upgrade with API-compatibility spot-checks)
+
+---
+
 ### M3 — Parser Parity
 
 **Goal**: Port the TypeSpec parser from TS to Rust. Expose `parse(source: string) → AST` via napi-rs. Define the arena-based AST.
@@ -487,7 +541,7 @@ The checker is too large to deliver as a single milestone. It's subdivided into 
 ## Implementation Order
 
 ```
-M1 (Scaffold) → M1.5 (Spike) → M2 (Scanner) → M3 (Parser) → M4 (Binder)
+M1 (Scaffold) → M1.5 (Spike) → M2 (Scanner) → M2.5 (napi v3/ESM) → M3 (Parser) → M4 (Binder)
   → M5a (Models) → M5b (Enums/Unions) → M5c (Ops/Interfaces) → M5d (Relations) → M5e (Templates)
   → M6 (Decorators)
 ```
