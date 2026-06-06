@@ -356,6 +356,7 @@ pub struct ModelPropertyType {
     pub property_type: TypeId,
     pub optional: bool,
     pub default: Option<TypeId>,
+    pub source_property: Option<TypeId>,
     pub decorators: Vec<DecoratorRef>,
 }
 

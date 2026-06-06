@@ -8,6 +8,7 @@ use typespec_source::{Diagnostic, DiagnosticSeverity, Span};
 
 use crate::intrinsics::{register_intrinsics, Intrinsics};
 use crate::name_resolver::ResolutionResult;
+use crate::type_relation::TypeRelationChecker;
 use crate::types::{
     AliasType, BooleanLiteralType, DecoratorRef, EnumMemberType, EnumMemberValue, EnumType,
     InterfaceType, ModelPropertyType, ModelType, NamespaceType, NumericLiteralType, OperationType,
@@ -172,6 +173,9 @@ impl<'p> Checker<'p> {
             NodeData::UnionStatement { .. } => Some(self.check_union_statement(node_id)),
             NodeData::AliasStatement { .. } => Some(self.check_alias(node_id)),
             NodeData::ModelExpression { .. } => Some(self.check_model_expression(node_id)),
+            NodeData::IntersectionExpression { .. } => {
+                Some(self.check_intersection_expression(node_id))
+            }
             NodeData::OperationStatement { .. } => Some(self.check_operation(node_id, None)),
             NodeData::OperationSignatureDeclaration {
                 parameters,
@@ -712,6 +716,91 @@ impl<'p> Checker<'p> {
         type_id
     }
 
+    fn check_intersection_expression(&mut self, node_id: NodeId) -> TypeId {
+        if let Some(cached) = self.type_cache.get(&node_id).copied() {
+            return cached;
+        }
+        let NodeData::IntersectionExpression { options } = self.node(node_id).data.clone() else {
+            panic!("expected intersection expression");
+        };
+        let type_id = self.type_arena.reserve();
+        self.cache_type(node_id, type_id);
+
+        let mut model = ModelType {
+            name: String::new(),
+            node: Some(node_id),
+            symbol: self.symbol_for_node(node_id),
+            properties: IndexMap::new(),
+            base_model: None,
+            source_model: None,
+            indexer: None,
+            decorators: Vec::new(),
+            namespace: None,
+            derived_models: Vec::new(),
+        };
+        let mut indexers = Vec::new();
+        let mut model_options = Vec::new();
+        for option_node in options {
+            let option_type = self.type_for_node(option_node);
+            let option_type = self.get_non_alias_type(option_type);
+            let Some(option) = self.model_type(option_type) else {
+                if !matches!(
+                    self.type_arena.get(option_type),
+                    Type::Error | Type::Unknown
+                ) {
+                    self.report(
+                        "intersect-non-model",
+                        "Cannot intersect non-model types (including union types).",
+                        option_node,
+                    );
+                }
+                continue;
+            };
+            if let Some(indexer) = option.indexer {
+                self.report(
+                    "intersect-invalid-index",
+                    "Cannot intersect an array model.",
+                    option_node,
+                );
+                indexers.push(indexer);
+            }
+            model_options.push(option_type);
+        }
+
+        for option_type in model_options {
+            for (name, prop_id) in self.walk_model_properties_inherited(option_type) {
+                let Some(prop) = self.model_property_type(prop_id).cloned() else {
+                    continue;
+                };
+                if model.properties.contains_key(&name) {
+                    self.report(
+                        "intersect-duplicate-property",
+                        &format!("Intersection contains duplicate property definitions for {name}"),
+                        node_id,
+                    );
+                    continue;
+                }
+                let cloned = self.type_arena.add(Type::ModelProperty(ModelPropertyType {
+                    name: name.clone(),
+                    node: prop.node,
+                    symbol: None,
+                    model: type_id,
+                    property_type: prop.property_type,
+                    optional: prop.optional,
+                    default: prop.default,
+                    source_property: Some(prop_id),
+                    decorators: prop.decorators,
+                }));
+                model.properties.insert(name, cloned);
+            }
+        }
+        if indexers.len() == 1 {
+            model.indexer = indexers.first().copied();
+        }
+        self.type_arena.replace(type_id, Type::Model(model));
+        type_id
+    }
+
     fn check_union_variant(
         &mut self,
         node_id: NodeId,
@@ -1042,7 +1131,8 @@ impl<'p> Checker<'p> {
         self.alias_structural_depth += 1;
         let property_type = self.type_for_node(value);
         self.alias_structural_depth -= 1;
-        let default = default.map(|node| self.type_for_default_node(node));
+        let default_node = default;
+        let default = default_node.map(|node| self.type_for_default_node(node));
         let decorators = self.collect_decorators(&decorators);
         let name = self.identifier_name(id);
         self.type_arena.replace(
@@ -1055,9 +1145,23 @@ impl<'p> Checker<'p> {
                 property_type,
                 optional,
                 default,
+                source_property: None,
                 decorators,
             }),
         );
+        if !optional {
+            if let (Some(default_type), Some(default_node)) = (default, default_node) {
+                let diagnostics = {
+                    let relation = TypeRelationChecker::new(&self.type_arena);
+                    relation.check_type_assignable_span(
+                        default_type,
+                        property_type,
+                        self.node_span(default_node),
+                    )
+                };
+                self.diagnostics.extend(diagnostics);
+            }
+        }
         type_id
     }
 
@@ -1074,6 +1178,7 @@ impl<'p> Checker<'p> {
                 self.check_array_expression(node_id, element_type)
             }
             NodeData::UnionExpression { .. } => self.check_union_expression(node_id),
+            NodeData::IntersectionExpression { .. } => self.check_intersection_expression(node_id),
             NodeData::StringLiteral { value } => self.string_literal(Some(node_id), value),
             NodeData::NumericLiteral { value, .. } => self.numeric_literal(Some(node_id), value),
             NodeData::BooleanLiteral { value } => self.boolean_literal(Some(node_id), value),
@@ -1314,10 +1419,10 @@ impl<'p> Checker<'p> {
         source_model: TypeId,
         model: &mut ModelType,
     ) {
-        let Some(source) = self.model_type(source_model).cloned() else {
+        if !matches!(self.type_arena.get(source_model), Type::Model(_)) {
             return;
-        };
-        for (name, prop_id) in source.properties {
+        }
+        for (name, prop_id) in self.walk_model_properties_inherited(source_model) {
             let Some(prop) = self.model_property_type(prop_id).cloned() else {
                 continue;
             };
@@ -1329,6 +1434,7 @@ impl<'p> Checker<'p> {
                 property_type: prop.property_type,
                 optional: prop.optional,
                 default: prop.default,
+                source_property: Some(prop_id),
                 decorators: prop.decorators,
             }));
             model.properties.insert(name, cloned);
@@ -1338,15 +1444,15 @@ impl<'p> Checker<'p> {
     fn check_spread_property(&mut self, target: NodeId, model_id: TypeId, model: &mut ModelType) {
         let source = self.type_for_node(target);
         let source = self.get_non_alias_type(source);
-        let Some(source_model) = self.model_type(source).cloned() else {
+        if !matches!(self.type_arena.get(source), Type::Model(_)) {
             self.report(
                 "spread-model",
                 "Cannot spread properties of non-model type.",
                 target,
             );
             return;
-        };
-        for (name, prop_id) in source_model.properties {
+        }
+        for (name, prop_id) in self.walk_model_properties_inherited(source) {
             let Some(prop) = self.model_property_type(prop_id).cloned() else {
                 continue;
             };
@@ -1362,6 +1468,7 @@ impl<'p> Checker<'p> {
                 property_type: prop.property_type,
                 optional: prop.optional,
                 default: prop.default,
+                source_property: Some(prop_id),
                 decorators: prop.decorators,
             }));
             model.properties.insert(name, cloned);
@@ -1454,6 +1561,20 @@ impl<'p> Checker<'p> {
         }
     }
 
+    fn walk_model_properties_inherited(&self, model_id: TypeId) -> Vec<(String, TypeId)> {
+        let mut result = Vec::new();
+        let Some(model) = self.model_type(model_id) else {
+            return result;
+        };
+        for (name, prop_id) in &model.properties {
+            result.push((name.clone(), *prop_id));
+        }
+        if let Some(base) = model.base_model {
+            result.extend(self.walk_model_properties_inherited(base));
+        }
+        result
+    }
+
     fn model_property_type(&self, type_id: TypeId) -> Option<&ModelPropertyType> {
         match self.type_arena.get(type_id) {
             Type::ModelProperty(prop) => Some(prop),
@@ -1536,6 +1657,7 @@ impl<'p> Checker<'p> {
                 property_type: prop.property_type,
                 optional: prop.optional,
                 default: prop.default,
+                source_property: prop.source_property.or(Some(prop_id)),
                 decorators: prop.decorators,
             }));
             model.properties.insert(name, cloned);

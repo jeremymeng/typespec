@@ -1,7 +1,8 @@
 use napi_derive::napi;
 use typespec_checker::{
-    bind as bind_parse_result, check as check_parse_result, resolve_names, CheckResult,
-    EnumMemberValue, Type,
+    bind as bind_parse_result, check as check_parse_result, resolve_names,
+    type_relation::{get_effective_model_type, type_name, TypeRelationChecker},
+    CheckResult, EnumMemberValue, Type, TypeId,
 };
 use typespec_parser::parse;
 use typespec_source::{Diagnostic, DiagnosticSeverity, SourceFile};
@@ -24,6 +25,8 @@ pub struct SerializedType {
     pub property_type_id: Option<u32>,
     pub optional: Option<bool>,
     pub default_type_id: Option<u32>,
+    pub source_property_id: Option<u32>,
+    pub effective_type_id: Option<u32>,
     pub decorator_node_ids: Vec<u32>,
     pub member_ids: Vec<u32>,
     pub member_names: Vec<String>,
@@ -78,6 +81,14 @@ pub struct CheckResultJs {
     pub diagnostics: Vec<DiagnosticInfo>,
 }
 
+#[napi(object)]
+pub struct RelationCheckResult {
+    pub related: bool,
+    pub source_type_id: Option<u32>,
+    pub target_type_id: Option<u32>,
+    pub diagnostics: Vec<DiagnosticInfo>,
+}
+
 #[napi]
 pub fn check(source: String) -> CheckResultJs {
     let source = SourceFile::new(source);
@@ -86,6 +97,58 @@ pub fn check(source: String) -> CheckResultJs {
     let resolution = resolve_names(&parse_result, &mut table);
     let result = check_parse_result(&parse_result, &table, &resolution.resolutions);
     serialize_check_result(result, resolution.diagnostics)
+}
+
+#[napi]
+pub fn check_relation(
+    source: String,
+    source_type_name: String,
+    target_type_name: String,
+) -> RelationCheckResult {
+    let source_file = SourceFile::new(source);
+    let parse_result = parse(&source_file);
+    let mut table = bind_parse_result(&parse_result);
+    let resolution = resolve_names(&parse_result, &mut table);
+    let mut result = check_parse_result(&parse_result, &table, &resolution.resolutions);
+    result.diagnostics.extend(resolution.diagnostics);
+
+    let source_type = find_type_by_name(&result, &source_type_name);
+    let target_type = find_type_by_name(&result, &target_type_name);
+    let mut diagnostics = std::mem::take(&mut result.diagnostics);
+    let related = if diagnostics
+        .iter()
+        .any(|d| d.severity == DiagnosticSeverity::Error)
+    {
+        false
+    } else if let (Some(source_type), Some(target_type)) = (source_type, target_type) {
+        let relation = TypeRelationChecker::new(&result.type_arena);
+        let relation_diagnostics = relation.check_type_assignable_span(
+            source_type,
+            target_type,
+            typespec_source::Span { pos: 0, end: 0 },
+        );
+        let related = relation_diagnostics.is_empty();
+        diagnostics.extend(relation_diagnostics);
+        related
+    } else {
+        diagnostics.push(Diagnostic {
+            severity: DiagnosticSeverity::Error,
+            code: "invalid-ref",
+            message: format!(
+                "Cannot find relation query types '{}' and '{}'",
+                source_type_name, target_type_name
+            ),
+            target: typespec_source::Span { pos: 0, end: 0 },
+        });
+        false
+    };
+
+    RelationCheckResult {
+        related,
+        source_type_id: source_type.map(|id| id.as_u32()),
+        target_type_id: target_type.map(|id| id.as_u32()),
+        diagnostics: diagnostics.into_iter().map(convert_diagnostic).collect(),
+    }
 }
 
 fn serialize_check_result(
@@ -121,7 +184,7 @@ fn serialize_check_result(
             .types()
             .iter()
             .enumerate()
-            .map(|(id, ty)| serialize_type(id as u32, ty))
+            .map(|(id, ty)| serialize_type(id as u32, ty, &result.type_arena))
             .collect(),
         symbol_to_type,
         node_to_type,
@@ -129,7 +192,33 @@ fn serialize_check_result(
     }
 }
 
-fn serialize_type(id: u32, ty: &Type) -> SerializedType {
+fn find_type_by_name(result: &CheckResult, name: &str) -> Option<TypeId> {
+    result
+        .type_arena
+        .types()
+        .iter()
+        .enumerate()
+        .find_map(|(id, ty)| {
+            let type_id = TypeId::new(id as u32);
+            let matches = match ty {
+                Type::Scalar(scalar) => scalar.name == name,
+                Type::Model(model) => model.name == name,
+                Type::ModelProperty(prop) => prop.name == name,
+                Type::Enum(en) => en.name == name,
+                Type::EnumMember(member) => member.name == name,
+                Type::Union(union) => union.name == name,
+                Type::UnionVariant(variant) => variant.name == name,
+                Type::Alias(alias) => alias.name == name,
+                Type::Operation(operation) => operation.name == name,
+                Type::Interface(interface) => interface.name == name,
+                Type::Namespace(namespace) => namespace.name == name,
+                _ => type_name(&result.type_arena, type_id) == name,
+            };
+            matches.then_some(type_id)
+        })
+}
+
+fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> SerializedType {
     let mut serialized = SerializedType {
         id,
         kind: kind_name(ty).to_string(),
@@ -145,6 +234,8 @@ fn serialize_type(id: u32, ty: &Type) -> SerializedType {
         property_type_id: None,
         optional: None,
         default_type_id: None,
+        source_property_id: None,
+        effective_type_id: None,
         decorator_node_ids: Vec::new(),
         member_ids: Vec::new(),
         member_names: Vec::new(),
@@ -198,6 +289,8 @@ fn serialize_type(id: u32, ty: &Type) -> SerializedType {
             serialized.base_type_id = model.base_model.map(|id| id.as_u32());
             serialized.source_model_id = model.source_model.map(|id| id.as_u32());
             serialized.indexer_type_id = model.indexer.map(|id| id.as_u32());
+            serialized.effective_type_id =
+                Some(get_effective_model_type(arena, TypeId::new(id)).as_u32());
             serialized.namespace_id = model.namespace.map(|id| id.as_u32());
             serialized.decorator_node_ids =
                 model.decorators.iter().map(|d| d.node.as_u32()).collect();
@@ -210,6 +303,7 @@ fn serialize_type(id: u32, ty: &Type) -> SerializedType {
             serialized.property_type_id = Some(prop.property_type.as_u32());
             serialized.optional = Some(prop.optional);
             serialized.default_type_id = prop.default.map(|id| id.as_u32());
+            serialized.source_property_id = prop.source_property.map(|id| id.as_u32());
             serialized.decorator_node_ids =
                 prop.decorators.iter().map(|d| d.node.as_u32()).collect();
         }

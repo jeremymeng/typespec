@@ -12,6 +12,8 @@ export interface BindResult {
 
 export declare function check(source: string): CheckResultJs
 
+export declare function checkRelation(source: string, sourceTypeName: string, targetTypeName: string): RelationCheckResult
+
 export interface CheckResultJs {
   types: Array<SerializedType>
   symbolToType: Array<SymbolToType>
@@ -39,6 +41,13 @@ export declare function parse(source: string, options?: ParseOptions | undefined
 export interface ParseOptions {
   comments?: boolean
   docs?: boolean
+}
+
+export interface RelationCheckResult {
+  related: boolean
+  sourceTypeId?: number
+  targetTypeId?: number
+  diagnostics: Array<DiagnosticInfo>
 }
 
 export declare function scan(source: string): ScanResult
@@ -152,6 +161,8 @@ export interface SerializedType {
   propertyTypeId?: number
   optional?: boolean
   defaultTypeId?: number
+  sourcePropertyId?: number
+  effectiveTypeId?: number
   decoratorNodeIds: Array<number>
   memberIds: Array<number>
   memberNames: Array<string>

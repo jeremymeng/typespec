@@ -4,6 +4,8 @@ pub mod binder;
 pub mod checker;
 pub mod intrinsics;
 pub mod name_resolver;
+pub mod numeric_ranges;
+pub mod type_relation;
 pub mod types;
 
 pub use binder::bind;
