@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T17:50:12Z",
+  "updated_at": "2026-06-06T18:10:42Z",
   "updated_by": "agent:rust-port-m5b",
   "tasks": [
     {
@@ -569,7 +569,7 @@
     {
       "id": "M5b",
       "title": "Checker: Enums, Unions, Aliases",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M5a"],
       "plan_section": "docs/rust-port/plan.md#m5b--enums-unions-aliases",
       "complexity": "medium",
@@ -577,7 +577,7 @@
       "branch": "jeremymeng/rust-port-m5b-checker-enums-unions",
       "pr": null,
       "started_at": "2026-06-06T17:50:12Z",
-      "completed_at": null,
+      "completed_at": "2026-06-06T18:10:42Z",
       "key_source_files": [
         "packages/compiler/src/core/checker.ts",
         "packages/compiler/test/checker/enum.test.ts",
@@ -586,27 +586,33 @@
       ],
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "Type enum extended: Enum, EnumMember, Union, UnionVariant, Alias"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Enum type creation + member resolution"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Union type creation + variant resolution"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Alias expansion (alias may reference any type)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Comparison tests: enum.test.ts, union.test.ts, alias.test.ts match TS"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-06-06T18:02:47Z",
+          "author": "agent:rust-port-m5b",
+          "text": "Implemented enum, union, alias, literal canonicalization, napi serialization, comparison tests, and Rust unit tests. Used Type::Alias with target TypeId and f64 numeric literals."
+        }
+      ]
     },
     {
       "id": "M5c",

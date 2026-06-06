@@ -445,6 +445,27 @@ impl<'p, 't> NameResolver<'p, 't> {
             NodeData::ArrayExpression { element_type } => {
                 self.resolve_qualified_name_in_scope(element_type, scope, resolve_decorator, report)
             }
+            NodeData::UnionExpression { options }
+            | NodeData::IntersectionExpression { options } => {
+                for option in options {
+                    let result = self.resolve_qualified_name_in_scope(
+                        option,
+                        scope,
+                        resolve_decorator,
+                        report,
+                    );
+                    self.record_resolution(option, result);
+                }
+                ResolutionResult::Unknown
+            }
+            NodeData::ModelExpression { properties, .. } => {
+                self.with_node_scope(node_id, |resolver| resolver.resolve_nodes(&properties));
+                ResolutionResult::Unknown
+            }
+            NodeData::StringLiteral { .. }
+            | NodeData::NumericLiteral { .. }
+            | NodeData::BooleanLiteral { .. }
+            | NodeData::Keyword => ResolutionResult::Unknown,
             NodeData::Identifier { sv } => {
                 let lookup = if resolve_decorator {
                     self.lookup_name(scope, &format!("@{sv}"))

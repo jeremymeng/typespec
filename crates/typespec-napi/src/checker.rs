@@ -1,6 +1,7 @@
 use napi_derive::napi;
 use typespec_checker::{
-    bind as bind_parse_result, check as check_parse_result, resolve_names, CheckResult, Type,
+    bind as bind_parse_result, check as check_parse_result, resolve_names, CheckResult,
+    EnumMemberValue, Type,
 };
 use typespec_parser::parse;
 use typespec_source::{Diagnostic, DiagnosticSeverity, SourceFile};
@@ -23,6 +24,16 @@ pub struct SerializedType {
     pub optional: Option<bool>,
     pub default_type_id: Option<u32>,
     pub decorator_node_ids: Vec<u32>,
+    pub member_ids: Vec<u32>,
+    pub member_names: Vec<String>,
+    pub variant_type_id: Option<u32>,
+    pub target_id: Option<u32>,
+    pub literal_string: Option<String>,
+    pub literal_numeric: Option<f64>,
+    pub literal_boolean: Option<bool>,
+    pub enum_member_value_string: Option<String>,
+    pub enum_member_value_numeric: Option<f64>,
+    pub expression: Option<bool>,
 }
 
 #[napi(object)]
@@ -112,6 +123,16 @@ fn serialize_type(id: u32, ty: &Type) -> SerializedType {
         optional: None,
         default_type_id: None,
         decorator_node_ids: Vec::new(),
+        member_ids: Vec::new(),
+        member_names: Vec::new(),
+        variant_type_id: None,
+        target_id: None,
+        literal_string: None,
+        literal_numeric: None,
+        literal_boolean: None,
+        enum_member_value_string: None,
+        enum_member_value_numeric: None,
+        expression: None,
     };
 
     match ty {
@@ -146,11 +167,65 @@ fn serialize_type(id: u32, ty: &Type) -> SerializedType {
             serialized.decorator_node_ids =
                 prop.decorators.iter().map(|d| d.node.as_u32()).collect();
         }
-        Type::StringLiteral(value) | Type::NumericLiteral(value) => {
-            serialized.name = value.clone();
+        Type::Enum(en) => {
+            serialized.name = en.name.clone();
+            serialized.node_id = en.node.map(|id| id.as_u32());
+            serialized.symbol_id = en.symbol.map(|id| id.as_u32());
+            serialized.member_names = en.members.keys().cloned().collect();
+            serialized.member_ids = en.members.values().map(|id| id.as_u32()).collect();
+            serialized.decorator_node_ids = en.decorators.iter().map(|d| d.node.as_u32()).collect();
+        }
+        Type::EnumMember(member) => {
+            serialized.name = member.name.clone();
+            serialized.node_id = member.node.map(|id| id.as_u32());
+            serialized.base_type_id = Some(member.r#enum.as_u32());
+            serialized.decorator_node_ids =
+                member.decorators.iter().map(|d| d.node.as_u32()).collect();
+            match &member.value {
+                Some(EnumMemberValue::String(value)) => {
+                    serialized.enum_member_value_string = Some(value.clone());
+                }
+                Some(EnumMemberValue::Numeric(value)) => {
+                    serialized.enum_member_value_numeric = Some(*value);
+                }
+                None => {}
+            }
+        }
+        Type::Union(union) => {
+            serialized.name = union.name.clone();
+            serialized.node_id = union.node.map(|id| id.as_u32());
+            serialized.symbol_id = union.symbol.map(|id| id.as_u32());
+            serialized.member_names = union.variants.keys().cloned().collect();
+            serialized.member_ids = union.variants.values().map(|id| id.as_u32()).collect();
+            serialized.expression = Some(union.expression);
+            serialized.decorator_node_ids =
+                union.decorators.iter().map(|d| d.node.as_u32()).collect();
+        }
+        Type::UnionVariant(variant) => {
+            serialized.name = variant.name.clone();
+            serialized.node_id = variant.node.map(|id| id.as_u32());
+            serialized.base_type_id = Some(variant.union.as_u32());
+            serialized.variant_type_id = Some(variant.variant_type.as_u32());
+            serialized.decorator_node_ids =
+                variant.decorators.iter().map(|d| d.node.as_u32()).collect();
+        }
+        Type::Alias(alias) => {
+            serialized.name = alias.name.clone();
+            serialized.node_id = Some(alias.node.as_u32());
+            serialized.symbol_id = Some(alias.symbol.as_u32());
+            serialized.target_id = Some(alias.target.as_u32());
+        }
+        Type::StringLiteral(value) => {
+            serialized.name = value.value.clone();
+            serialized.literal_string = Some(value.value.clone());
+        }
+        Type::NumericLiteral(value) => {
+            serialized.name = format_number(value.value);
+            serialized.literal_numeric = Some(value.value);
         }
         Type::BooleanLiteral(value) => {
-            serialized.name = value.to_string();
+            serialized.name = value.value.to_string();
+            serialized.literal_boolean = Some(value.value);
         }
         _ => {}
     }
@@ -162,6 +237,11 @@ fn kind_name(ty: &Type) -> &'static str {
         Type::Scalar(_) => "Scalar",
         Type::Model(_) => "Model",
         Type::ModelProperty(_) => "ModelProperty",
+        Type::Enum(_) => "Enum",
+        Type::EnumMember(_) => "EnumMember",
+        Type::Union(_) => "Union",
+        Type::UnionVariant(_) => "UnionVariant",
+        Type::Alias(_) => "Alias",
         Type::String => "String",
         Type::Bytes => "Bytes",
         Type::Int8 => "Int8",
@@ -195,6 +275,14 @@ fn kind_name(ty: &Type) -> &'static str {
         Type::NumericLiteral(_) => "NumericLiteral",
         Type::BooleanLiteral(_) => "BooleanLiteral",
         Type::Error => "Error",
+    }
+}
+
+fn format_number(value: f64) -> String {
+    if value.fract() == 0.0 {
+        format!("{value:.0}")
+    } else {
+        value.to_string()
     }
 }
 

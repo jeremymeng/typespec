@@ -2,14 +2,16 @@ use std::collections::{HashMap, HashSet};
 
 use indexmap::IndexMap;
 use typespec_parser::ast::{NamespaceBody, NodeData, NodeId};
+use typespec_parser::syntax_kind::SyntaxKind;
 use typespec_parser::ParseResult;
 use typespec_source::{Diagnostic, DiagnosticSeverity, Span};
 
 use crate::intrinsics::{register_intrinsics, Intrinsics};
 use crate::name_resolver::ResolutionResult;
 use crate::types::{
-    DecoratorRef, ModelPropertyType, ModelType, ScalarType, SymbolId, SymbolTable, Type, TypeArena,
-    TypeId,
+    AliasType, BooleanLiteralType, DecoratorRef, EnumMemberType, EnumMemberValue, EnumType,
+    ModelPropertyType, ModelType, NumericLiteralType, ScalarType, StringLiteralType, SymbolId,
+    SymbolTable, Type, TypeArena, TypeId, UnionType, UnionVariantType,
 };
 
 pub struct Checker<'p> {
@@ -24,6 +26,17 @@ pub struct Checker<'p> {
     node_to_type: HashMap<NodeId, TypeId>,
     base_stack: Vec<SymbolId>,
     reported_base_cycles: HashSet<SymbolId>,
+    literal_cache: HashMap<LiteralKey, TypeId>,
+    alias_stack: Vec<SymbolId>,
+    reported_alias_cycles: HashSet<SymbolId>,
+    alias_structural_depth: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum LiteralKey {
+    String(String),
+    Numeric(u64),
+    Boolean(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -65,12 +78,14 @@ impl<'p> Checker<'p> {
             node_to_type: HashMap::new(),
             base_stack: Vec::new(),
             reported_base_cycles: HashSet::new(),
+            literal_cache: HashMap::new(),
+            alias_stack: Vec::new(),
+            reported_alias_cycles: HashSet::new(),
+            alias_structural_depth: 0,
         }
     }
 
     fn finish(mut self) -> CheckResult {
-        self.diagnostics
-            .extend(self.parse_result.diagnostics.iter().cloned());
         let binder_diagnostics = self
             .symbol_table
             .diagnostics
@@ -118,6 +133,9 @@ impl<'p> Checker<'p> {
             }
             NodeData::ModelStatement { .. } => Some(self.check_model_statement(node_id)),
             NodeData::ScalarStatement { .. } => Some(self.check_scalar(node_id)),
+            NodeData::EnumStatement { .. } => Some(self.check_enum(node_id)),
+            NodeData::UnionStatement { .. } => Some(self.check_union_statement(node_id)),
+            NodeData::AliasStatement { .. } => Some(self.check_alias(node_id)),
             NodeData::ModelExpression { .. } => Some(self.check_model_expression(node_id)),
             NodeData::OperationStatement { signature, .. } => {
                 self.check_node(signature);
@@ -298,6 +316,339 @@ impl<'p> Checker<'p> {
         type_id
     }
 
+    fn check_enum(&mut self, node_id: NodeId) -> TypeId {
+        if let Some(cached) = self.type_cache.get(&node_id).copied() {
+            return cached;
+        }
+
+        let NodeData::EnumStatement {
+            id,
+            decorators,
+            members,
+            ..
+        } = self.node(node_id).data.clone()
+        else {
+            panic!("expected enum statement");
+        };
+        let symbol = self.symbol_for_node(node_id);
+        let type_id = self.type_arena.reserve();
+        self.cache_type(node_id, type_id);
+        if let Some(symbol) = symbol {
+            self.symbol_to_type.insert(symbol, type_id);
+        }
+
+        let mut enum_type = EnumType {
+            name: self.identifier_name(id),
+            node: Some(node_id),
+            symbol,
+            members: IndexMap::new(),
+            decorators: self.collect_decorators(&decorators),
+            namespace: None,
+        };
+
+        for member in members {
+            match self.node(member).data.clone() {
+                NodeData::EnumMember { id, .. } => {
+                    let member_name = self.identifier_name(id);
+                    let member_id = self.check_enum_member(member, type_id);
+                    if enum_type.members.contains_key(&member_name) {
+                        self.report(
+                            "enum-member-duplicate",
+                            &format!("Enum already has a member named {member_name}"),
+                            node_id,
+                        );
+                    } else {
+                        enum_type.members.insert(member_name, member_id);
+                    }
+                }
+                NodeData::EnumSpreadMember { target } => {
+                    self.check_enum_spread_member(target, type_id, &mut enum_type);
+                }
+                _ => {}
+            }
+        }
+
+        self.type_arena.replace(type_id, Type::Enum(enum_type));
+        type_id
+    }
+
+    fn check_enum_member(&mut self, node_id: NodeId, enum_id: TypeId) -> TypeId {
+        if let Some(cached) = self.type_cache.get(&node_id).copied() {
+            return cached;
+        }
+        let NodeData::EnumMember {
+            id,
+            value,
+            decorators,
+        } = self.node(node_id).data.clone()
+        else {
+            panic!("expected enum member");
+        };
+        let symbol = self.symbol_for_node(node_id);
+        let type_id = self.type_arena.reserve();
+        self.cache_type(node_id, type_id);
+        if let Some(symbol) = symbol {
+            self.symbol_to_type.insert(symbol, type_id);
+        }
+
+        let value = value.and_then(|node| match self.node(node).data.clone() {
+            NodeData::StringLiteral { value } => {
+                self.string_literal(Some(node), value.clone());
+                Some(EnumMemberValue::String(value))
+            }
+            NodeData::NumericLiteral { value, .. } => {
+                self.numeric_literal(Some(node), value);
+                Some(EnumMemberValue::Numeric(value))
+            }
+            _ => None,
+        });
+        let name = self.identifier_name(id);
+        let decorators = self.collect_decorators(&decorators);
+        self.type_arena.replace(
+            type_id,
+            Type::EnumMember(EnumMemberType {
+                name,
+                node: Some(node_id),
+                r#enum: enum_id,
+                value,
+                decorators,
+            }),
+        );
+        type_id
+    }
+
+    fn check_enum_spread_member(
+        &mut self,
+        target: NodeId,
+        enum_id: TypeId,
+        enum_type: &mut EnumType,
+    ) {
+        let target_type = self.type_for_node(target);
+        let target_type = self.get_non_alias_type(target_type);
+        let Type::Enum(source_enum) = self.type_arena.get(target_type).clone() else {
+            if !matches!(
+                self.type_arena.get(target_type),
+                Type::Error | Type::Unknown
+            ) {
+                self.report(
+                    "spread-enum",
+                    "Cannot spread members of non-enum type.",
+                    target,
+                );
+            }
+            return;
+        };
+
+        for (name, member_id) in source_enum.members {
+            if enum_type.members.contains_key(&name) {
+                self.report(
+                    "enum-member-duplicate",
+                    &format!("Enum already has a member named {name}"),
+                    target,
+                );
+                continue;
+            }
+            let Some(source_member) = self.enum_member_type(member_id).cloned() else {
+                continue;
+            };
+            let cloned = self.type_arena.add(Type::EnumMember(EnumMemberType {
+                name: name.clone(),
+                node: source_member.node,
+                r#enum: enum_id,
+                value: source_member.value,
+                decorators: source_member.decorators,
+            }));
+            enum_type.members.insert(name, cloned);
+        }
+    }
+
+    fn check_union_statement(&mut self, node_id: NodeId) -> TypeId {
+        if let Some(cached) = self.type_cache.get(&node_id).copied() {
+            return cached;
+        }
+
+        let NodeData::UnionStatement {
+            id,
+            decorators,
+            options,
+            ..
+        } = self.node(node_id).data.clone()
+        else {
+            panic!("expected union statement");
+        };
+        let symbol = self.symbol_for_node(node_id);
+        let type_id = self.type_arena.reserve();
+        self.cache_type(node_id, type_id);
+        if let Some(symbol) = symbol {
+            self.symbol_to_type.insert(symbol, type_id);
+        }
+
+        let mut union_type = UnionType {
+            name: self.identifier_name(id),
+            node: Some(node_id),
+            symbol,
+            variants: IndexMap::new(),
+            expression: false,
+            decorators: self.collect_decorators(&decorators),
+            namespace: None,
+        };
+
+        for (index, variant) in options.into_iter().enumerate() {
+            let variant_id = self.check_union_variant(variant, type_id, index);
+            let Some(variant_type) = self.union_variant_type(variant_id) else {
+                continue;
+            };
+            let name = variant_type.name.clone();
+            if union_type.variants.contains_key(&name) {
+                self.report(
+                    "union-duplicate",
+                    &format!("Union already has a variant named {name}"),
+                    variant,
+                );
+            } else {
+                union_type.variants.insert(name, variant_id);
+            }
+        }
+
+        self.type_arena.replace(type_id, Type::Union(union_type));
+        type_id
+    }
+
+    fn check_union_expression(&mut self, node_id: NodeId) -> TypeId {
+        if let Some(cached) = self.type_cache.get(&node_id).copied() {
+            return cached;
+        }
+        let NodeData::UnionExpression { options } = self.node(node_id).data.clone() else {
+            panic!("expected union expression");
+        };
+        let type_id = self.type_arena.reserve();
+        self.cache_type(node_id, type_id);
+
+        let mut union_type = UnionType {
+            name: String::new(),
+            node: Some(node_id),
+            symbol: self.symbol_for_node(node_id),
+            variants: IndexMap::new(),
+            expression: true,
+            decorators: Vec::new(),
+            namespace: None,
+        };
+
+        for option in options {
+            let option_type = self.type_for_node(option);
+            let non_alias = self.get_non_alias_type(option_type);
+            if matches!(self.type_arena.get(non_alias), Type::Never) {
+                continue;
+            }
+            let nested_expression = match self.type_arena.get(non_alias).clone() {
+                Type::Union(nested) if nested.expression => Some(nested),
+                _ => None,
+            };
+            if let Some(nested) = nested_expression {
+                for variant_id in nested.variants.values() {
+                    let Some(variant) = self.union_variant_type(*variant_id).cloned() else {
+                        continue;
+                    };
+                    let name = self.synthetic_union_variant_name(union_type.variants.len());
+                    let cloned = self.type_arena.add(Type::UnionVariant(UnionVariantType {
+                        name: name.clone(),
+                        node: variant.node,
+                        union: type_id,
+                        variant_type: variant.variant_type,
+                        decorators: variant.decorators,
+                    }));
+                    union_type.variants.insert(name, cloned);
+                }
+            } else {
+                let name = self.synthetic_union_variant_name(union_type.variants.len());
+                let variant = self.type_arena.add(Type::UnionVariant(UnionVariantType {
+                    name: name.clone(),
+                    node: None,
+                    union: type_id,
+                    variant_type: non_alias,
+                    decorators: Vec::new(),
+                }));
+                union_type.variants.insert(name, variant);
+            }
+        }
+
+        self.type_arena.replace(type_id, Type::Union(union_type));
+        type_id
+    }
+
+    fn check_union_variant(
+        &mut self,
+        node_id: NodeId,
+        union_id: TypeId,
+        variant_index: usize,
+    ) -> TypeId {
+        if let Some(cached) = self.type_cache.get(&node_id).copied() {
+            return cached;
+        }
+        let NodeData::UnionVariant {
+            id,
+            value,
+            decorators,
+        } = self.node(node_id).data.clone()
+        else {
+            panic!("expected union variant");
+        };
+        let symbol = self.symbol_for_node(node_id);
+        let type_id = self.type_arena.reserve();
+        self.cache_type(node_id, type_id);
+        if let Some(symbol) = symbol {
+            self.symbol_to_type.insert(symbol, type_id);
+        }
+        let name = id
+            .map(|id| self.identifier_name(id))
+            .unwrap_or_else(|| self.synthetic_union_variant_name(variant_index));
+        let variant_type = self.type_for_node(value);
+        let variant_type = self.get_non_alias_type(variant_type);
+        let decorators = self.collect_decorators(&decorators);
+        self.type_arena.replace(
+            type_id,
+            Type::UnionVariant(UnionVariantType {
+                name,
+                node: Some(node_id),
+                union: union_id,
+                variant_type,
+                decorators,
+            }),
+        );
+        type_id
+    }
+
+    fn check_alias(&mut self, node_id: NodeId) -> TypeId {
+        if let Some(cached) = self.type_cache.get(&node_id).copied() {
+            return cached;
+        }
+        let NodeData::AliasStatement { id, value, .. } = self.node(node_id).data.clone() else {
+            panic!("expected alias statement");
+        };
+        let symbol = self
+            .symbol_for_node(node_id)
+            .expect("alias statement should have symbol");
+        let type_id = self.type_arena.reserve();
+        self.cache_type(node_id, type_id);
+        self.symbol_to_type.insert(symbol, type_id);
+
+        self.alias_stack.push(symbol);
+        let target = self.type_for_node(value);
+        self.alias_stack.pop();
+
+        self.type_arena.replace(
+            type_id,
+            Type::Alias(AliasType {
+                name: self.identifier_name(id),
+                node: node_id,
+                symbol,
+                target,
+                namespace: None,
+            }),
+        );
+        type_id
+    }
+
     fn check_model_property(&mut self, node_id: NodeId, model_id: TypeId) -> TypeId {
         if let Some(cached) = self.type_cache.get(&node_id).copied() {
             return cached;
@@ -319,7 +670,9 @@ impl<'p> Checker<'p> {
             self.symbol_to_type.insert(symbol, type_id);
         }
 
+        self.alias_structural_depth += 1;
         let property_type = self.type_for_node(value);
+        self.alias_structural_depth -= 1;
         let default = default.map(|node| self.type_for_default_node(node));
         let decorators = self.collect_decorators(&decorators);
         let name = self.identifier_name(id);
@@ -351,26 +704,36 @@ impl<'p> Checker<'p> {
             NodeData::ArrayExpression { element_type } => {
                 self.check_array_expression(node_id, element_type)
             }
-            NodeData::StringLiteral { value } => {
-                self.add_and_cache(node_id, Type::StringLiteral(value))
-            }
-            NodeData::NumericLiteral {
-                value_as_string, ..
-            } => self.add_and_cache(node_id, Type::NumericLiteral(value_as_string)),
-            NodeData::BooleanLiteral { value } => {
-                self.add_and_cache(node_id, Type::BooleanLiteral(value))
-            }
+            NodeData::UnionExpression { .. } => self.check_union_expression(node_id),
+            NodeData::StringLiteral { value } => self.string_literal(Some(node_id), value),
+            NodeData::NumericLiteral { value, .. } => self.numeric_literal(Some(node_id), value),
+            NodeData::BooleanLiteral { value } => self.boolean_literal(Some(node_id), value),
             NodeData::ModelStatement { .. } => self.check_model_statement(node_id),
             NodeData::ScalarStatement { .. } => self.check_scalar(node_id),
+            NodeData::EnumStatement { .. } => self.check_enum(node_id),
+            NodeData::UnionStatement { .. } => self.check_union_statement(node_id),
+            NodeData::AliasStatement { .. } => self.check_alias(node_id),
+            NodeData::Keyword => self.type_for_keyword(node_id),
             _ => self.intrinsics.unknown,
         }
     }
 
     fn type_for_default_node(&mut self, node_id: NodeId) -> TypeId {
         match self.node(node_id).data {
-            NodeData::Keyword => self.add_and_cache(node_id, Type::Null),
+            NodeData::Keyword => self.type_for_keyword(node_id),
             _ => self.type_for_node(node_id),
         }
+    }
+
+    fn type_for_keyword(&mut self, node_id: NodeId) -> TypeId {
+        let type_id = match self.node(node_id).kind {
+            SyntaxKind::VoidKeyword => self.intrinsics.void,
+            SyntaxKind::NeverKeyword => self.intrinsics.never,
+            SyntaxKind::UnknownKeyword => self.intrinsics.unknown,
+            _ => self.intrinsics.null,
+        };
+        self.cache_type(node_id, type_id);
+        type_id
     }
 
     fn type_for_reference(&mut self, node_id: NodeId) -> TypeId {
@@ -392,6 +755,19 @@ impl<'p> Checker<'p> {
     }
 
     fn type_for_symbol(&mut self, symbol: SymbolId) -> TypeId {
+        if self.alias_stack.contains(&symbol)
+            && self.symbol_table.symbols[symbol.index()]
+                .flags
+                .contains(crate::types::SymbolFlags::Alias)
+        {
+            if self.alias_structural_depth > 0 {
+                if let Some(type_id) = self.symbol_to_type.get(&symbol).copied() {
+                    return type_id;
+                }
+            }
+            self.report_alias_cycle(symbol);
+            return self.type_arena.add(Type::Error);
+        }
         if let Some(source) = self.symbol_table.symbols[symbol.index()].symbol_source {
             return self.type_for_symbol(source);
         }
@@ -415,6 +791,9 @@ impl<'p> Checker<'p> {
         match self.node(node).data {
             NodeData::ModelStatement { .. } => self.check_model_statement(node),
             NodeData::ScalarStatement { .. } => self.check_scalar(node),
+            NodeData::EnumStatement { .. } => self.check_enum(node),
+            NodeData::UnionStatement { .. } => self.check_union_statement(node),
+            NodeData::AliasStatement { .. } => self.check_alias(node),
             NodeData::ModelProperty { .. } => self
                 .type_cache
                 .get(&node)
@@ -425,10 +804,12 @@ impl<'p> Checker<'p> {
     }
 
     fn check_array_expression(&mut self, node_id: NodeId, element_type: NodeId) -> TypeId {
+        self.alias_structural_depth += 1;
         let element = self
             .resolved_symbol(node_id)
             .map(|symbol| self.type_for_symbol(symbol))
             .unwrap_or_else(|| self.type_for_node(element_type));
+        self.alias_structural_depth -= 1;
         let model = ModelType {
             name: String::new(),
             node: Some(node_id),
@@ -464,6 +845,7 @@ impl<'p> Checker<'p> {
         if model_symbol.is_some() {
             self.base_stack.pop();
         }
+        let extends_type = self.get_non_alias_type(extends_type);
         if matches!(self.type_arena.get(extends_type), Type::Model(_)) {
             Some(extends_type)
         } else if !matches!(
@@ -497,6 +879,7 @@ impl<'p> Checker<'p> {
         if model_symbol.is_some() {
             self.base_stack.pop();
         }
+        let source = self.get_non_alias_type(source);
         let Type::Model(model) = self.type_arena.get(source) else {
             self.report(
                 "is-model",
@@ -536,6 +919,7 @@ impl<'p> Checker<'p> {
         if scalar_symbol.is_some() {
             self.base_stack.pop();
         }
+        let extends_type = self.get_non_alias_type(extends_type);
         if self.is_scalar_like(extends_type) {
             Some(extends_type)
         } else if !matches!(
@@ -578,6 +962,7 @@ impl<'p> Checker<'p> {
 
     fn check_spread_property(&mut self, target: NodeId, model_id: TypeId, model: &mut ModelType) {
         let source = self.type_for_node(target);
+        let source = self.get_non_alias_type(source);
         let Some(source_model) = self.model_type(source).cloned() else {
             self.report(
                 "spread-model",
@@ -701,10 +1086,81 @@ impl<'p> Checker<'p> {
         }
     }
 
+    fn enum_member_type(&self, type_id: TypeId) -> Option<&EnumMemberType> {
+        match self.type_arena.get(type_id) {
+            Type::EnumMember(member) => Some(member),
+            _ => None,
+        }
+    }
+
+    fn union_variant_type(&self, type_id: TypeId) -> Option<&UnionVariantType> {
+        match self.type_arena.get(type_id) {
+            Type::UnionVariant(variant) => Some(variant),
+            _ => None,
+        }
+    }
+
     fn add_and_cache(&mut self, node_id: NodeId, ty: Type) -> TypeId {
         let type_id = self.type_arena.add(ty);
         self.cache_type(node_id, type_id);
         type_id
+    }
+
+    fn string_literal(&mut self, node_id: Option<NodeId>, value: String) -> TypeId {
+        let key = LiteralKey::String(value.clone());
+        self.literal_type(
+            node_id,
+            key,
+            Type::StringLiteral(StringLiteralType { value }),
+        )
+    }
+
+    fn numeric_literal(&mut self, node_id: Option<NodeId>, value: f64) -> TypeId {
+        let key = LiteralKey::Numeric(value.to_bits());
+        self.literal_type(
+            node_id,
+            key,
+            Type::NumericLiteral(NumericLiteralType { value }),
+        )
+    }
+
+    fn boolean_literal(&mut self, node_id: Option<NodeId>, value: bool) -> TypeId {
+        let key = LiteralKey::Boolean(value);
+        self.literal_type(
+            node_id,
+            key,
+            Type::BooleanLiteral(BooleanLiteralType { value }),
+        )
+    }
+
+    fn literal_type(&mut self, node_id: Option<NodeId>, key: LiteralKey, ty: Type) -> TypeId {
+        let type_id = if let Some(type_id) = self.literal_cache.get(&key).copied() {
+            type_id
+        } else {
+            let type_id = self.type_arena.add(ty);
+            self.literal_cache.insert(key, type_id);
+            type_id
+        };
+        if let Some(node_id) = node_id {
+            self.cache_type(node_id, type_id);
+        }
+        type_id
+    }
+
+    fn get_non_alias_type(&self, type_id: TypeId) -> TypeId {
+        let mut current = type_id;
+        let mut seen = HashSet::new();
+        while seen.insert(current) {
+            match self.type_arena.get(current) {
+                Type::Alias(alias) => current = alias.target,
+                _ => return current,
+            }
+        }
+        current
+    }
+
+    fn synthetic_union_variant_name(&self, index: usize) -> String {
+        format!("Symbol(name)#{index}")
     }
 
     fn cache_type(&mut self, node_id: NodeId, type_id: TypeId) {
@@ -749,6 +1205,23 @@ impl<'p> Checker<'p> {
         self.report(
             "circular-base-type",
             &format!("Type '{name}' recursively references itself as a base type."),
+            target,
+        );
+    }
+
+    fn report_alias_cycle(&mut self, symbol: SymbolId) {
+        if !self.reported_alias_cycles.insert(symbol) {
+            return;
+        }
+        let name = self.symbol_table.symbols[symbol.index()].name.clone();
+        let target = self.symbol_table.symbols[symbol.index()]
+            .declarations
+            .first()
+            .copied()
+            .unwrap_or(self.parse_result.root);
+        self.report(
+            "circular-alias-type",
+            &format!("Alias type '{name}' recursively references itself."),
             target,
         );
     }
@@ -815,6 +1288,21 @@ mod tests {
             .expect("model should exist")
     }
 
+    fn find_named_type(result: &CheckResult, name: &str, kind: &str) -> TypeId {
+        result
+            .type_arena
+            .types()
+            .iter()
+            .enumerate()
+            .find_map(|(id, ty)| match (kind, ty) {
+                ("Enum", Type::Enum(en)) if en.name == name => Some(TypeId::new(id as u32)),
+                ("Union", Type::Union(union)) if union.name == name => Some(TypeId::new(id as u32)),
+                ("Alias", Type::Alias(alias)) if alias.name == name => Some(TypeId::new(id as u32)),
+                _ => None,
+            })
+            .expect("type should exist")
+    }
+
     #[test]
     fn registers_stable_intrinsics() {
         let result = check_source("model Foo { x: string; y: int32; }");
@@ -875,5 +1363,116 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.code == "duplicate-property"));
+    }
+
+    #[test]
+    fn creates_enum_with_mixed_value_members() {
+        let result = check_source(r#"enum Status { Active, Pending: "pending", Code: 42 }"#);
+        let status = find_named_type(&result, "Status", "Enum");
+        let Type::Enum(en) = result.type_arena.get(status) else {
+            panic!("expected enum");
+        };
+        assert_eq!(
+            en.members.keys().cloned().collect::<Vec<_>>(),
+            vec!["Active", "Pending", "Code"]
+        );
+        let Type::EnumMember(active) = result.type_arena.get(en.members["Active"]) else {
+            panic!("expected enum member");
+        };
+        assert!(active.value.is_none());
+        let Type::EnumMember(pending) = result.type_arena.get(en.members["Pending"]) else {
+            panic!("expected enum member");
+        };
+        assert!(matches!(
+            pending.value,
+            Some(EnumMemberValue::String(ref value)) if value == "pending"
+        ));
+        let Type::EnumMember(code) = result.type_arena.get(en.members["Code"]) else {
+            panic!("expected enum member");
+        };
+        assert!(matches!(code.value, Some(EnumMemberValue::Numeric(42.0))));
+    }
+
+    #[test]
+    fn distinguishes_declared_and_expression_unions() {
+        let result =
+            check_source("union Result { ok: string } model Foo { value: string | int32; }");
+        let result_union = find_named_type(&result, "Result", "Union");
+        let Type::Union(declared) = result.type_arena.get(result_union) else {
+            panic!("expected declared union");
+        };
+        assert!(!declared.expression);
+        let expression_union = result
+            .type_arena
+            .types()
+            .iter()
+            .find(|ty| matches!(ty, Type::Union(union) if union.expression))
+            .expect("expression union should exist");
+        let Type::Union(expression) = expression_union else {
+            panic!("expected union");
+        };
+        assert_eq!(expression.variants.len(), 2);
+    }
+
+    #[test]
+    fn reports_circular_alias() {
+        let result = check_source("alias A = B; alias B = A;");
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "circular-alias-type"));
+    }
+
+    #[test]
+    fn canonicalizes_literal_types() {
+        let result = check_source(r#"alias A = 42; alias B = 42; alias C = "x"; alias D = "x";"#);
+        let a = find_named_type(&result, "A", "Alias");
+        let b = find_named_type(&result, "B", "Alias");
+        let c = find_named_type(&result, "C", "Alias");
+        let d = find_named_type(&result, "D", "Alias");
+        let Type::Alias(alias_a) = result.type_arena.get(a) else {
+            panic!("expected alias");
+        };
+        let Type::Alias(alias_b) = result.type_arena.get(b) else {
+            panic!("expected alias");
+        };
+        assert_eq!(alias_a.target, alias_b.target);
+        let Type::Alias(alias_c) = result.type_arena.get(c) else {
+            panic!("expected alias");
+        };
+        let Type::Alias(alias_d) = result.type_arena.get(d) else {
+            panic!("expected alias");
+        };
+        assert_eq!(alias_c.target, alias_d.target);
+    }
+
+    #[test]
+    fn allows_recursive_model_expression_alias() {
+        let result = check_source("alias A = { a: A };");
+        assert!(!result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "circular-alias-type"));
+        let alias = find_named_type(&result, "A", "Alias");
+        let Type::Alias(alias_type) = result.type_arena.get(alias) else {
+            panic!("expected alias");
+        };
+        let Type::Model(model) = result.type_arena.get(alias_type.target) else {
+            panic!("expected model expression target");
+        };
+        let Type::ModelProperty(prop) = result.type_arena.get(model.properties["a"]) else {
+            panic!("expected property");
+        };
+        assert_eq!(prop.property_type, alias);
+    }
+
+    #[test]
+    fn spreads_model_properties_through_aliases() {
+        let result = check_source("model Foo { x: string; } alias A = Foo; model Bar { ...A }");
+        let bar = find_named_model(&result, "Bar");
+        let Type::Model(model) = result.type_arena.get(bar) else {
+            panic!("expected model");
+        };
+        assert!(model.properties.contains_key("x"));
     }
 }

@@ -10,8 +10,10 @@ pub use binder::bind;
 pub use checker::{check, CheckResult};
 pub use name_resolver::{resolve_names, NameResolution, ResolutionResult};
 pub use types::{
-    DecoratorRef, ModelPropertyType, ModelType, ScalarType, Scope, ScopeId, ScopeKind, Symbol,
-    SymbolFlags, SymbolId, SymbolTable, Type, TypeArena, TypeId,
+    AliasType, BooleanLiteralType, DecoratorRef, EnumMemberType, EnumMemberValue, EnumType,
+    ModelPropertyType, ModelType, NumericLiteralType, ScalarType, Scope, ScopeId, ScopeKind,
+    StringLiteralType, Symbol, SymbolFlags, SymbolId, SymbolTable, Type, TypeArena, TypeId,
+    UnionType, UnionVariantType,
 };
 
 #[cfg(test)]

@@ -152,6 +152,16 @@ export interface SerializedType {
   optional?: boolean
   defaultTypeId?: number
   decoratorNodeIds: Array<number>
+  memberIds: Array<number>
+  memberNames: Array<string>
+  variantTypeId?: number
+  targetId?: number
+  literalString?: string
+  literalNumeric?: number
+  literalBoolean?: boolean
+  enumMemberValueString?: string
+  enumMemberValueNumeric?: number
+  expression?: boolean
 }
 
 export interface SymbolToType {

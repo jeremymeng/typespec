@@ -273,6 +273,11 @@ pub enum Type {
     Scalar(ScalarType),
     Model(ModelType),
     ModelProperty(ModelPropertyType),
+    Enum(EnumType),
+    EnumMember(EnumMemberType),
+    Union(UnionType),
+    UnionVariant(UnionVariantType),
+    Alias(AliasType),
 
     // Intrinsics are separate variants rather than `Intrinsic(IntrinsicKind)`
     // so common checker matches stay exhaustive and adding non-intrinsic M5b-e
@@ -307,9 +312,9 @@ pub enum Type {
     Unknown,
     Null,
 
-    StringLiteral(String),
-    NumericLiteral(String),
-    BooleanLiteral(bool),
+    StringLiteral(StringLiteralType),
+    NumericLiteral(NumericLiteralType),
+    BooleanLiteral(BooleanLiteralType),
 
     Error,
 }
@@ -348,6 +353,78 @@ pub struct ModelPropertyType {
     pub optional: bool,
     pub default: Option<TypeId>,
     pub decorators: Vec<DecoratorRef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumType {
+    pub name: String,
+    pub node: Option<NodeId>,
+    pub symbol: Option<SymbolId>,
+    pub members: IndexMap<String, TypeId>,
+    pub decorators: Vec<DecoratorRef>,
+    pub namespace: Option<TypeId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumMemberType {
+    pub name: String,
+    pub node: Option<NodeId>,
+    pub r#enum: TypeId,
+    pub value: Option<EnumMemberValue>,
+    pub decorators: Vec<DecoratorRef>,
+}
+
+#[derive(Debug, Clone)]
+pub enum EnumMemberValue {
+    String(String),
+    Numeric(f64),
+}
+
+#[derive(Debug, Clone)]
+pub struct UnionType {
+    pub name: String,
+    pub node: Option<NodeId>,
+    pub symbol: Option<SymbolId>,
+    pub variants: IndexMap<String, TypeId>,
+    pub expression: bool,
+    pub decorators: Vec<DecoratorRef>,
+    pub namespace: Option<TypeId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UnionVariantType {
+    pub name: String,
+    pub node: Option<NodeId>,
+    pub union: TypeId,
+    pub variant_type: TypeId,
+    pub decorators: Vec<DecoratorRef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AliasType {
+    pub name: String,
+    pub node: NodeId,
+    pub symbol: SymbolId,
+    pub target: TypeId,
+    pub namespace: Option<TypeId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StringLiteralType {
+    pub value: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NumericLiteralType {
+    /// Numeric literals use f64 in M5b. This matches ordinary test cases, but
+    /// does not preserve TypeScript's arbitrary-precision Numeric semantics for
+    /// very large or very precise literals.
+    pub value: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BooleanLiteralType {
+    pub value: bool,
 }
 
 #[derive(Debug, Clone)]
