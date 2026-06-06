@@ -3,8 +3,8 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T18:29:30Z",
-  "updated_by": "agent:rust-port-m5c",
+  "updated_at": "2026-06-06T19:07:57Z",
+  "updated_by": "agent:rust-port-m5d",
   "tasks": [
     {
       "id": "M1",
@@ -666,14 +666,14 @@
     {
       "id": "M5d",
       "title": "Checker: Type Relations and Assignability",
-      "status": "not_started",
+      "status": "in_progress",
       "depends_on": ["M5c"],
       "plan_section": "docs/rust-port/plan.md#m5d--type-relations-and-assignability",
       "complexity": "medium",
-      "assignee": null,
-      "branch": null,
+      "assignee": "agent:rust-port-m5d",
+      "branch": "jeremymeng/rust-port-m5d-checker-type-relations",
       "pr": null,
-      "started_at": null,
+      "started_at": "2026-06-06T19:07:57Z",
       "completed_at": null,
       "key_source_files": [
         "packages/compiler/src/core/type-relation-checker.ts",
@@ -711,7 +711,13 @@
           "text": "Comparison tests: relation.test.ts, intersections.test.ts, effective-type.test.ts match TS"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-06-06T19:07:57Z",
+          "author": "agent:rust-port-m5d",
+          "text": "Claimed M5d checker type relations and assignability implementation."
+        }
+      ]
     },
     {
       "id": "M5e",
