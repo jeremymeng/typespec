@@ -13,6 +13,8 @@ test = false
 [dependencies]
 napi = { version = "2", default-features = false, features = ["napi8"] }
 napi-derive = "2"
+typespec-scanner = { path = "../typespec-scanner" }
+typespec-source = { path = "../typespec-source" }
 
 [build-dependencies]
 napi-build = "2"

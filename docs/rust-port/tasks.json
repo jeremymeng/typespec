@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T04:27:02Z",
+  "updated_at": "2026-06-06T04:30:49Z",
   "updated_by": "agent:rust-port-m2",
   "tasks": [
     {
@@ -185,7 +185,7 @@
           "text": "crates/typespec-scanner/src/charcode.rs: character classification"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-scanner/src/lib.rs: Scanner struct with scan() method"
         },
         {
@@ -193,31 +193,31 @@
           "text": "string-interner integration for identifiers"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Handles string templates, multi-line strings, numeric literals, doc comments"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-napi/src/scanner.rs: scan(source) -> Vec<TokenInfo>"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Pure Rust unit tests pass (cargo test)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Comparison tests in packages/compiler-rust/test/comparison/scanner.comparison.test.ts"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Identical token streams for all inputs in scanner.test.ts (468 LOC of test data)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Diagnostic messages match TS for malformed inputs"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Fuzz inputs tested: unicode, unterminated strings, empty input, edge cases"
         }
       ],
@@ -226,6 +226,11 @@
           "timestamp": "2026-06-06T04:27:02Z",
           "author": "agent:rust-port-m2",
           "text": "Implemented SourceFile UTF-16 line mapping, scanner token enum, charcode helpers including generated non-ASCII identifier ranges, and initial hand-written scanner with unit coverage."
+        },
+        {
+          "timestamp": "2026-06-06T04:30:49Z",
+          "author": "agent:rust-port-m2",
+          "text": "Added napi scan(source) binding with eager token serialization, parser-style string-template rescanning, 51 Rust-vs-TS comparison tests, and deterministic fuzz token-count checks. cargo test, package build, and compiler-rust tests pass."
         }
       ]
     },

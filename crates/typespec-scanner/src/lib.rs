@@ -594,11 +594,8 @@ impl<'src> Scanner<'src> {
                         return template;
                     }
                 }
-                CARRIAGE_RETURN | LINE_FEED => {
-                    if !multi_line {
-                        break;
-                    }
-                }
+                CARRIAGE_RETURN | LINE_FEED if !multi_line => break,
+                CARRIAGE_RETURN | LINE_FEED => {}
                 _ => {}
             }
             self.position += 1;
@@ -608,13 +605,12 @@ impl<'src> Scanner<'src> {
 
     fn string_literal_offset_start(&self, token: Token, flags: TokenFlags) -> u32 {
         match token {
-            Token::StringLiteral | Token::StringTemplateHead => {
-                if flags.contains(TokenFlags::TRIPLE_QUOTED) {
-                    3
-                } else {
-                    1
-                }
+            Token::StringLiteral | Token::StringTemplateHead
+                if flags.contains(TokenFlags::TRIPLE_QUOTED) =>
+            {
+                3
             }
+            Token::StringLiteral | Token::StringTemplateHead => 1,
             _ => 1,
         }
     }
@@ -1114,7 +1110,9 @@ pub struct ScannedToken {
 mod tests {
     use super::*;
 
-    fn scan(source: &str) -> (Vec<(Token, String, Option<String>, u32)>, Vec<Diagnostic>) {
+    type TestToken = (Token, String, Option<String>, u32);
+
+    fn scan(source: &str) -> (Vec<TestToken>, Vec<Diagnostic>) {
         let source = SourceFile::new(source.to_string());
         let (tokens, diagnostics) = scan_all(&source);
         (
@@ -1194,5 +1192,21 @@ mod tests {
         assert_eq!(scanner.scan_doc(), Token::Identifier);
         assert_eq!(scanner.scan_doc(), Token::Whitespace);
         assert_eq!(scanner.scan_doc(), Token::DocCodeSpan);
+    }
+
+    #[test]
+    fn rescans_string_template_spans() {
+        let source = SourceFile::new("\"a ${b} c\"".to_string());
+        let mut scanner = Scanner::new(&source, |_| {});
+        assert_eq!(scanner.scan(), Token::StringTemplateHead);
+        let flags = scanner.token_flags();
+        assert_eq!(scanner.token_value().as_deref(), Some("a "));
+        assert_eq!(scanner.scan(), Token::Identifier);
+        assert_eq!(scanner.scan(), Token::CloseBrace);
+        assert_eq!(
+            scanner.rescan_string_template(flags),
+            Token::StringTemplateTail
+        );
+        assert_eq!(scanner.token_value().as_deref(), Some(" c"));
     }
 }
