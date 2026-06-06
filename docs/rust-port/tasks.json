@@ -3,8 +3,8 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T16:18:40Z",
-  "updated_by": "agent:rust-port-m3",
+  "updated_at": "2026-06-06T16:25:20Z",
+  "updated_by": "agent:rust-port-m3-followup",
   "tasks": [
     {
       "id": "M1",
@@ -335,12 +335,12 @@
     {
       "id": "M3",
       "title": "Parser Parity",
-      "status": "blocked",
+      "status": "in_progress",
       "depends_on": ["M2.5"],
       "plan_section": "docs/rust-port/plan.md#m3--parser-parity",
       "complexity": "large",
-      "assignee": "agent:rust-port-m3",
-      "branch": "jeremymeng/rust-port-m3-parser",
+      "assignee": "agent:rust-port-m3-followup",
+      "branch": "jeremymeng/rust-port-m3-parser-completion",
       "pr": null,
       "started_at": "2026-06-06T16:09:16Z",
       "completed_at": null,
@@ -405,6 +405,11 @@
           "timestamp": "2026-06-06T16:18:40Z",
           "author": "agent:rust-port-m3",
           "text": "Implemented SyntaxKind (72/72 current TS variants), arena AST, hand-written recursive-descent parser, eager napi parse(source) serialization, 5 Rust parser unit tests, and 48 Rust-vs-TS parser comparison cases. cargo clippy, compiler-rust build, and compiler-rust test passed."
+        },
+        {
+          "timestamp": "2026-06-06T16:25:20Z",
+          "author": "agent:rust-port-m3-followup",
+          "text": "Reopening M3 to close blockers in priority order: doc comments, comments, diagnostics, template normalization, expanded test coverage. Lazy External<T> API remains deferred."
         }
       ],
       "blockers": [
