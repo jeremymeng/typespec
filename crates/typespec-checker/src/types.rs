@@ -282,6 +282,7 @@ pub enum Type {
     Operation(OperationType),
     Interface(InterfaceType),
     Namespace(NamespaceType),
+    TemplateParameter(TemplateParameterType),
 
     // Intrinsics are separate variants rather than `Intrinsic(IntrinsicKind)`
     // so common checker matches stay exhaustive and adding non-intrinsic M5b-e
@@ -323,6 +324,23 @@ pub enum Type {
     Error,
 }
 
+// Template convention used by the Rust checker:
+// - The original declaration (`model Foo<T> {}`) is a normal arena type with
+//   `is_template_declaration = true` and `template_parameters` pointing at
+//   `Type::TemplateParameter` entries.
+// - Each instantiation (`Foo<string>`) is a separate arena type with
+//   `is_template_declaration = false`, `template_node` pointing back to the
+//   declaration node, and `template_arguments` holding the canonical arguments
+//   after defaults have been applied.
+#[derive(Debug, Clone)]
+pub struct TemplateParameterType {
+    pub name: String,
+    pub node: NodeId,
+    pub symbol: SymbolId,
+    pub constraint: Option<TypeId>,
+    pub default: Option<TypeId>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ScalarType {
     pub name: String,
@@ -331,6 +349,10 @@ pub struct ScalarType {
     pub base_scalar: Option<TypeId>,
     pub decorators: Vec<DecoratorRef>,
     pub namespace: Option<TypeId>,
+    pub template_node: Option<NodeId>,
+    pub template_arguments: Vec<TypeId>,
+    pub template_parameters: Vec<TypeId>,
+    pub is_template_declaration: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -345,6 +367,10 @@ pub struct ModelType {
     pub decorators: Vec<DecoratorRef>,
     pub namespace: Option<TypeId>,
     pub derived_models: Vec<TypeId>,
+    pub template_node: Option<NodeId>,
+    pub template_arguments: Vec<TypeId>,
+    pub template_parameters: Vec<TypeId>,
+    pub is_template_declaration: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -394,6 +420,10 @@ pub struct UnionType {
     pub expression: bool,
     pub decorators: Vec<DecoratorRef>,
     pub namespace: Option<TypeId>,
+    pub template_node: Option<NodeId>,
+    pub template_arguments: Vec<TypeId>,
+    pub template_parameters: Vec<TypeId>,
+    pub is_template_declaration: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -412,6 +442,10 @@ pub struct AliasType {
     pub symbol: SymbolId,
     pub target: TypeId,
     pub namespace: Option<TypeId>,
+    pub template_node: Option<NodeId>,
+    pub template_arguments: Vec<TypeId>,
+    pub template_parameters: Vec<TypeId>,
+    pub is_template_declaration: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -425,6 +459,10 @@ pub struct OperationType {
     pub interface: Option<TypeId>,
     pub namespace: Option<TypeId>,
     pub source_operation: Option<TypeId>,
+    pub template_node: Option<NodeId>,
+    pub template_arguments: Vec<TypeId>,
+    pub template_parameters: Vec<TypeId>,
+    pub is_template_declaration: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -436,6 +474,10 @@ pub struct InterfaceType {
     pub source_interfaces: Vec<TypeId>,
     pub decorators: Vec<DecoratorRef>,
     pub namespace: Option<TypeId>,
+    pub template_node: Option<NodeId>,
+    pub template_arguments: Vec<TypeId>,
+    pub template_parameters: Vec<TypeId>,
+    pub is_template_declaration: bool,
 }
 
 #[derive(Debug, Clone)]

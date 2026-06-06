@@ -195,6 +195,11 @@ export interface SerializedType {
   enumMemberValueString?: string
   enumMemberValueNumeric?: number
   expression?: boolean
+  templateParameterIds: Array<number>
+  templateArgumentIds: Array<number>
+  isTemplateDeclaration: boolean
+  constraintId?: number
+  templateDefaultId?: number
 }
 
 export interface SymbolToType {

@@ -59,6 +59,11 @@ pub struct SerializedType {
     pub enum_member_value_string: Option<String>,
     pub enum_member_value_numeric: Option<f64>,
     pub expression: Option<bool>,
+    pub template_parameter_ids: Vec<u32>,
+    pub template_argument_ids: Vec<u32>,
+    pub is_template_declaration: bool,
+    pub constraint_id: Option<u32>,
+    pub template_default_id: Option<u32>,
 }
 
 #[napi(object)]
@@ -268,6 +273,11 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
         enum_member_value_string: None,
         enum_member_value_numeric: None,
         expression: None,
+        template_parameter_ids: Vec::new(),
+        template_argument_ids: Vec::new(),
+        is_template_declaration: false,
+        constraint_id: None,
+        template_default_id: None,
     };
 
     match ty {
@@ -279,6 +289,17 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
             serialized.namespace_id = scalar.namespace.map(|id| id.as_u32());
             serialized.decorator_node_ids =
                 scalar.decorators.iter().map(|d| d.node.as_u32()).collect();
+            serialized.template_parameter_ids = scalar
+                .template_parameters
+                .iter()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.template_argument_ids = scalar
+                .template_arguments
+                .iter()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.is_template_declaration = scalar.is_template_declaration;
         }
         Type::Model(model) => {
             serialized.name = model.name.clone();
@@ -294,6 +315,17 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
             serialized.namespace_id = model.namespace.map(|id| id.as_u32());
             serialized.decorator_node_ids =
                 model.decorators.iter().map(|d| d.node.as_u32()).collect();
+            serialized.template_parameter_ids = model
+                .template_parameters
+                .iter()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.template_argument_ids = model
+                .template_arguments
+                .iter()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.is_template_declaration = model.is_template_declaration;
         }
         Type::ModelProperty(prop) => {
             serialized.name = prop.name.clone();
@@ -342,6 +374,17 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
             serialized.namespace_id = union.namespace.map(|id| id.as_u32());
             serialized.decorator_node_ids =
                 union.decorators.iter().map(|d| d.node.as_u32()).collect();
+            serialized.template_parameter_ids = union
+                .template_parameters
+                .iter()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.template_argument_ids = union
+                .template_arguments
+                .iter()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.is_template_declaration = union.is_template_declaration;
         }
         Type::UnionVariant(variant) => {
             serialized.name = variant.name.clone();
@@ -357,6 +400,17 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
             serialized.symbol_id = Some(alias.symbol.as_u32());
             serialized.target_id = Some(alias.target.as_u32());
             serialized.namespace_id = alias.namespace.map(|id| id.as_u32());
+            serialized.template_parameter_ids = alias
+                .template_parameters
+                .iter()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.template_argument_ids = alias
+                .template_arguments
+                .iter()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.is_template_declaration = alias.is_template_declaration;
         }
         Type::Operation(operation) => {
             serialized.name = operation.name.clone();
@@ -372,6 +426,17 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
                 .iter()
                 .map(|d| d.node.as_u32())
                 .collect();
+            serialized.template_parameter_ids = operation
+                .template_parameters
+                .iter()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.template_argument_ids = operation
+                .template_arguments
+                .iter()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.is_template_declaration = operation.is_template_declaration;
         }
         Type::Interface(interface) => {
             serialized.name = interface.name.clone();
@@ -394,6 +459,17 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
                 .iter()
                 .map(|d| d.node.as_u32())
                 .collect();
+            serialized.template_parameter_ids = interface
+                .template_parameters
+                .iter()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.template_argument_ids = interface
+                .template_arguments
+                .iter()
+                .map(|id| id.as_u32())
+                .collect();
+            serialized.is_template_declaration = interface.is_template_declaration;
         }
         Type::Namespace(namespace) => {
             serialized.name = namespace.name.clone();
@@ -446,6 +522,13 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
             serialized.name = value.value.to_string();
             serialized.literal_boolean = Some(value.value);
         }
+        Type::TemplateParameter(param) => {
+            serialized.name = param.name.clone();
+            serialized.node_id = Some(param.node.as_u32());
+            serialized.symbol_id = Some(param.symbol.as_u32());
+            serialized.constraint_id = param.constraint.map(|id| id.as_u32());
+            serialized.template_default_id = param.default.map(|id| id.as_u32());
+        }
         _ => {}
     }
     serialized
@@ -464,6 +547,7 @@ fn kind_name(ty: &Type) -> &'static str {
         Type::Operation(_) => "Operation",
         Type::Interface(_) => "Interface",
         Type::Namespace(_) => "Namespace",
+        Type::TemplateParameter(_) => "TemplateParameter",
         Type::String => "String",
         Type::Bytes => "Bytes",
         Type::Int8 => "Int8",

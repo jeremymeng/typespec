@@ -2,6 +2,7 @@
 
 pub mod binder;
 pub mod checker;
+pub mod instantiation;
 pub mod intrinsics;
 pub mod name_resolver;
 pub mod numeric_ranges;
@@ -15,7 +16,7 @@ pub use types::{
     AliasType, BooleanLiteralType, DecoratorRef, EnumMemberType, EnumMemberValue, EnumType,
     InterfaceType, ModelPropertyType, ModelType, NamespaceType, NumericLiteralType, OperationType,
     ScalarType, Scope, ScopeId, ScopeKind, StringLiteralType, Symbol, SymbolFlags, SymbolId,
-    SymbolTable, Type, TypeArena, TypeId, UnionType, UnionVariantType,
+    SymbolTable, TemplateParameterType, Type, TypeArena, TypeId, UnionType, UnionVariantType,
 };
 
 #[cfg(test)]

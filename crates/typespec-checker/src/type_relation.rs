@@ -633,17 +633,33 @@ pub fn type_name(arena: &TypeArena, type_id: TypeId) -> String {
     match arena.get(type_id) {
         Type::Scalar(s) => s.name.clone(),
         Type::Model(model) if model.name.is_empty() => "{}".to_string(),
+        Type::Model(model) if !model.template_arguments.is_empty() => {
+            format_template_name(arena, &model.name, &model.template_arguments)
+        }
         Type::Model(model) => model.name.clone(),
         Type::ModelProperty(prop) => prop.name.clone(),
         Type::Enum(en) => en.name.clone(),
         Type::EnumMember(member) => member.name.clone(),
         Type::Union(union) if union.name.is_empty() => union_type_name(arena, union),
+        Type::Union(union) if !union.template_arguments.is_empty() => {
+            format_template_name(arena, &union.name, &union.template_arguments)
+        }
         Type::Union(union) => union.name.clone(),
         Type::UnionVariant(variant) => type_name(arena, variant.variant_type),
+        Type::Alias(alias) if !alias.template_arguments.is_empty() => {
+            format_template_name(arena, &alias.name, &alias.template_arguments)
+        }
         Type::Alias(alias) => alias.name.clone(),
+        Type::Operation(operation) if !operation.template_arguments.is_empty() => {
+            format_template_name(arena, &operation.name, &operation.template_arguments)
+        }
         Type::Operation(operation) => operation.name.clone(),
+        Type::Interface(interface) if !interface.template_arguments.is_empty() => {
+            format_template_name(arena, &interface.name, &interface.template_arguments)
+        }
         Type::Interface(interface) => interface.name.clone(),
         Type::Namespace(namespace) => namespace.name.clone(),
+        Type::TemplateParameter(param) => param.name.clone(),
         Type::String => "string".to_string(),
         Type::Bytes => "bytes".to_string(),
         Type::Int8 => "int8".to_string(),
@@ -678,6 +694,17 @@ pub fn type_name(arena: &TypeArena, type_id: TypeId) -> String {
         Type::BooleanLiteral(value) => value.value.to_string(),
         Type::Error => "<error>".to_string(),
     }
+}
+
+fn format_template_name(arena: &TypeArena, name: &str, args: &[TypeId]) -> String {
+    format!(
+        "{}<{}>",
+        name,
+        args.iter()
+            .map(|arg| type_name(arena, *arg))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn union_type_name(arena: &TypeArena, union: &UnionType) -> String {

@@ -6,14 +6,15 @@ use typespec_parser::syntax_kind::SyntaxKind;
 use typespec_parser::ParseResult;
 use typespec_source::{Diagnostic, DiagnosticSeverity, Span};
 
+use crate::instantiation::InstantiationMap;
 use crate::intrinsics::{register_intrinsics, Intrinsics};
 use crate::name_resolver::ResolutionResult;
-use crate::type_relation::TypeRelationChecker;
+use crate::type_relation::{type_name, TypeRelationChecker};
 use crate::types::{
     AliasType, BooleanLiteralType, DecoratorRef, EnumMemberType, EnumMemberValue, EnumType,
     InterfaceType, ModelPropertyType, ModelType, NamespaceType, NumericLiteralType, OperationType,
-    ScalarType, StringLiteralType, SymbolFlags, SymbolId, SymbolTable, Type, TypeArena, TypeId,
-    UnionType, UnionVariantType,
+    ScalarType, StringLiteralType, SymbolFlags, SymbolId, SymbolTable, TemplateParameterType, Type,
+    TypeArena, TypeId, UnionType, UnionVariantType,
 };
 
 pub struct Checker<'p> {
@@ -35,6 +36,8 @@ pub struct Checker<'p> {
     alias_structural_depth: usize,
     operation_stack: Vec<SymbolId>,
     reported_operation_cycles: HashSet<SymbolId>,
+    template_instantiations: InstantiationMap,
+    template_parameter_usage: HashMap<NodeId, bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -117,10 +120,13 @@ impl<'p> Checker<'p> {
             alias_structural_depth: 0,
             operation_stack: Vec::new(),
             reported_operation_cycles: HashSet::new(),
+            template_instantiations: InstantiationMap::default(),
+            template_parameter_usage: HashMap::new(),
         }
     }
 
     fn finish(mut self) -> CheckResult {
+        self.report_unused_template_parameters();
         let binder_diagnostics = self
             .symbol_table
             .diagnostics
@@ -266,6 +272,7 @@ impl<'p> Checker<'p> {
         let NodeData::ModelStatement {
             id,
             decorators,
+            template_parameters,
             extends,
             is,
             properties,
@@ -282,6 +289,7 @@ impl<'p> Checker<'p> {
         if let Some(symbol) = symbol {
             self.symbol_to_type.insert(symbol, type_id);
         }
+        let template_parameters = self.check_template_parameters(&template_parameters);
 
         let source_model = self.check_model_is(symbol, is);
         let mut model = ModelType {
@@ -295,6 +303,10 @@ impl<'p> Checker<'p> {
             decorators: self.collect_decorators(&decorators),
             namespace,
             derived_models: Vec::new(),
+            template_node: None,
+            template_arguments: Vec::new(),
+            template_parameters: template_parameters.clone(),
+            is_template_declaration: !template_parameters.is_empty(),
         };
 
         if let Some(source_model) = source_model {
@@ -309,6 +321,7 @@ impl<'p> Checker<'p> {
             model.base_model = self.check_model_extends(symbol, extends);
         }
 
+        self.type_arena.replace(type_id, Type::Model(model.clone()));
         for property in properties {
             if let NodeData::ModelProperty { id, .. } = self.node(property).data {
                 let prop_id = self.check_model_property(property, type_id);
@@ -370,6 +383,10 @@ impl<'p> Checker<'p> {
             decorators: Vec::new(),
             namespace,
             derived_models: Vec::new(),
+            template_node: None,
+            template_arguments: Vec::new(),
+            template_parameters: Vec::new(),
+            is_template_declaration: false,
         };
         for property in properties {
             if let NodeData::ModelProperty { id, .. } = self.node(property).data {
@@ -396,6 +413,7 @@ impl<'p> Checker<'p> {
         let NodeData::ScalarStatement {
             id,
             decorators,
+            template_parameters,
             extends,
             ..
         } = self.node(node_id).data.clone()
@@ -410,6 +428,7 @@ impl<'p> Checker<'p> {
             self.symbol_to_type.insert(symbol, type_id);
         }
 
+        let template_parameters = self.check_template_parameters(&template_parameters);
         let base_scalar = extends.and_then(|extends| self.check_scalar_extends(symbol, extends));
         let decorators = self.collect_decorators(&decorators);
         let name = self.identifier_name(id);
@@ -423,6 +442,10 @@ impl<'p> Checker<'p> {
                 base_scalar,
                 decorators,
                 namespace,
+                template_node: None,
+                template_arguments: Vec::new(),
+                template_parameters: template_parameters.clone(),
+                is_template_declaration: !template_parameters.is_empty(),
             }),
         );
         if let Some(namespace) = namespace {
@@ -600,6 +623,7 @@ impl<'p> Checker<'p> {
         let NodeData::UnionStatement {
             id,
             decorators,
+            template_parameters,
             options,
             ..
         } = self.node(node_id).data.clone()
@@ -622,6 +646,10 @@ impl<'p> Checker<'p> {
             expression: false,
             decorators: self.collect_decorators(&decorators),
             namespace,
+            template_node: None,
+            template_arguments: Vec::new(),
+            template_parameters: self.check_template_parameters(&template_parameters),
+            is_template_declaration: !template_parameters.is_empty(),
         };
 
         for (index, variant) in options.into_iter().enumerate() {
@@ -672,6 +700,10 @@ impl<'p> Checker<'p> {
             expression: true,
             decorators: Vec::new(),
             namespace: None,
+            template_node: None,
+            template_arguments: Vec::new(),
+            template_parameters: Vec::new(),
+            is_template_declaration: false,
         };
 
         for option in options {
@@ -737,6 +769,10 @@ impl<'p> Checker<'p> {
             decorators: Vec::new(),
             namespace: None,
             derived_models: Vec::new(),
+            template_node: None,
+            template_arguments: Vec::new(),
+            template_parameters: Vec::new(),
+            is_template_declaration: false,
         };
         let mut indexers = Vec::new();
         let mut model_options = Vec::new();
@@ -847,7 +883,13 @@ impl<'p> Checker<'p> {
         if let Some(cached) = self.type_cache.get(&node_id).copied() {
             return cached;
         }
-        let NodeData::AliasStatement { id, value, .. } = self.node(node_id).data.clone() else {
+        let NodeData::AliasStatement {
+            id,
+            template_parameters,
+            value,
+            ..
+        } = self.node(node_id).data.clone()
+        else {
             panic!("expected alias statement");
         };
         let symbol = self
@@ -857,6 +899,7 @@ impl<'p> Checker<'p> {
         let type_id = self.type_arena.reserve();
         self.cache_type(node_id, type_id);
         self.symbol_to_type.insert(symbol, type_id);
+        let template_parameters = self.check_template_parameters(&template_parameters);
 
         self.alias_stack.push(symbol);
         let target = self.type_for_node(value);
@@ -872,6 +915,10 @@ impl<'p> Checker<'p> {
                 symbol,
                 target,
                 namespace,
+                template_node: None,
+                template_arguments: Vec::new(),
+                template_parameters: template_parameters.clone(),
+                is_template_declaration: !template_parameters.is_empty(),
             }),
         );
         if let Some(namespace) = namespace {
@@ -892,6 +939,7 @@ impl<'p> Checker<'p> {
         let NodeData::OperationStatement {
             id,
             decorators,
+            template_parameters,
             signature,
             ..
         } = self.node(node_id).data.clone()
@@ -907,6 +955,7 @@ impl<'p> Checker<'p> {
         if let Some(symbol) = symbol {
             self.symbol_to_type.insert(symbol, type_id);
         }
+        let template_parameters = self.check_template_parameters(&template_parameters);
 
         let name = self.identifier_name(id);
         let mut operation = OperationType {
@@ -919,6 +968,10 @@ impl<'p> Checker<'p> {
             interface,
             namespace,
             source_operation: None,
+            template_node: None,
+            template_arguments: Vec::new(),
+            template_parameters: template_parameters.clone(),
+            is_template_declaration: !template_parameters.is_empty(),
         };
 
         match self.node(signature).data.clone() {
@@ -1014,6 +1067,7 @@ impl<'p> Checker<'p> {
         let NodeData::InterfaceStatement {
             id,
             decorators,
+            template_parameters,
             extends,
             operations,
             ..
@@ -1028,6 +1082,7 @@ impl<'p> Checker<'p> {
         let type_id = self.type_arena.reserve();
         self.cache_type(node_id, type_id);
         self.symbol_to_type.insert(symbol, type_id);
+        let template_parameters = self.check_template_parameters(&template_parameters);
 
         let mut own_members = IndexMap::new();
         for operation_node in operations {
@@ -1055,6 +1110,10 @@ impl<'p> Checker<'p> {
             source_interfaces: Vec::new(),
             decorators: self.collect_decorators(&decorators),
             namespace,
+            template_node: None,
+            template_arguments: Vec::new(),
+            template_parameters: template_parameters.clone(),
+            is_template_declaration: !template_parameters.is_empty(),
         };
 
         for extends_node in extends {
@@ -1182,6 +1241,8 @@ impl<'p> Checker<'p> {
             NodeData::StringLiteral { value } => self.string_literal(Some(node_id), value),
             NodeData::NumericLiteral { value, .. } => self.numeric_literal(Some(node_id), value),
             NodeData::BooleanLiteral { value } => self.boolean_literal(Some(node_id), value),
+            NodeData::TemplateParameterDeclaration { .. } => self.check_template_parameter(node_id),
+            NodeData::TemplateArgument { argument, .. } => self.type_for_node(argument),
             NodeData::ModelStatement { .. } => self.check_model_statement(node_id),
             NodeData::ScalarStatement { .. } => self.check_scalar(node_id),
             NodeData::EnumStatement { .. } => self.check_enum(node_id),
@@ -1214,21 +1275,51 @@ impl<'p> Checker<'p> {
     }
 
     fn type_for_reference(&mut self, node_id: NodeId) -> TypeId {
-        let resolution = self
-            .resolutions
-            .get(&node_id)
-            .or_else(|| {
-                self.reference_target(node_id)
-                    .and_then(|target| self.resolutions.get(&target))
-            })
-            .cloned();
-        let Some(ResolutionResult::Resolved(symbol)) = resolution else {
-            self.cache_type(node_id, self.intrinsics.unknown);
-            return self.intrinsics.unknown;
+        let argument_nodes = match self.node(node_id).data.clone() {
+            NodeData::TypeReference { arguments, .. } => arguments,
+            _ => Vec::new(),
+        };
+        let resolution = match self.resolutions.get(&node_id).cloned() {
+            Some(ResolutionResult::Resolved(symbol)) => Some(ResolutionResult::Resolved(symbol)),
+            _ => self
+                .reference_target(node_id)
+                .and_then(|target| self.resolutions.get(&target))
+                .cloned(),
+        };
+        let symbol = match resolution {
+            Some(ResolutionResult::Resolved(symbol)) => symbol,
+            _ => {
+                let Some(symbol) = self.fallback_reference_symbol(node_id) else {
+                    self.cache_type(node_id, self.intrinsics.unknown);
+                    return self.intrinsics.unknown;
+                };
+                symbol
+            }
         };
         let type_id = self.type_for_symbol(symbol);
-        self.cache_type(node_id, type_id);
-        type_id
+        let result = if self
+            .symbol_table
+            .symbols
+            .get(symbol.index())
+            .is_some_and(|symbol| symbol.flags.contains(SymbolFlags::TemplateParameter))
+        {
+            self.mark_template_parameter_used(type_id);
+            type_id
+        } else if self.template_parameter_ids(type_id).is_empty() {
+            if !argument_nodes.is_empty() {
+                self.report(
+                    "invalid-template-args",
+                    "Can't pass template arguments to non-templated type",
+                    node_id,
+                );
+            }
+            type_id
+        } else {
+            let args = self.resolve_template_arguments(type_id, node_id, &argument_nodes);
+            self.instantiate_template(type_id, args, node_id)
+        };
+        self.cache_type(node_id, result);
+        result
     }
 
     fn type_for_symbol(&mut self, symbol: SymbolId) -> TypeId {
@@ -1266,6 +1357,7 @@ impl<'p> Checker<'p> {
             return self.intrinsics.unknown;
         };
         match self.node(node).data {
+            NodeData::TemplateParameterDeclaration { .. } => self.check_template_parameter(node),
             NodeData::ModelStatement { .. } => self.check_model_statement(node),
             NodeData::ScalarStatement { .. } => self.check_scalar(node),
             NodeData::EnumStatement { .. } => self.check_enum(node),
@@ -1283,12 +1375,44 @@ impl<'p> Checker<'p> {
         }
     }
 
+    fn fallback_reference_symbol(&self, node_id: NodeId) -> Option<SymbolId> {
+        let target = self.reference_target(node_id).unwrap_or(node_id);
+        let name = self.identifier_name(target);
+        self.symbol_table
+            .symbols
+            .iter()
+            .enumerate()
+            .find_map(|(index, symbol)| {
+                (symbol.name == name
+                    && !symbol.declarations.is_empty()
+                    && symbol.flags.intersects(
+                        SymbolFlags::Model
+                            | SymbolFlags::Scalar
+                            | SymbolFlags::Alias
+                            | SymbolFlags::Interface
+                            | SymbolFlags::Operation
+                            | SymbolFlags::Union
+                            | SymbolFlags::Enum
+                            | SymbolFlags::Namespace
+                            | SymbolFlags::TemplateParameter,
+                    ))
+                .then_some(SymbolId::new(index as u32))
+            })
+    }
+
     fn check_array_expression(&mut self, node_id: NodeId, element_type: NodeId) -> TypeId {
         self.alias_structural_depth += 1;
-        let element = self
-            .resolved_symbol(node_id)
-            .map(|symbol| self.type_for_symbol(symbol))
-            .unwrap_or_else(|| self.type_for_node(element_type));
+        let element_has_template_args = matches!(
+            self.node(element_type).data.clone(),
+            NodeData::TypeReference { arguments, .. } if !arguments.is_empty()
+        );
+        let element = if element_has_template_args {
+            self.type_for_node(element_type)
+        } else {
+            self.resolved_symbol(node_id)
+                .map(|symbol| self.type_for_symbol(symbol))
+                .unwrap_or_else(|| self.type_for_node(element_type))
+        };
         self.alias_structural_depth -= 1;
         let model = ModelType {
             name: String::new(),
@@ -1301,8 +1425,617 @@ impl<'p> Checker<'p> {
             decorators: Vec::new(),
             namespace: None,
             derived_models: Vec::new(),
+            template_node: None,
+            template_arguments: Vec::new(),
+            template_parameters: Vec::new(),
+            is_template_declaration: false,
         };
         self.add_and_cache(node_id, Type::Model(model))
+    }
+
+    fn check_template_parameters(&mut self, params: &[NodeId]) -> Vec<TypeId> {
+        params
+            .iter()
+            .map(|param| self.check_template_parameter(*param))
+            .collect()
+    }
+
+    fn check_template_parameter(&mut self, node_id: NodeId) -> TypeId {
+        if let Some(cached) = self.type_cache.get(&node_id).copied() {
+            return cached;
+        }
+        let NodeData::TemplateParameterDeclaration {
+            id,
+            constraint,
+            default,
+        } = self.node(node_id).data.clone()
+        else {
+            panic!("expected template parameter declaration");
+        };
+        let symbol = self
+            .symbol_for_node(node_id)
+            .expect("template parameter should have symbol");
+        let type_id = self.type_arena.reserve();
+        self.cache_type(node_id, type_id);
+        self.symbol_to_type.insert(symbol, type_id);
+        self.template_parameter_usage
+            .entry(node_id)
+            .or_insert(false);
+
+        let constraint = constraint.map(|constraint| self.type_for_node(constraint));
+        if let Some(default_node) = default {
+            self.report_invalid_later_template_default(node_id, default_node);
+        }
+        let default = default.map(|default| self.type_for_node(default));
+        if let (Some(default), Some(constraint)) = (default, constraint) {
+            let diagnostics = {
+                let relation = TypeRelationChecker::new(&self.type_arena);
+                relation.check_type_assignable_span(default, constraint, self.node_span(node_id))
+            };
+            self.diagnostics.extend(diagnostics);
+        }
+
+        self.type_arena.replace(
+            type_id,
+            Type::TemplateParameter(TemplateParameterType {
+                name: self.identifier_name(id),
+                node: node_id,
+                symbol,
+                constraint,
+                default,
+            }),
+        );
+        type_id
+    }
+
+    fn report_invalid_later_template_default(&mut self, param_node: NodeId, default_node: NodeId) {
+        let Some(param_symbol) = self.symbol_for_node(param_node) else {
+            return;
+        };
+        let parent = self.symbol_table.symbols[param_symbol.index()].parent_symbol;
+        let siblings = self
+            .symbol_table
+            .symbols
+            .iter()
+            .filter(|symbol| {
+                symbol.parent_symbol == parent
+                    && symbol.flags.contains(SymbolFlags::TemplateParameter)
+            })
+            .filter_map(|symbol| symbol.declarations.first().copied())
+            .collect::<Vec<_>>();
+        let Some(index) = siblings.iter().position(|node| *node == param_node) else {
+            return;
+        };
+        let later = siblings[index..]
+            .iter()
+            .filter_map(|node| self.symbol_for_node(*node))
+            .collect::<HashSet<_>>();
+        if self.node_references_any_symbol(default_node, &later) {
+            self.report(
+                "invalid-template-default",
+                "Template parameter defaults can only reference previously declared type parameters.",
+                default_node,
+            );
+        }
+    }
+
+    fn node_references_any_symbol(&self, node_id: NodeId, symbols: &HashSet<SymbolId>) -> bool {
+        if self
+            .resolved_symbol(node_id)
+            .is_some_and(|symbol| symbols.contains(&symbol))
+        {
+            return true;
+        }
+        match self.node(node_id).data.clone() {
+            NodeData::TypeReference { target, arguments } => {
+                self.node_references_any_symbol(target, symbols)
+                    || arguments
+                        .iter()
+                        .any(|node| self.node_references_any_symbol(*node, symbols))
+            }
+            NodeData::TemplateArgument { argument, .. } => {
+                self.node_references_any_symbol(argument, symbols)
+            }
+            NodeData::MemberExpression { base, id, .. } => {
+                self.node_references_any_symbol(base, symbols)
+                    || self.node_references_any_symbol(id, symbols)
+            }
+            NodeData::ArrayExpression { element_type } => {
+                self.node_references_any_symbol(element_type, symbols)
+            }
+            NodeData::UnionExpression { options }
+            | NodeData::IntersectionExpression { options } => options
+                .iter()
+                .any(|node| self.node_references_any_symbol(*node, symbols)),
+            NodeData::ModelExpression { properties, .. } => properties
+                .iter()
+                .any(|node| self.node_references_any_symbol(*node, symbols)),
+            NodeData::ModelProperty { value, default, .. } => {
+                self.node_references_any_symbol(value, symbols)
+                    || default.is_some_and(|node| self.node_references_any_symbol(node, symbols))
+            }
+            _ => false,
+        }
+    }
+
+    fn mark_template_parameter_used(&mut self, type_id: TypeId) {
+        if let Type::TemplateParameter(param) = self.type_arena.get(type_id) {
+            self.template_parameter_usage.insert(param.node, true);
+        }
+    }
+
+    fn report_unused_template_parameters(&mut self) {
+        let unused = self
+            .template_parameter_usage
+            .iter()
+            .filter_map(|(node, used)| (!*used).then_some(*node))
+            .collect::<Vec<_>>();
+        for node in unused {
+            let Some(symbol) = self.symbol_for_node(node) else {
+                continue;
+            };
+            let parameter_name = self.symbol_table.symbols[symbol.index()].name.clone();
+            let type_name = self.symbol_table.symbols[symbol.index()]
+                .parent_symbol
+                .map(|parent| self.symbol_table.symbols[parent.index()].name.clone())
+                .unwrap_or_default();
+            self.diagnostics.push(Diagnostic {
+                severity: DiagnosticSeverity::Warning,
+                code: "unused-template-parameter",
+                message: format!(
+                    "Templates should use all specified parameters, and parameter '{parameter_name}' does not exist in type '{type_name}'. Consider removing this parameter."
+                ),
+                target: self.node_span(node),
+            });
+        }
+    }
+
+    fn template_parameter_ids(&self, type_id: TypeId) -> Vec<TypeId> {
+        match self.type_arena.get(type_id) {
+            Type::Model(ty) => ty.template_parameters.clone(),
+            Type::Scalar(ty) => ty.template_parameters.clone(),
+            Type::Alias(ty) => ty.template_parameters.clone(),
+            Type::Union(ty) => ty.template_parameters.clone(),
+            Type::Interface(ty) => ty.template_parameters.clone(),
+            Type::Operation(ty) => ty.template_parameters.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn template_declaration_symbol(&self, type_id: TypeId) -> Option<SymbolId> {
+        match self.type_arena.get(type_id) {
+            Type::Model(ty) => ty.symbol,
+            Type::Scalar(ty) => ty.symbol,
+            Type::Alias(ty) => Some(ty.symbol),
+            Type::Union(ty) => ty.symbol,
+            Type::Interface(ty) => ty.symbol,
+            Type::Operation(ty) => ty.symbol,
+            _ => None,
+        }
+    }
+
+    fn template_node(&self, type_id: TypeId) -> Option<NodeId> {
+        match self.type_arena.get(type_id) {
+            Type::Model(ty) => ty.template_node,
+            Type::Scalar(ty) => ty.template_node,
+            Type::Alias(ty) => ty.template_node,
+            Type::Union(ty) => ty.template_node,
+            Type::Interface(ty) => ty.template_node,
+            Type::Operation(ty) => ty.template_node,
+            _ => None,
+        }
+    }
+
+    fn template_arguments(&self, type_id: TypeId) -> Vec<TypeId> {
+        match self.type_arena.get(type_id) {
+            Type::Model(ty) => ty.template_arguments.clone(),
+            Type::Scalar(ty) => ty.template_arguments.clone(),
+            Type::Alias(ty) => ty.template_arguments.clone(),
+            Type::Union(ty) => ty.template_arguments.clone(),
+            Type::Interface(ty) => ty.template_arguments.clone(),
+            Type::Operation(ty) => ty.template_arguments.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn resolve_template_arguments(
+        &mut self,
+        template_decl: TypeId,
+        node_id: NodeId,
+        argument_nodes: &[NodeId],
+    ) -> Vec<TypeId> {
+        let params = self.template_parameter_ids(template_decl);
+        let mut positional = vec![None; params.len()];
+        let mut named_seen = false;
+        for (index, arg_node) in argument_nodes.iter().enumerate() {
+            let NodeData::TemplateArgument { name, argument } = self.node(*arg_node).data.clone()
+            else {
+                continue;
+            };
+            let arg_type = self.type_for_node(argument);
+            if let Some(name_node) = name {
+                named_seen = true;
+                let name = self.identifier_name(name_node);
+                let param_index = params.iter().position(|param| {
+                    matches!(self.type_arena.get(*param), Type::TemplateParameter(param) if param.name == name)
+                });
+                if let Some(param_index) = param_index {
+                    if positional[param_index].is_some() {
+                        self.report(
+                            "invalid-template-args",
+                            &format!("Cannot specify template argument '{name}' again."),
+                            *arg_node,
+                        );
+                    } else {
+                        positional[param_index] = Some(arg_type);
+                    }
+                } else {
+                    self.report(
+                        "invalid-template-args",
+                        &format!("No parameter named '{name}' exists in the target template."),
+                        *arg_node,
+                    );
+                }
+            } else if named_seen {
+                self.report(
+                    "invalid-template-args",
+                    "Positional template arguments cannot follow named arguments in the same argument list.",
+                    *arg_node,
+                );
+            } else if index >= params.len() {
+                self.report(
+                    "invalid-template-args",
+                    "Too many template arguments provided.",
+                    node_id,
+                );
+            } else if positional[index].is_none() {
+                positional[index] = Some(arg_type);
+            }
+        }
+
+        let mut result = Vec::with_capacity(params.len());
+        let mut subst = HashMap::new();
+        for (index, param_id) in params.iter().enumerate() {
+            let arg = if let Some(arg) = positional[index] {
+                arg
+            } else {
+                let default = match self.type_arena.get(*param_id) {
+                    Type::TemplateParameter(param) => param.default,
+                    _ => None,
+                };
+                if let Some(default) = default {
+                    self.substitute_type(default, &subst)
+                } else {
+                    let name = match self.type_arena.get(*param_id) {
+                        Type::TemplateParameter(param) => param.name.clone(),
+                        _ => String::new(),
+                    };
+                    self.report(
+                        "invalid-template-args",
+                        &format!("Template argument '{name}' is required and not specified."),
+                        node_id,
+                    );
+                    match self.type_arena.get(*param_id) {
+                        Type::TemplateParameter(param) => {
+                            param.constraint.unwrap_or(self.intrinsics.unknown)
+                        }
+                        _ => self.intrinsics.unknown,
+                    }
+                }
+            };
+            let constraint = match self.type_arena.get(*param_id) {
+                Type::TemplateParameter(param) => param.constraint,
+                _ => None,
+            };
+            let arg = if let Some(constraint) = constraint {
+                let constraint = self.substitute_type(constraint, &subst);
+                let diagnostics = {
+                    let relation = TypeRelationChecker::new(&self.type_arena);
+                    relation.check_type_assignable_span(arg, constraint, self.node_span(node_id))
+                };
+                if diagnostics.is_empty() {
+                    arg
+                } else {
+                    let param_name = match self.type_arena.get(*param_id) {
+                        Type::TemplateParameter(param) => param.name.clone(),
+                        _ => String::new(),
+                    };
+                    self.diagnostics.push(Diagnostic {
+                        severity: DiagnosticSeverity::Error,
+                        code: "unassignable",
+                        message: format!(
+                            "Type '{}' is not assignable to template parameter '{}' which extends '{}'.",
+                            type_name(&self.type_arena, arg),
+                            param_name,
+                            type_name(&self.type_arena, constraint)
+                        ),
+                        target: self.node_span(node_id),
+                    });
+                    constraint
+                }
+            } else {
+                arg
+            };
+            subst.insert(*param_id, arg);
+            result.push(arg);
+        }
+        result
+    }
+
+    fn instantiate_template(
+        &mut self,
+        template_decl: TypeId,
+        template_args: Vec<TypeId>,
+        target: NodeId,
+    ) -> TypeId {
+        let Some(symbol) = self.template_declaration_symbol(template_decl) else {
+            return template_decl;
+        };
+        if let Some(cached) = self.template_instantiations.get(symbol, &template_args) {
+            return cached;
+        }
+        let params = self.template_parameter_ids(template_decl);
+        if params.is_empty() {
+            return template_decl;
+        }
+        let subst = params
+            .iter()
+            .copied()
+            .zip(template_args.iter().copied())
+            .collect::<HashMap<_, _>>();
+        let type_id = self.type_arena.reserve();
+        self.template_instantiations
+            .insert(symbol, template_args.clone(), type_id);
+
+        let ty = self.type_arena.get(template_decl).clone();
+        let instantiated = match ty {
+            Type::Model(model) => Type::Model(self.instantiate_model(
+                template_decl,
+                type_id,
+                model,
+                template_args,
+                &subst,
+            )),
+            Type::Scalar(scalar) => Type::Scalar(ScalarType {
+                name: scalar.name,
+                node: scalar.node,
+                symbol: scalar.symbol,
+                base_scalar: scalar
+                    .base_scalar
+                    .map(|base| self.substitute_type(base, &subst)),
+                decorators: scalar.decorators,
+                namespace: scalar.namespace,
+                template_node: scalar.node,
+                template_arguments: template_args,
+                template_parameters: Vec::new(),
+                is_template_declaration: false,
+            }),
+            Type::Alias(alias) => Type::Alias(AliasType {
+                name: alias.name,
+                node: alias.node,
+                symbol: alias.symbol,
+                target: self.substitute_type(alias.target, &subst),
+                namespace: alias.namespace,
+                template_node: Some(alias.node),
+                template_arguments: template_args,
+                template_parameters: Vec::new(),
+                is_template_declaration: false,
+            }),
+            Type::Union(union) => {
+                Type::Union(self.instantiate_union(type_id, union, template_args, &subst))
+            }
+            Type::Interface(interface) => Type::Interface(self.instantiate_interface(
+                type_id,
+                interface,
+                template_args,
+                &subst,
+            )),
+            Type::Operation(operation) => Type::Operation(OperationType {
+                name: operation.name,
+                node: operation.node,
+                symbol: operation.symbol,
+                parameters: self.substitute_type(operation.parameters, &subst),
+                return_type: self.substitute_type(operation.return_type, &subst),
+                decorators: operation.decorators,
+                interface: operation.interface,
+                namespace: operation.namespace,
+                source_operation: Some(template_decl),
+                template_node: operation.node,
+                template_arguments: template_args,
+                template_parameters: Vec::new(),
+                is_template_declaration: false,
+            }),
+            _ => {
+                self.report(
+                    "invalid-template-args",
+                    "Invalid template arguments.",
+                    target,
+                );
+                Type::Error
+            }
+        };
+        self.type_arena.replace(type_id, instantiated);
+        type_id
+    }
+
+    fn instantiate_model(
+        &mut self,
+        source_id: TypeId,
+        model_id: TypeId,
+        source: ModelType,
+        template_args: Vec<TypeId>,
+        subst: &HashMap<TypeId, TypeId>,
+    ) -> ModelType {
+        let mut model = ModelType {
+            name: source.name,
+            node: source.node,
+            symbol: source.symbol,
+            properties: IndexMap::new(),
+            base_model: source
+                .base_model
+                .map(|base| self.substitute_type(base, subst)),
+            source_model: source
+                .source_model
+                .map(|source| self.substitute_type(source, subst)),
+            indexer: source
+                .indexer
+                .map(|indexer| self.substitute_type(indexer, subst)),
+            decorators: source.decorators,
+            namespace: source.namespace,
+            derived_models: Vec::new(),
+            template_node: source.node.or(source.template_node),
+            template_arguments: template_args,
+            template_parameters: Vec::new(),
+            is_template_declaration: false,
+        };
+        for (name, prop_id) in source.properties {
+            let Some(prop) = self.model_property_type(prop_id).cloned() else {
+                continue;
+            };
+            let property_type = self.substitute_type(prop.property_type, subst);
+            let default = prop
+                .default
+                .map(|default| self.substitute_type(default, subst));
+            let cloned = self.type_arena.add(Type::ModelProperty(ModelPropertyType {
+                name: name.clone(),
+                node: prop.node,
+                symbol: None,
+                model: model_id,
+                property_type,
+                optional: prop.optional,
+                default,
+                source_property: prop.source_property.or(Some(prop_id)),
+                decorators: prop.decorators,
+            }));
+            model.properties.insert(name, cloned);
+        }
+        if let Some(base_model) = model.base_model {
+            if let Type::Model(base) = self.type_arena.get_mut(base_model) {
+                if source_id != model_id && !base.derived_models.contains(&model_id) {
+                    base.derived_models.push(model_id);
+                }
+            }
+        }
+        model
+    }
+
+    fn instantiate_union(
+        &mut self,
+        union_id: TypeId,
+        source: UnionType,
+        template_args: Vec<TypeId>,
+        subst: &HashMap<TypeId, TypeId>,
+    ) -> UnionType {
+        let mut union = UnionType {
+            name: source.name,
+            node: source.node,
+            symbol: source.symbol,
+            variants: IndexMap::new(),
+            expression: source.expression,
+            decorators: source.decorators,
+            namespace: source.namespace,
+            template_node: source.node.or(source.template_node),
+            template_arguments: template_args,
+            template_parameters: Vec::new(),
+            is_template_declaration: false,
+        };
+        for (name, variant_id) in source.variants {
+            let Some(variant) = self.union_variant_type(variant_id).cloned() else {
+                continue;
+            };
+            let variant_type = self.substitute_type(variant.variant_type, subst);
+            let cloned = self.type_arena.add(Type::UnionVariant(UnionVariantType {
+                name: name.clone(),
+                node: variant.node,
+                union: union_id,
+                variant_type,
+                decorators: variant.decorators,
+            }));
+            union.variants.insert(name, cloned);
+        }
+        union
+    }
+
+    fn instantiate_interface(
+        &mut self,
+        interface_id: TypeId,
+        source: InterfaceType,
+        template_args: Vec<TypeId>,
+        subst: &HashMap<TypeId, TypeId>,
+    ) -> InterfaceType {
+        let mut interface = InterfaceType {
+            name: source.name,
+            node: source.node,
+            symbol: source.symbol,
+            operations: IndexMap::new(),
+            source_interfaces: source
+                .source_interfaces
+                .into_iter()
+                .map(|source| self.substitute_type(source, subst))
+                .collect(),
+            decorators: source.decorators,
+            namespace: source.namespace,
+            template_node: source.node.or(source.template_node),
+            template_arguments: template_args,
+            template_parameters: Vec::new(),
+            is_template_declaration: false,
+        };
+        for (name, operation_id) in source.operations {
+            let Some(operation) = self.operation_type(operation_id).cloned() else {
+                continue;
+            };
+            let parameters = self.substitute_type(operation.parameters, subst);
+            let return_type = self.substitute_type(operation.return_type, subst);
+            let cloned = self.type_arena.add(Type::Operation(OperationType {
+                name: operation.name,
+                node: operation.node,
+                symbol: None,
+                parameters,
+                return_type,
+                decorators: operation.decorators,
+                interface: Some(interface_id),
+                namespace: operation.namespace,
+                source_operation: Some(operation_id),
+                template_node: operation.template_node,
+                template_arguments: operation.template_arguments,
+                template_parameters: Vec::new(),
+                is_template_declaration: false,
+            }));
+            interface.operations.insert(name, cloned);
+        }
+        interface
+    }
+
+    fn substitute_type(&mut self, type_id: TypeId, subst: &HashMap<TypeId, TypeId>) -> TypeId {
+        if let Some(mapped) = subst.get(&type_id).copied() {
+            return mapped;
+        }
+        if let Some(template_node) = self.template_node(type_id) {
+            let args = self
+                .template_arguments(type_id)
+                .into_iter()
+                .map(|arg| self.substitute_type(arg, subst))
+                .collect::<Vec<_>>();
+            if let Some(decl) = self.node_to_type.get(&template_node).copied() {
+                return self.instantiate_template(decl, args, template_node);
+            }
+        }
+        match self.type_arena.get(type_id).clone() {
+            Type::TemplateParameter(_) => type_id,
+            Type::Model(model) if model.name.is_empty() => {
+                let model_id = self.type_arena.reserve();
+                let cloned = self.instantiate_model(type_id, model_id, model, Vec::new(), subst);
+                self.type_arena.replace(model_id, Type::Model(cloned));
+                model_id
+            }
+            Type::Union(union) if union.expression => {
+                let union_id = self.type_arena.reserve();
+                let cloned = self.instantiate_union(union_id, union, Vec::new(), subst);
+                self.type_arena.replace(union_id, Type::Union(cloned));
+                union_id
+            }
+            _ => type_id,
+        }
     }
 
     fn check_model_extends(
@@ -1538,11 +2271,15 @@ impl<'p> Checker<'p> {
     }
 
     fn resolved_symbol(&self, node_id: NodeId) -> Option<SymbolId> {
-        match self.resolutions.get(&node_id).or_else(|| {
-            self.reference_target(node_id)
+        let resolution = match self.resolutions.get(&node_id) {
+            Some(ResolutionResult::Resolved(symbol)) => Some(ResolutionResult::Resolved(*symbol)),
+            _ => self
+                .reference_target(node_id)
                 .and_then(|target| self.resolutions.get(&target))
-        }) {
-            Some(ResolutionResult::Resolved(symbol)) => Some(*symbol),
+                .cloned(),
+        };
+        match resolution {
+            Some(ResolutionResult::Resolved(symbol)) => Some(symbol),
             _ => None,
         }
     }
@@ -1622,6 +2359,10 @@ impl<'p> Checker<'p> {
             decorators: Vec::new(),
             namespace,
             derived_models: Vec::new(),
+            template_node: None,
+            template_arguments: Vec::new(),
+            template_parameters: Vec::new(),
+            is_template_declaration: false,
         }))
     }
 
@@ -1644,6 +2385,10 @@ impl<'p> Checker<'p> {
             decorators: source_model.decorators,
             namespace,
             derived_models: Vec::new(),
+            template_node: source_model.template_node,
+            template_arguments: source_model.template_arguments,
+            template_parameters: source_model.template_parameters,
+            is_template_declaration: source_model.is_template_declaration,
         };
         for (name, prop_id) in source_model.properties {
             let Some(prop) = self.model_property_type(prop_id).cloned() else {
@@ -1686,6 +2431,10 @@ impl<'p> Checker<'p> {
             interface: Some(interface_id),
             namespace,
             source_operation: Some(operation_id),
+            template_node: source.template_node,
+            template_arguments: source.template_arguments,
+            template_parameters: source.template_parameters,
+            is_template_declaration: source.is_template_declaration,
         }))
     }
 
@@ -2000,6 +2749,16 @@ mod tests {
             .expect("type should exist")
     }
 
+    fn property_type(result: &CheckResult, model_id: TypeId, name: &str) -> TypeId {
+        let Type::Model(model) = result.type_arena.get(model_id) else {
+            panic!("expected model");
+        };
+        let Type::ModelProperty(prop) = result.type_arena.get(model.properties[name]) else {
+            panic!("expected property");
+        };
+        prop.property_type
+    }
+
     #[test]
     fn registers_stable_intrinsics() {
         let result = check_source("model Foo { x: string; y: int32; }");
@@ -2245,5 +3004,86 @@ mod tests {
         };
         assert!(namespace.models.contains_key("X"));
         assert!(namespace.models.contains_key("Y"));
+    }
+
+    #[test]
+    fn creates_template_parameter_types() {
+        let result = check_source("model Foo<T> { value: T; }");
+        let foo = find_named_model(&result, "Foo");
+        let Type::Model(model) = result.type_arena.get(foo) else {
+            panic!("expected model");
+        };
+        assert!(model.is_template_declaration);
+        assert_eq!(model.template_parameters.len(), 1);
+        let value_type = property_type(&result, foo, "value");
+        assert_eq!(value_type, model.template_parameters[0]);
+        assert!(matches!(
+            result.type_arena.get(value_type),
+            Type::TemplateParameter(param) if param.name == "T"
+        ));
+    }
+
+    #[test]
+    fn memoizes_same_template_instantiation() {
+        let result =
+            check_source("model Foo<T> { value: T; } model X { a: Foo<string>; b: Foo<string>; }");
+        let x = find_named_model(&result, "X");
+        let a = property_type(&result, x, "a");
+        let b = property_type(&result, x, "b");
+        assert_eq!(a, b);
+        let Type::Model(foo_string) = result.type_arena.get(a) else {
+            panic!("expected instantiated model");
+        };
+        assert!(!foo_string.is_template_declaration);
+        assert_eq!(foo_string.template_arguments.len(), 1);
+        assert!(matches!(
+            result.type_arena.get(foo_string.template_arguments[0]),
+            Type::String
+        ));
+        assert!(matches!(
+            result.type_arena.get(property_type(&result, a, "value")),
+            Type::String
+        ));
+    }
+
+    #[test]
+    fn distinguishes_different_template_arguments() {
+        let result =
+            check_source("model Foo<T> { value: T; } model X { a: Foo<string>; b: Foo<int32>; }");
+        let x = find_named_model(&result, "X");
+        let a = property_type(&result, x, "a");
+        let b = property_type(&result, x, "b");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn applies_template_parameter_defaults() {
+        let result = check_source("model Foo<T = string> { value: T; } model X { a: Foo; }");
+        let x = find_named_model(&result, "X");
+        let a = property_type(&result, x, "a");
+        assert!(matches!(
+            result.type_arena.get(property_type(&result, a, "value")),
+            Type::String
+        ));
+    }
+
+    #[test]
+    fn validates_template_parameter_constraints() {
+        let result =
+            check_source("model Foo<T extends string> { value: T; } model X { a: Foo<boolean>; }");
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "unassignable" && d.message.contains("template parameter 'T'")));
+    }
+
+    #[test]
+    fn reports_missing_template_argument() {
+        let result = check_source("model Foo<T> { value: T; } model X { a: Foo; }");
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "invalid-template-args"
+                && d.message == "Template argument 'T' is required and not specified."));
     }
 }

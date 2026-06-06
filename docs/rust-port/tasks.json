@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T19:28:35Z",
+  "updated_at": "2026-06-06T19:45:00Z",
   "updated_by": "agent:rust-port-m5e",
   "tasks": [
     {
@@ -727,7 +727,7 @@
     {
       "id": "M5e",
       "title": "Checker: Templates and Template Instantiation",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M5d"],
       "plan_section": "docs/rust-port/plan.md#m5e--templates-and-template-instantiation",
       "complexity": "large",
@@ -735,7 +735,7 @@
       "branch": "jeremymeng/rust-port-m5e-checker-templates",
       "pr": null,
       "started_at": "2026-06-06T19:28:35Z",
-      "completed_at": null,
+      "completed_at": "2026-06-06T19:45:00Z",
       "key_source_files": [
         "packages/compiler/src/core/checker.ts",
         "packages/compiler/test/checker/templates.test.ts",
@@ -744,31 +744,37 @@
       ],
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "Template parameter parsing and binding"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Template parameter constraints"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Template parameter defaults"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Template instantiation with memoization (Foo<string> twice = same TypeId)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Template arg validation"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Comparison tests: templates.test.ts, unused-template-parameter.test.ts, references.test.ts match TS"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-06-06T19:45:00Z",
+          "author": "agent:rust-port-m5e",
+          "text": "Completed template parameter types, defaults and constraints, memoized instantiation for model/scalar/alias/union/interface/operation, napi serialization, 84 template comparison tests, and 6 Rust unit tests."
+        }
+      ]
     },
     {
       "id": "M6",
