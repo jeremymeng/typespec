@@ -678,12 +678,553 @@ The checker is too large to deliver as a single milestone. It's subdivided into 
 
 ---
 
+## Path A: enable real emitters by replacing only the type-checker (M9–M13)
+
+These five milestones together enable running real-world TypeSpec emitters (e.g., `@typespec/json-schema`, eventually `@typespec/openapi3`) via the existing `tsp compile` CLI, with the Rust checker substituted for the TS checker. The TS code retains responsibility for the CLI, `tspconfig.yaml`, emitter package resolution, `$onEmit` invocation, file I/O host, and the library system.
+
+The choice to follow Path A (rather than Path B — a parallel Rust CLI) is documented in [ADR-0004](../adr/0004-path-a-checker-replacement.md).
+
+**Cross-cutting constraints added by Path A**:
+
+- **JS owns I/O.** All file reads (source files, package.json lookups, stdlib `.tsp` files) go through JS via napi callbacks, mirroring the M6 decorator-callback pattern. Rust never touches `std::fs` for compiler inputs. This preserves virtual-filesystem testing, in-memory program inputs, and the existing TS host abstraction.
+- **JS owns module resolution.** When Rust encounters `import "@typespec/http"`, it asks JS to resolve the path. JS uses Node's `require.resolve` / TS's `resolveModule` logic. Rust receives the resolved absolute path + source text.
+- **Symbols span files.** M4's binder operates per-file; Path A introduces a Linker stage that merges per-file symbol tables into a program-wide table. Namespace merging now spans files, not just declarations.
+- **Library system stays in JS.** TypeSpec libraries are JS packages that export decorator implementations + helper functions + a `$lib` object. The Rust side discovers libraries by parsing their `.tsp` declaration files (via the import system) and registers their JS decorator implementations via M6's registry. No Rust-side library framework.
+
+### M9 — Multi-file source loading and import resolution
+
+**Goal**: The Rust checker accepts a multi-file program rooted at an entry-point file. `import "./other.tsp"` and `import "@typespec/http"` both work. The Rust scanner/parser/binder/checker work cross-file, sharing a single program-wide symbol table.
+
+**Key source files to mirror from**:
+
+- `packages/compiler/src/core/source-loader.ts` — multi-file loading orchestrator (`SourceLoader`, `loadFile`, `loadJsFile`)
+- `packages/compiler/src/core/module-resolver.ts` — package/module resolution algorithm (Node-style + TypeSpec-specific `tspMain`/`exports` fields)
+- `packages/compiler/src/core/path-utils.ts` — path normalization (must match TS exactly so URLs in diagnostics line up)
+- `packages/compiler/src/core/program.ts` — `loadStandardLibrary`, `loadMain`, the orchestration that ties scanner/parser/binder/checker across files
+
+**Deliverables**:
+
+- New Rust types in `crates/typespec-source/src/lib.rs`:
+  - `pub struct ProgramSources { files: HashMap<SourceFileId, SourceFile>, entry: SourceFileId }`
+  - `pub struct SourceFileId(u32)` newtype — distinct from `SourceFile` since multiple files exist
+  - File paths stored as canonical absolute paths (POSIX-style separators internally; converted at JS boundary on Windows)
+- napi callback registration in `crates/typespec-napi/src/`:
+  - `read_file(path: String) -> Result<{ text: String, source_id: u32 }>` — JS implements, called from Rust during import resolution
+  - `resolve_module(specifier: String, importer_path: String) -> Result<{ resolved_path: String, kind: "tsp" | "js" | "package" }>` — JS implements TS-equivalent module resolution
+  - Both follow the M6 sync-main-thread `JsFunction` pattern
+- JS-side host implementation in `packages/compiler-rust/src/host.ts`:
+  - `createHost(opts)` returns the callback bundle to pass to `check()`
+  - Default implementation uses Node `fs.readFileSync` + a port of TS's `resolveModule`
+  - Test host implementation accepts an in-memory `Map<string, string>` for source overrides
+- `crates/typespec-parser/src/lib.rs` extension:
+  - New `parse_program(entry: SourceFile, host: &Host) -> ProgramParseResult` that drives multi-file parsing
+  - Maintains `import_edges: Vec<(SourceFileId, SourceFileId)>` for cycle detection
+  - Returns per-file `ParseResult` + cross-file import graph
+- `crates/typespec-checker/src/binder.rs` extension:
+  - Per-file binding produces per-file `SymbolTable`
+  - New `Linker` (in `crates/typespec-checker/src/linker.rs`) merges per-file tables into a single `ProgramSymbolTable`
+  - Cross-file namespace merging: same `namespace Foo;` declaration in file A and file B → single merged Symbol
+  - Import-introduced symbols added to the importing file's top-level scope
+- `crates/typespec-checker/src/name_resolver.rs` extension:
+  - Resolution walks the program-wide symbol table; namespace references that span files work
+  - Diagnostic for circular imports (per TS — verify if TS errors or accepts; cyclic imports are allowed in TS as long as they don't form symbol-resolution cycles)
+- `crates/typespec-checker/src/checker.rs` extension:
+  - `check()` becomes `check_program(program_sources, host)`
+  - Type creation walks all files in deterministic order (matching TS — likely entry first, then imports in declaration order)
+  - Backwards-compatible: a `check_single(source)` shim that wraps single-source for existing tests
+
+**Implementation guidance — cycle handling**:
+
+```rust
+pub struct ImportGraph {
+    edges: Vec<(SourceFileId, SourceFileId)>,
+    files: HashSet<SourceFileId>,
+}
+
+impl ImportGraph {
+    pub fn add(&mut self, from: SourceFileId, to: SourceFileId) -> Result<(), Diagnostic> {
+        // Add edge. Cycles in IMPORT GRAPH are allowed (TS permits them).
+        // Cycles in SYMBOL RESOLUTION are not — those are caught later by the checker.
+    }
+}
+
+// During parsing:
+fn load_file_recursive(host: &Host, path: &Path, visited: &mut HashSet<PathBuf>, sources: &mut ProgramSources) {
+    if !visited.insert(path.to_path_buf()) { return; }  // already loaded
+    let text = host.read_file(path)?;
+    let parsed = parse(&SourceFile::new(text));
+    for import in &parsed.imports {
+        let resolved = host.resolve_module(import.specifier, path)?;
+        load_file_recursive(host, &resolved.resolved_path, visited, sources);
+    }
+    sources.insert(path, parsed);
+}
+```
+
+**Implementation guidance — JS callback design**:
+
+```typescript
+// packages/compiler-rust/src/host.ts
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
+
+export interface CompilerHost {
+  readFile(path: string): { text: string };
+  resolveModule(
+    specifier: string,
+    importerPath: string,
+  ): { resolvedPath: string; kind: "tsp" | "js" | "package" };
+}
+
+export function createNodeHost(): CompilerHost {
+  return {
+    readFile(path) {
+      return { text: readFileSync(path, "utf8") };
+    },
+    resolveModule(specifier, importerPath) {
+      // Implement: relative paths (./foo.tsp), package imports (@typespec/http),
+      // node_modules walk, tspMain/main/exports resolution.
+      // Port the algorithm from packages/compiler/src/core/module-resolver.ts
+      // OR call into the existing TS module-resolver as a dependency.
+      // ...
+    },
+  };
+}
+
+export function createTestHost(files: Map<string, string>): CompilerHost {
+  return {
+    readFile(path) {
+      const text = files.get(path);
+      if (text === undefined) throw new Error(`file not in test host: ${path}`);
+      return { text };
+    },
+    resolveModule(specifier, importerPath) {
+      /* simple relative-only for tests */
+    },
+  };
+}
+```
+
+The Rust→JS callback bridge mirrors M6's `JsFunction` synchronous pattern. No `ThreadsafeFunction` — the check is a single sync call from JS into Rust into JS.
+
+**Test strategy**:
+
+- Pure Rust unit tests for `ImportGraph`, `Linker`, multi-file `SymbolTable` merging
+- napi-level tests: `check(entryPath, host)` works with in-memory test host
+- Comparison tests: multi-file TypeSpec programs (with `import "./other.tsp"` and circular imports), compared against TS compiler output
+- Test cases:
+  - Two-file program with import
+  - Circular import (file A imports B, file B imports A)
+  - Triple-nested imports
+  - Namespace `Foo` declared in two files (merging across files)
+  - Import of nonexistent file (diagnostic at the import statement position)
+  - Import of `@scope/package` resolves via test host
+
+**Acceptance criteria**:
+
+- Existing single-file 859 tests still pass (via `check_single` shim or equivalent)
+- New multi-file comparison tests pass (~20–30 cases)
+- Cross-file namespace merging produces identical Symbol/Type counts vs TS
+- Module resolution matches TS for the resolution test cases
+- Circular imports handled without infinite loops or stack overflow
+
+**Out of scope**:
+
+- TypeScript compilation of `.ts` decorator/library files — only `.tsp` and pre-compiled `.js` are loaded. Library packages must ship pre-compiled JS (which the TS ecosystem already does).
+- `import "@scope/pkg/sub-path"` package-internal sub-paths — port what TS's `module-resolver.ts` supports; mark exotic paths as deferred
+- Source-watch / incremental recompilation — single-shot only
+
+**Estimated complexity**: Large (~3,000 Rust LOC + ~1,000 JS bridge LOC + ~500 LOC tests). Critical-path milestone for everything that follows.
+
+---
+
+### M10 — Standard library loading and built-in decorator declarations
+
+**Goal**: The Rust checker can load and check the TypeSpec standard library (`@typespec/compiler` library content), so user specs can implicitly use built-in types like `Record<T>`, `Array<T>`, intrinsic numeric types with declarations, and decorator declarations from the stdlib.
+
+**Why separate from M9**: M9 is the GENERAL multi-file mechanism. M10 is the SPECIFIC application of M9 to load the standard library — but it also surfaces issues the generic M9 testing won't (decorator-declaration parsing, intrinsic-type binding to stdlib `.tsp` declarations, library-defined types like `Record`/`Array`).
+
+**Key source files to mirror from**:
+
+- `packages/compiler/lib/intrinsics.tsp` — stdlib type declarations (`Record<T>`, `Array<T>`, intrinsic scalars, reflection types)
+- `packages/compiler/lib/main.tsp` — stdlib entry
+- `packages/compiler/lib/std/*.tsp` — stdlib decorator declarations grouped by area
+- `packages/compiler/src/lib/intrinsic/tsp-index.ts` — how the stdlib is loaded by TS
+- `packages/compiler/src/lib/intrinsic/decorators.ts` — JS decorator implementations (registered with the Rust runtime via M6 patterns)
+
+**Deliverables**:
+
+- Stdlib `.tsp` files bundled or path-resolved:
+  - Option (a): bundle them as embedded resources in `typespec-checker` crate via `include_str!`
+  - Option (b): locate at runtime via JS module resolution (host resolves `@typespec/compiler/lib/main.tsp`)
+  - **Recommended (b)** — keeps stdlib versioning aligned with the TS @typespec/compiler package; aligns with M9's host-resolution
+- `crates/typespec-checker/src/checker.rs` extension:
+  - At `Checker::new()`, eagerly load + bind + check the stdlib before user program
+  - Stdlib types (intrinsic scalars now declared in `.tsp`, `Record<T>`, `Array<T>`, reflection types) populate the type arena
+  - Intrinsic scalars (M5a hard-coded these) now reconcile with their stdlib declarations — there should be exactly ONE `Type::String` not "the intrinsic" + "the declared"
+- Decorator declarations from stdlib `.tsp`:
+  - `extern dec doc(target, doc: string);` — parsed, bound, the symbol is marked as a decorator declaration
+  - The Rust checker validates `@doc("...")` against the declared signature
+  - Implementation lookup: at runtime, JS calls `registerDecorator("TypeSpec.@doc", fn)` per M6; the Rust checker looks up by qualified name
+- `Record<T>` and `Array<T>` instantiation:
+  - These are templates declared in the stdlib `.tsp`
+  - Existing M5e template instantiation logic handles them — but `Array<T>` typically has indexer/spread semantics that M5a–c may not have fully implemented
+  - Add tests that verify `Array<string>` and `Record<int32>` instantiate correctly and round-trip through the type relation checker
+- Built-in helper APIs (continued in M11/M12) that read stdlib state:
+  - `getEffectiveModelType` (uses `model.indexer` set by `@indexer` decorator from stdlib)
+  - `isArrayModelType(type)` / `isRecordModelType(type)` — detect Array/Record instantiations
+
+**Implementation guidance**:
+
+```rust
+// crates/typespec-checker/src/checker.rs
+impl Checker {
+    pub fn new(host: &Host) -> Result<Self, Diagnostic> {
+        let mut checker = Self { /* empty arena, etc. */ };
+
+        // Step 1: load stdlib .tsp via host
+        let stdlib_main = host.resolve_module("@typespec/compiler/lib/main.tsp", "<bootstrap>")?;
+        let mut stdlib_sources = ProgramSources::new();
+        load_file_recursive(host, &stdlib_main.resolved_path, &mut HashSet::new(), &mut stdlib_sources);
+
+        // Step 2: parse, bind, check stdlib (recursive)
+        let stdlib_parse = parse_program(stdlib_sources)?;
+        let stdlib_symbols = bind_program(&stdlib_parse)?;
+        checker.check_files(&stdlib_parse, &stdlib_symbols, /* is_stdlib */ true)?;
+
+        // Step 3: reconcile intrinsic stubs with stdlib declarations
+        // (M5a hard-coded TypeId for String; now also resolved by name from stdlib)
+        checker.link_intrinsics_to_stdlib();
+
+        Ok(checker)
+    }
+}
+```
+
+**Test strategy**:
+
+- Comparison tests: user program that uses `Record<int32>`, `Array<string>`, `Array<Foo>` — types resolve identically Rust vs TS
+- `extern dec doc(...)` declaration is parsed and bound; calling `@doc("hi")` on a model validates the arg type
+- Stdlib reflection types (`TypeSpec.Reflection.Model`, `TypeSpec.Reflection.Operation`) resolvable and usable in templates like `model X<T extends Reflection.Model>`
+- Diagnostic: calling a decorator that's declared in stdlib but not registered with M6 emits a warning (similar to TS "unknown decorator implementation") — verify TS behavior
+
+**Acceptance criteria**:
+
+- Stdlib loads at every `Checker::new()` without errors
+- `Array<T>` and `Record<T>` instantiation produces same TypeIds + properties as TS
+- Intrinsic types (`string`, `int32`, etc.) link to their stdlib declarations — `symbol_to_type[<stdlib string symbol>]` and `intrinsics.string` point to the same `TypeId`
+- All M1–M8 tests still pass (existing comparison tests didn't load stdlib; now they do — diagnostic deltas are expected ONLY where TS would also emit them)
+
+**Out of scope**:
+
+- `@typespec/http`, `@typespec/rest`, `@typespec/versioning` libraries — those are M11's scope
+- Stdlib decorator JS implementations being callable — that's wired in M11 (M10 only handles the declarations / type-side)
+- Bundling stdlib for distribution — M10 reads from `node_modules/@typespec/compiler/lib`
+
+**Estimated complexity**: Medium (~1,500 Rust LOC + ~500 LOC tests). Smaller than M9 because it leverages M9's plumbing; bigger than it looks because intrinsic-stdlib reconciliation can surface latent M5a/M5e issues.
+
+---
+
+### M11 — Standard decorator coverage and helper API surface
+
+**Goal**: Register the JS implementations of TypeSpec's standard library decorators with the Rust checker via M6's callback registry. Expose the helper functions (`getDoc`, `getRoute`, `getStatusCode`, `getEffectiveModelType`, etc.) needed by real emitters from the M8 adapter. Cover `@typespec/compiler` and `@typespec/http` at minimum; `@typespec/rest` and `@typespec/versioning` are stretch.
+
+**Why**: M6 wired the bridge with 4 hand-picked decorators. M11 scales that to the ~50+ decorators real emitters depend on, AND exposes the corresponding getter helpers in the M8 Program adapter.
+
+**Key source files**:
+
+- `packages/compiler/src/lib/intrinsic/decorators.ts` — `@typespec/compiler` decorator implementations (the source of truth for behavior — your Rust side validates arity/target; the JS side does the actual mutation via M6 callbacks)
+- `packages/http/src/decorators.ts` — `@typespec/http` decorators (`@route`, `@get`, `@header`, etc.)
+- `packages/http/src/lib.ts` — `@typespec/http` library definition (`$lib`, error codes, state symbols)
+- `packages/rest/src/*.ts` — `@typespec/rest` (defer if scoping cuts here)
+- `packages/compiler/src/lib/decorator-state.ts` (or equivalent) — how TS stores decorator state per-program, per-decorator (the `Program.stateMap` pattern)
+
+**Deliverables**:
+
+- Decorator registration loader in `packages/compiler-rust/src/decorator-registration.ts`:
+  - `registerLibraryDecorators(checker, libraryPackage)` — given a library's `$lib` export and decorator implementations, register all by qualified name (`TypeSpec.@doc`, `TypeSpec.Http.@route`, etc.)
+  - `registerStandardDecorators(checker)` — convenience to register `@typespec/compiler`, `@typespec/http`, optionally `@typespec/rest`
+- Rust side (`crates/typespec-checker/src/decorator.rs` extension):
+  - The decorator registry already exists per M6
+  - Possibly extend to support `Program.stateMap` semantics: TS decorators store state via `program.stateMap(stateKey).set(target, value)` — this is a different API surface than M6's `context.setProperty(target, "@doc:doc", value)`. Decide which model to expose; if changing the API, document a deviation
+  - **Recommended**: keep M6's flat `setProperty(target, key, value)` model, and re-expose it via JS-side wrappers that mimic `program.stateMap(symbol).set(target, value)` semantics — `symbol.toString()` becomes the key prefix
+- Helper functions in the M8 Program adapter (`packages/compiler-rust/src/decorator-helpers.ts` extension OR new files per library):
+  - `@typespec/compiler` helpers (~25): `getDoc`, `getSummary`, `getDeprecated`, `getKey`, `getFormat`, `getPattern`, `getMinLength`, `getMaxLength`, `getMinValue`, `getMaxValue`, `getMinItems`, `getMaxItems`, `isSecret`, `getEncode`, `getVisibility`, `getDiscriminator`, `getKnownValues`, `getFriendlyName`, `getProjectedName`, `getOverloads`, `isErrorModel`, `getEncodedName`, `getMediaTypeHint`, `getExamples`, `getOpExamples`
+  - `@typespec/http` helpers (~15): `getRoutePath`, `getHttpVerb`, `isBody`, `isBodyRoot`, `isBodyIgnore`, `isMultipartBody`, `getPathParam`, `getQueryParam`, `getHeaderField`, `getStatusCodes`, `getServers`, `getAuthentication`, `getHttpFileModel`, `isSharedRoute`, `getHttpService`
+  - `@typespec/rest` helpers (~10, stretch): `getSegment`, `getActionSeparator`, `isAutoRoute`, `getResourceTypeKey`, `getParentResource`, `getResourceLocationType`, `getResourceOperation` (action/createsOrReplacesResource/etc.)
+- New library-specific Program-adapter modules:
+  - `packages/compiler-rust/src/http-helpers.ts` — `@typespec/http`-style getters
+  - `packages/compiler-rust/src/rest-helpers.ts` — `@typespec/rest` (stretch)
+- Validation: each decorator declaration from stdlib `.tsp` (loaded in M10) cross-references the registered JS implementation. Diagnose mismatches (declared signature vs registered fn arity).
+
+**Implementation guidance — leverage existing TS implementations**:
+
+The decorator implementations in `@typespec/compiler`, `@typespec/http`, etc. are already shipped as JS. Don't reimplement them — load them and register them via M6's bridge:
+
+```typescript
+// packages/compiler-rust/src/decorator-registration.ts
+import * as compilerDecorators from "@typespec/compiler/lib/intrinsic/decorators.js";
+import * as httpDecorators from "@typespec/http/dist/src/decorators.js";
+
+export function registerStandardDecorators(checker) {
+  // Iterate exports starting with "$"
+  for (const [exportName, fn] of Object.entries(compilerDecorators)) {
+    if (exportName.startsWith("$") && typeof fn === "function") {
+      const decoratorName = `TypeSpec.@${exportName.slice(1)}`; // $doc → TypeSpec.@doc
+      checker.registerDecorator(decoratorName, adaptDecoratorFn(fn));
+    }
+  }
+  // Same for httpDecorators with "TypeSpec.Http." prefix
+}
+
+function adaptDecoratorFn(originalFn) {
+  // Wrap so the call signature matches what M6's decorator bridge expects:
+  // TS decorator: (context: DecoratorContext, target: Type, ...args) => void
+  // M6 bridge:    (context, target, ...args) => void with our marshalling
+  return (m6Context, m6Target, ...args) => {
+    // Adapt M6 context (getProperty/setProperty) to TS DecoratorContext
+    // (program.stateMap(sym).set(target, val))
+    const tsContext = makeTsContextShim(m6Context);
+    return originalFn(tsContext, m6Target, ...args);
+  };
+}
+```
+
+**The `program.stateMap` shim is the trickiest piece.** TS decorators expect `context.program.stateMap(Symbol(...)).set(target, value)`. M6 stores state as a flat `(typeId, key) → value` map. The adapter must:
+
+1. Synthesize a `program` object that provides `stateMap(key) → Map`-like
+2. The synthesized Map's `set(target, value)` forwards to M6's `setProperty(target, keyAsString, value)`
+3. Library helpers (`getDoc`) read from the same flat map via the M8 Program's `_decoratorState` WeakMap
+
+Document this adapter in the M11 log and in code comments — it's the most subtle integration point.
+
+**Test strategy**:
+
+- Comparison tests: spec uses `@doc`, `@route`, `@get`, `@statusCode`, `@header`, `@body` — Rust adapter helpers return identical values vs TS Program helpers
+- `@typespec/http` route building: `@route("/users") interface Users { @get list(): User[] }` — `getRoutePath()` on each operation returns `"/users"` joined
+- Decorator validation: `@minValue("not a number")` produces same diagnostic as TS
+- ~30–50 comparison tests across compiler decorators
+- ~15–25 comparison tests for http decorators
+
+**Acceptance criteria**:
+
+- All `@typespec/compiler` decorators (~25) registered and validated; helpers exposed in the adapter
+- All `@typespec/http` decorators (~15) registered; helpers exposed
+- ~50–75 new comparison tests pass
+- `program.stateMap` shim correctly bridges TS-style decorators to M6's flat state map
+- All previous tests still pass
+
+**Out of scope**:
+
+- `@typespec/rest` (stretch — defer if scope cuts)
+- `@typespec/versioning` (definitely M12 or later)
+- Library-defined extern projections
+- Decorator implementations in user-written `.ts` files (libraries that ship `.ts` rather than `.js` aren't supported; standard libraries all ship `.js`)
+
+**Estimated complexity**: Large (~1,500 JS/TS LOC for adapters + helpers + tests; minimal Rust changes). The `stateMap` shim is the centerpiece.
+
+---
+
+### M12 — Expand Program adapter to broad TS-Program interface coverage
+
+**Goal**: Expand the M8 navigator-style Program adapter to cover the broader TS `Program`/`Checker` interface that real emitters consume. Target: `@typespec/json-schema` (the simplest mainstream emitter) runs against the adapter and produces identical output to running against TS.
+
+**Why**: M8 covers navigator-style emission. M11 covers decorator state. Real emitters also call `checker.getTypeName`, `checker.cloneType`, `program.host.writeFile`, `program.compilerOptions`, `getOverloads`, `getDiscriminatedUnion`, `getDeprecationDetails`, and many other surface APIs. M12 expands the adapter to satisfy what `@typespec/json-schema`'s emitter actually invokes.
+
+**Reference emitter**: `@typespec/json-schema`. Read it first to discover the actual API surface needed. Add coverage iteratively: try running the emitter, catch the "function X not implemented" error, implement X, retry. Repeat until it produces output. Then compare output to TS.
+
+**Key source files** (TS Program API surface — too large to list completely; instead, the agent should READ `@typespec/json-schema`'s source and trace which Program APIs it calls):
+
+- `packages/compiler/src/core/types.ts` — `Program`, `Checker` interfaces (continue from M8)
+- `packages/compiler/src/core/program.ts` — Program implementation
+- `packages/compiler/src/core/checker.ts` — Checker methods exposed to emitters: `getTypeName`, `cloneType`, `createAndFinishType`, `getStdType`, `resolveCompletions`, etc.
+- `packages/compiler/src/core/semantic-walker.ts` — additional walker APIs beyond `navigateProgram` (e.g., `navigateTypesInNamespace`)
+- `packages/compiler/src/emitter-framework/` — `AssetEmitter`, `CodeTypeEmitter` (the asset emitter framework — likely NOT needed for json-schema which uses navigator pattern, but verify)
+- `packages/json-schema/src/emitter.ts` — the actual emitter you're targeting
+
+**Deliverables**:
+
+- M8 adapter expansion in `packages/compiler-rust/src/program.ts`:
+  - `checker.getTypeName(type)` — produces TS-identical fully-qualified type names
+  - `checker.cloneType(type, overrides?)` — produces a new Type with same fields (Rust-side: deep copy into the JS adapter graph; or simulate)
+  - `checker.getStdType(name)` — lookup `TypeSpec.Reflection.Model` etc.
+  - `program.host` — file system abstraction with `readFile`, `writeFile`, `mkdirp`, `stat` — backed by Node `fs` in production, in-memory map for tests
+  - `program.compilerOptions` — pass-through from the CLI / test harness
+  - `program.sourceFiles` — return parsed source files for file-aware emitters
+  - `program.stateMap(key)` / `program.stateSet(key)` — full implementation (M11 may have stubbed this)
+  - `program.reportDiagnostic` — must include source location (line/character) per source file
+  - `getOverloads(program, op)`, `getDiscriminatedUnion`, `getDeprecationDetails`, `getFriendlyName`, `getKnownValues` and ~10–20 other helpers used by json-schema
+- New file `packages/compiler-rust/src/host-fs.ts` — production file system host
+- Verify that `@typespec/json-schema` can `import` the M8 adapter's Program and run successfully:
+  - Add `@typespec/json-schema` as a devDependency of `@typespec/compiler-rust`
+  - Test fixture: a TypeSpec spec, the json-schema emitter, compare output JSON files
+- Test infrastructure: ability to run the json-schema emitter against an in-memory output host and diff against expected files
+
+**Implementation guidance — discover-as-you-go pattern**:
+
+This milestone is unusual because the spec is "make `@typespec/json-schema` work" — the agent should:
+
+1. Add `@typespec/json-schema` as a devDependency
+2. Write a minimal test: load a tiny TypeSpec spec, build Rust-adapter Program, invoke json-schema's `$onEmit`
+3. Run it. It will throw "X is not a function" or similar
+4. Implement X in the adapter
+5. Repeat until the test runs without errors
+6. Then add comparison tests for output equality
+
+Don't try to predict every API json-schema uses — let the emitter's actual usage drive coverage.
+
+**Test strategy**:
+
+- Iterative as described above
+- Final ~10–20 comparison tests: TypeSpec spec → json-schema emitter → produced JSON files match between Rust-adapter and TS-Program paths
+- Test cases: simple model, model with all primitive types, enum, union, nested namespace, model with `@doc`/`@summary`/`@discriminator`, recursive model, templated model instantiation
+
+**Acceptance criteria**:
+
+- `@typespec/json-schema` emitter runs successfully against Rust-adapter Program for the target test cases
+- Produced JSON Schema output matches between Rust path and TS path (byte-identical or only-whitespace differences)
+- No "function not implemented" errors thrown
+- All previous tests still pass
+
+**Out of scope**:
+
+- `@typespec/openapi3` emitter — defer to a follow-on; OpenAPI3 emitter is much larger and depends on `@typespec/rest`
+- Multi-emitter runs (one entry point, multiple emitters) — single emitter at a time
+- Asset emitter framework (`@typespec/compiler/emitter-framework`) if json-schema doesn't use it — verify; if it does, M12 ports the parts needed
+- Source maps in emitter output
+
+**Estimated complexity**: Large (~2,000–3,000 JS/TS LOC of adapter expansion + ~500 LOC tests; minimal Rust changes). Discovery-driven so timing depends heavily on what json-schema actually needs.
+
+---
+
+### M13 — Wire Rust checker into the existing `tsp compile` CLI
+
+**Goal**: Add `tsp compile --use-rust-checker main.tsp` (or equivalent flag/env var) to the existing TS `tsp` CLI in `packages/compiler`. When the flag is set, the CLI loads sources, calls the Rust `check()` via the M9–M12 infrastructure, builds a Program via the M8/M12 adapter, and feeds that Program to the existing emitter pipeline. With this, `tsp compile main.tsp --emit @typespec/json-schema` works end-to-end through the Rust checker.
+
+**Why**: M9–M12 produce the capability; M13 makes it accessible via the canonical user-facing CLI. Without M13, users would have to write Node scripts that import `@typespec/compiler-rust` and invoke the adapter manually.
+
+**Key source files**:
+
+- `packages/compiler/src/core/program.ts` — `compile()`, `createProgram()` — the entry points the CLI uses
+- `packages/compiler/cmd/tsp.js` and `packages/compiler/src/core/cli/` — CLI argument parsing
+- `packages/compiler/src/core/cli/actions/compile/compile.ts` — the compile action
+- `packages/compiler/src/config/` — tspconfig.yaml loading (NOT changed; CLI continues to use this)
+
+**Deliverables**:
+
+- New flag wiring in `packages/compiler/src/core/cli/actions/compile/compile.ts`:
+  - Add `--use-rust-checker` CLI flag (Boolean)
+  - Also respect `TYPESPEC_USE_RUST_CHECKER=1` environment variable
+- New entry point in `packages/compiler/src/core/program.ts` or a sibling file:
+  - `compileWithRustChecker(host, mainFile, options)` — does the work of `compile()` but routes type-checking through the Rust path
+  - Wraps the host's source-loading callbacks for Rust to call (per M9's host pattern)
+  - Calls Rust `check()` via the napi binding from `@typespec/compiler-rust`
+  - Builds a Program via the M12 adapter
+  - Returns a Program compatible with the existing emitter pipeline (`$onEmit` invocation, diagnostic surfacing, exit-code handling)
+- `@typespec/compiler` adds `@typespec/compiler-rust` as an OPTIONAL peer dependency (not required for users who don't use the Rust checker)
+- Documentation updates:
+  - `packages/compiler/README.md` notes the Rust-checker option as experimental
+  - `docs/rust-port/README.md` describes how to enable Rust-checker compilation
+- Test infrastructure:
+  - Add a CI matrix entry that runs a subset of the existing `packages/compiler` E2E tests with `TYPESPEC_USE_RUST_CHECKER=1` set
+  - These tests should pass identically — if not, M11/M12 has coverage gaps
+- A real-world smoke test:
+  - Pick a small TypeSpec example from `packages/samples/` (or write one)
+  - Compile it with `tsp compile sample.tsp --emit @typespec/json-schema` both ways
+  - Assert output is identical
+
+**Implementation guidance**:
+
+```typescript
+// packages/compiler/src/core/cli/actions/compile/compile.ts (extension)
+
+export async function compileAction(options: CompileOptions) {
+  // ... existing tspconfig loading, entry resolution, etc.
+
+  const useRustChecker = options.useRustChecker || process.env.TYPESPEC_USE_RUST_CHECKER === "1";
+
+  let program: Program;
+  if (useRustChecker) {
+    // Dynamic import so non-Rust users don't pay the cost
+    const { compileWithRustChecker } = await import("../../program-rust-bridge.js");
+    program = await compileWithRustChecker(host, mainFile, options);
+  } else {
+    program = await compile(host, mainFile, options);
+  }
+
+  // Existing emitter loop — works on Program shape from either path
+  for (const emitter of options.emitters) {
+    await emitter.$onEmit(buildEmitContext(program, emitter));
+  }
+
+  reportDiagnostics(program.diagnostics);
+}
+```
+
+```typescript
+// packages/compiler/src/core/program-rust-bridge.ts (new file)
+
+import { check, registerDecorator } from "@typespec/compiler-rust";
+import { createProgram } from "@typespec/compiler-rust/program";
+import { registerStandardDecorators } from "@typespec/compiler-rust/decorator-registration";
+
+export async function compileWithRustChecker(
+  host: CompilerHost,
+  mainFile: string,
+  options: CompilerOptions,
+): Promise<Program> {
+  // 1. Register decorators from libraries used by the program (M11 helper)
+  registerStandardDecorators();
+  for (const lib of resolveLibrariesUsedBy(mainFile, host)) {
+    registerLibraryDecorators(lib);
+  }
+
+  // 2. Call Rust check() with the host as a callback bundle (M9 pattern)
+  const checkResult = check(mainFile, {
+    readFile: (path) => host.readFile(path),
+    resolveModule: (specifier, importer) => host.resolveTypeSpecModule(specifier, importer),
+    // ... other host callbacks
+  });
+
+  // 3. Build a Program adapter (M8/M12)
+  return createProgram(checkResult, { host, compilerOptions: options });
+}
+```
+
+**Test strategy**:
+
+- Existing `packages/compiler` E2E test suite runs with `TYPESPEC_USE_RUST_CHECKER=1` — same passes expected (subject to M11/M12 helper coverage)
+- New smoke test: `tsp compile <sample> --emit @typespec/json-schema --use-rust-checker` produces same output as TS path
+- CI matrix entry running a focused subset (don't blow up CI time with the full suite if Rust checker isn't 100%)
+- Failure analysis: when a test fails under Rust-checker, the diagnostic should clearly indicate it was the Rust path (mention "rust-checker" in error metadata)
+
+**Acceptance criteria**:
+
+- `tsp compile sample.tsp --emit @typespec/json-schema --use-rust-checker` succeeds for the smoke test
+- Output files (JSON Schema files written to disk) are byte-identical to TS path
+- A documented subset of existing E2E tests passes with `TYPESPEC_USE_RUST_CHECKER=1`
+- No regressions in the default (TS-checker) path
+- All compiler-rust package tests (1,000+ by this point) still pass
+
+**Out of scope**:
+
+- Replacing the default checker — Rust-checker is opt-in via flag
+- Multi-emitter runs — focus on json-schema; openapi3 / others can be follow-ons after M12 expansion
+- Source watching / `tsp dev` — single-shot only
+- Integration with `tsp init` and project scaffolding — those don't run the checker
+
+**Estimated complexity**: Medium (~500–1,000 TS LOC for the bridge + CLI flag + tests; design is mostly plumbing because M9–M12 did the heavy lifting). High RISK because integration touches the main `@typespec/compiler` package — small surface, broad blast radius.
+
+---
+
 ## Implementation Order
 
 ```
 M1 (Scaffold) → M1.5 (Spike) → M2 (Scanner) → M2.5 (napi v3/ESM) → M3 (Parser) → M4 (Binder)
   → M5a (Models) → M5b (Enums/Unions) → M5c (Ops/Interfaces) → M5d (Relations) → M5e (Templates)
   → M6 (Decorators) → M7 (Numeric precision) → M8 (Program adapter)
+  → M9 (Multi-file + imports) → M10 (Stdlib loading) → M11 (Standard decorators + helpers)
+  → M12 (Adapter expansion + json-schema) → M13 (tsp CLI wiring)
 ```
 
 Each milestone depends on the previous one. They cannot be parallelized.
