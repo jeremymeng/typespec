@@ -597,3 +597,33 @@ export { hello }
 export { parse }
 export { scan }
 export { createDecoratorRegistry, createIntrinsicDecoratorRegistry, intrinsicDecorators, registerDecorator } from './intrinsic-decorators.js'
+
+export function numericFromSerialized(value) {
+  if (value?.literalNumericBigint !== undefined && value.literalNumericBigint !== null) {
+    return { kind: "integer", bigint: value.literalNumericBigint };
+  }
+  if (value?.literalNumericString !== undefined && value.literalNumericString !== null) {
+    return { kind: "decimal", string: value.literalNumericString };
+  }
+  if (value?.literalNumericNumber !== undefined && value.literalNumericNumber !== null) {
+    return { kind: "number", number: value.literalNumericNumber };
+  }
+  return null;
+}
+
+export function numericEquals(rustValue, tsNumeric) {
+  if (rustValue === null || rustValue === undefined) {
+    return false;
+  }
+  const expected = tsNumeric.toString();
+  switch (rustValue.kind) {
+    case "integer":
+      return rustValue.bigint.toString() === expected;
+    case "decimal":
+      return rustValue.string === expected;
+    case "number":
+      return String(rustValue.number) === expected;
+    default:
+      return false;
+  }
+}

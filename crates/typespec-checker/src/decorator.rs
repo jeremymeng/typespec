@@ -7,6 +7,7 @@ use crate::types::TypeId;
 #[derive(Debug, Clone, PartialEq)]
 pub enum DecoratorValue {
     String(String),
+    // Intentionally f64: decorator callback state mirrors JavaScript Number values, not literal storage.
     Number(f64),
     Boolean(bool),
     TypeRef(TypeId),
@@ -16,6 +17,7 @@ pub enum DecoratorValue {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DecoratorArgument {
     String(String),
+    // Intentionally f64: decorator callbacks receive JavaScript Number-compatible arguments.
     Number(f64),
     Boolean(bool),
     TypeRef(TypeId),

@@ -1,4 +1,4 @@
-use napi::bindgen_prelude::Object;
+use napi::bindgen_prelude::{BigInt, Object};
 use napi::Env;
 use napi_derive::napi;
 use typespec_checker::{
@@ -8,7 +8,7 @@ use typespec_checker::{
     CheckResult, DecoratorValue, EnumMemberValue, Type, TypeId,
 };
 use typespec_parser::parse;
-use typespec_source::{Diagnostic, DiagnosticSeverity, SourceFile};
+use typespec_source::{bigint_to_napi_words, Diagnostic, DiagnosticSeverity, Numeric, SourceFile};
 
 use crate::decorator::NapiDecoratorRunner;
 use crate::scanner::DiagnosticInfo;
@@ -59,9 +59,15 @@ pub struct SerializedType {
     pub target_id: Option<u32>,
     pub literal_string: Option<String>,
     pub literal_numeric: Option<f64>,
+    pub literal_numeric_bigint: Option<BigInt>,
+    pub literal_numeric_string: Option<String>,
+    pub literal_numeric_number: Option<f64>,
     pub literal_boolean: Option<bool>,
     pub enum_member_value_string: Option<String>,
     pub enum_member_value_numeric: Option<f64>,
+    pub enum_member_value_numeric_bigint: Option<BigInt>,
+    pub enum_member_value_numeric_string: Option<String>,
+    pub enum_member_value_numeric_number: Option<f64>,
     pub expression: Option<bool>,
     pub template_parameter_ids: Vec<u32>,
     pub template_argument_ids: Vec<u32>,
@@ -333,9 +339,15 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
         target_id: None,
         literal_string: None,
         literal_numeric: None,
+        literal_numeric_bigint: None,
+        literal_numeric_string: None,
+        literal_numeric_number: None,
         literal_boolean: None,
         enum_member_value_string: None,
         enum_member_value_numeric: None,
+        enum_member_value_numeric_bigint: None,
+        enum_member_value_numeric_string: None,
+        enum_member_value_numeric_number: None,
         expression: None,
         template_parameter_ids: Vec::new(),
         template_argument_ids: Vec::new(),
@@ -423,7 +435,13 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
                     serialized.enum_member_value_string = Some(value.clone());
                 }
                 Some(EnumMemberValue::Numeric(value)) => {
-                    serialized.enum_member_value_numeric = Some(*value);
+                    serialized.enum_member_value_numeric = value.as_number();
+                    serialized.enum_member_value_numeric_number = value.as_number();
+                    if let Some(bigint) = numeric_bigint(value) {
+                        serialized.enum_member_value_numeric_bigint = Some(bigint);
+                    } else {
+                        serialized.enum_member_value_numeric_string = Some(value.to_string());
+                    }
                 }
                 None => {}
             }
@@ -579,8 +597,14 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
             serialized.literal_string = Some(value.value.clone());
         }
         Type::NumericLiteral(value) => {
-            serialized.name = format_number(value.value);
-            serialized.literal_numeric = Some(value.value);
+            serialized.name = value.value.to_string();
+            serialized.literal_numeric = value.value.as_number();
+            serialized.literal_numeric_number = value.value.as_number();
+            if let Some(bigint) = numeric_bigint(&value.value) {
+                serialized.literal_numeric_bigint = Some(bigint);
+            } else {
+                serialized.literal_numeric_string = Some(value.value.to_string());
+            }
         }
         Type::BooleanLiteral(value) => {
             serialized.name = value.value.to_string();
@@ -598,12 +622,10 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
     serialized
 }
 
-fn format_number(value: f64) -> String {
-    if value.fract() == 0.0 {
-        format!("{value:.0}")
-    } else {
-        value.to_string()
-    }
+fn numeric_bigint(value: &Numeric) -> Option<BigInt> {
+    let bigint = value.as_bigint()?;
+    let (sign_bit, words) = bigint_to_napi_words(&bigint);
+    Some(BigInt { sign_bit, words })
 }
 
 fn convert_diagnostic(diagnostic: Diagnostic) -> DiagnosticInfo {

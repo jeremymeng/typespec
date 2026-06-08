@@ -201,9 +201,15 @@ export interface SerializedType {
   targetId?: number
   literalString?: string
   literalNumeric?: number
+  literalNumericBigint?: bigint
+  literalNumericString?: string
+  literalNumericNumber?: number
   literalBoolean?: boolean
   enumMemberValueString?: string
   enumMemberValueNumeric?: number
+  enumMemberValueNumericBigint?: bigint
+  enumMemberValueNumericString?: string
+  enumMemberValueNumericNumber?: number
   expression?: boolean
   templateParameterIds: Array<number>
   templateArgumentIds: Array<number>
@@ -251,3 +257,19 @@ export declare function createDecoratorRegistry(
   decorators?: Record<string, DecoratorImplementation>,
 ): Record<string, DecoratorImplementation>;
 export declare function createIntrinsicDecoratorRegistry(): Record<string, DecoratorImplementation>;
+
+
+export type SerializedNumeric =
+  | { kind: "integer"; bigint: bigint }
+  | { kind: "decimal"; string: string }
+  | { kind: "number"; number: number };
+
+export declare function numericFromSerialized(value: {
+  literalNumericBigint?: bigint;
+  literalNumericString?: string;
+  literalNumericNumber?: number;
+}): SerializedNumeric | null;
+export declare function numericEquals(
+  rustValue: SerializedNumeric | null,
+  tsNumeric: { toString(): string },
+): boolean;

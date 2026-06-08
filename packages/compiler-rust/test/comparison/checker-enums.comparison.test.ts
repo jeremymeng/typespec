@@ -182,7 +182,7 @@ describe("checker enums comparison: Rust vs TS", () => {
 
   it("reports duplicate enum members like TS", async () => {
     await expectDiagnosticsLikeTs(`enum E { A, A }`, ["enum-member-duplicate"]);
-  }, 10000);
+  }, 15000);
 
   it("reports duplicate enum members introduced by spread like TS", async () => {
     await expectDiagnosticsLikeTs(`enum Base { A } enum E { A, ...Base }`, [

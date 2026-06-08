@@ -1,5 +1,9 @@
 #![doc = "Shared source abstractions for the TypeSpec Rust port."]
 
+pub mod numeric;
+
+pub use numeric::{bigint_to_napi_words, InvalidNumericError, Numeric};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
     pub line: u32,

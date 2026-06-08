@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 use typespec_parser::ast::{NamespaceBody, NodeData, NodeId};
 use typespec_parser::syntax_kind::SyntaxKind;
 use typespec_parser::ParseResult;
-use typespec_source::{Diagnostic, DiagnosticSeverity, Span};
+use typespec_source::{Diagnostic, DiagnosticSeverity, Numeric, Span};
 
 use crate::decorator::{
     decorator_state_key, DecoratorApplication, DecoratorArgument, DecoratorContext,
@@ -60,7 +60,7 @@ enum NamespaceMemberKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum LiteralKey {
     String(String),
-    Numeric(u64),
+    Numeric(Numeric),
     Boolean(bool),
 }
 
@@ -571,8 +571,12 @@ impl<'p> Checker<'p> {
                 self.string_literal(Some(node), value.clone());
                 Some(EnumMemberValue::String(value))
             }
-            NodeData::NumericLiteral { value, .. } => {
-                self.numeric_literal(Some(node), value);
+            NodeData::NumericLiteral {
+                value_as_string, ..
+            } => {
+                let value = Numeric::from_str(&value_as_string)
+                    .expect("parser emitted invalid numeric literal");
+                self.numeric_literal(Some(node), value.clone());
                 Some(EnumMemberValue::Numeric(value))
             }
             _ => None,
@@ -1261,7 +1265,13 @@ impl<'p> Checker<'p> {
             NodeData::UnionExpression { .. } => self.check_union_expression(node_id),
             NodeData::IntersectionExpression { .. } => self.check_intersection_expression(node_id),
             NodeData::StringLiteral { value } => self.string_literal(Some(node_id), value),
-            NodeData::NumericLiteral { value, .. } => self.numeric_literal(Some(node_id), value),
+            NodeData::NumericLiteral {
+                value_as_string, ..
+            } => self.numeric_literal(
+                Some(node_id),
+                Numeric::from_str(&value_as_string)
+                    .expect("parser emitted invalid numeric literal"),
+            ),
             NodeData::BooleanLiteral { value } => self.boolean_literal(Some(node_id), value),
             NodeData::TemplateParameterDeclaration { .. } => self.check_template_parameter(node_id),
             NodeData::TemplateArgument { argument, .. } => self.type_for_node(argument),
@@ -2337,7 +2347,7 @@ impl<'p> Checker<'p> {
                 let type_id = self.type_for_node(node_id);
                 match self.type_arena.get(type_id).clone() {
                     Type::StringLiteral(value) => DecoratorArgument::String(value.value),
-                    Type::NumericLiteral(value) => DecoratorArgument::Number(value.value),
+                    Type::NumericLiteral(value) => DecoratorArgument::Number(value.value.as_f64()),
                     Type::BooleanLiteral(value) => DecoratorArgument::Boolean(value.value),
                     Type::Null => DecoratorArgument::None,
                     _ => DecoratorArgument::TypeRef(type_id),
@@ -2710,8 +2720,8 @@ impl<'p> Checker<'p> {
         )
     }
 
-    fn numeric_literal(&mut self, node_id: Option<NodeId>, value: f64) -> TypeId {
-        let key = LiteralKey::Numeric(value.to_bits());
+    fn numeric_literal(&mut self, node_id: Option<NodeId>, value: Numeric) -> TypeId {
+        let key = LiteralKey::Numeric(value.clone());
         self.literal_type(
             node_id,
             key,
@@ -3134,7 +3144,10 @@ mod tests {
         let Type::EnumMember(code) = result.type_arena.get(en.members["Code"]) else {
             panic!("expected enum member");
         };
-        assert!(matches!(code.value, Some(EnumMemberValue::Numeric(42.0))));
+        assert!(matches!(
+            code.value,
+            Some(EnumMemberValue::Numeric(ref value)) if value == &Numeric::from_str("42").unwrap()
+        ));
     }
 
     #[test]

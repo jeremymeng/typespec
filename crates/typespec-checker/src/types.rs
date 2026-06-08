@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use indexmap::IndexMap;
 use typespec_parser::ast::NodeId;
 use typespec_source::Diagnostic;
+use typespec_source::Numeric;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SymbolId(u32);
@@ -460,7 +461,7 @@ pub struct EnumMemberType {
 #[derive(Debug, Clone)]
 pub enum EnumMemberValue {
     String(String),
-    Numeric(f64),
+    Numeric(Numeric),
 }
 
 #[derive(Debug, Clone)]
@@ -556,10 +557,7 @@ pub struct StringLiteralType {
 
 #[derive(Debug, Clone)]
 pub struct NumericLiteralType {
-    /// Numeric literals use f64 in M5b. This matches ordinary test cases, but
-    /// does not preserve TypeScript's arbitrary-precision Numeric semantics for
-    /// very large or very precise literals.
-    pub value: f64,
+    pub value: Numeric,
 }
 
 #[derive(Debug, Clone)]

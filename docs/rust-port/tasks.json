@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-08T16:25:41Z",
+  "updated_at": "2026-06-08T16:51:18Z",
   "updated_by": "agent:rust-port-m7",
   "tasks": [
     {
@@ -847,7 +847,7 @@
     {
       "id": "M7",
       "title": "Replace f64 with arbitrary-precision Numeric for literal values",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M6"],
       "plan_section": "docs/rust-port/plan.md#m7--replace-f64-with-arbitrary-precision-numeric-for-literal-values",
       "complexity": "medium",
@@ -855,7 +855,7 @@
       "branch": "jeremymeng/rust-port-m7-numeric-precision",
       "pr": null,
       "started_at": "2026-06-08T16:25:41Z",
-      "completed_at": null,
+      "completed_at": "2026-06-08T16:51:18Z",
       "key_source_files": [
         "packages/compiler/src/core/numeric.ts",
         "packages/compiler/src/core/numeric-ranges.ts",
@@ -863,83 +863,83 @@
       ],
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "num-bigint added as dependency of typespec-source (and used downstream)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-source/src/numeric.rs: Numeric struct mirroring TS InternalData {n: BigInt, e, d, s}"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Numeric::from_str parses TS-compatible numeric literals (signs, exponents, decimals)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Numeric arithmetic: equals/gt/lt/gte/lte with canonical-form semantics matching TS"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Numeric::as_i64, as_u64, as_bigint, to_string, is_integer"
         },
         {
-          "done": false,
+          "done": true,
           "text": "NumericLiteralType.value: f64 -> Numeric (in typespec-checker/src/types.rs)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "EnumMemberValue::Numeric(f64) -> EnumMemberValue::Numeric(Numeric)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "NumericRange { min: f64, max: f64 } -> Numeric bounds; intrinsic ranges populated with exact int64/uint64/decimal128 boundaries"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Type relation literal narrowing uses Numeric comparisons not f64"
         },
         {
-          "done": false,
+          "done": true,
           "text": "M5e instantiation memoization keys use Numeric so distinct large literals get distinct cache entries"
         },
         {
-          "done": false,
+          "done": true,
           "text": "napi marshalling: BigInt for integer-valued Numerics, structured payload for non-integer (value_string or {n,e,d,s})"
         },
         {
-          "done": false,
+          "done": true,
           "text": "JS-side test helper reconstructs Numeric from BigInt/string fields"
         },
         {
-          "done": false,
+          "done": true,
           "text": "New precision-probing comparison tests: int64.MAX, int64.MAX+1, uint64 boundary, safeint boundary"
         },
         {
-          "done": false,
+          "done": true,
           "text": "New precision tests: distinct Foo<2^53> vs Foo<2^53+1> instantiations"
         },
         {
-          "done": false,
+          "done": true,
           "text": "New precision tests: decimal equality (0.1, 0.2, 0.3) and decimal-range narrowing"
         },
         {
-          "done": false,
+          "done": true,
           "text": "New precision tests: enum member with very large integer value"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Zero remaining f64 uses for literal value storage in typespec-checker (search documented; legitimate float-scalar range bounds noted)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "All 822 existing tests still pass"
         },
         {
-          "done": false,
+          "done": true,
           "text": "cargo build / test / clippy -D warnings / fmt --check all green"
         },
         {
-          "done": false,
+          "done": true,
           "text": "pnpm -C packages/compiler-rust build / test all green"
         }
       ],
@@ -948,6 +948,11 @@
           "timestamp": "2026-06-08T16:25:41Z",
           "author": "agent:rust-port-m7",
           "text": "Claimed M7 and started arbitrary-precision Numeric implementation."
+        },
+        {
+          "timestamp": "2026-06-08T16:51:18Z",
+          "author": "agent:rust-port-m7",
+          "text": "Completed M7: Numeric now uses num-bigint, checker/napi marshalling are updated, precision comparison tests added, and validation is green."
         }
       ]
     }

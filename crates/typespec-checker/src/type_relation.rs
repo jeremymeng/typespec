@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::mem::discriminant;
 
 use typespec_parser::ast::NodeId;
-use typespec_source::{Diagnostic, DiagnosticSeverity, Span};
+use typespec_source::{Diagnostic, DiagnosticSeverity, Numeric, Span};
 
 use crate::numeric_ranges::{is_in_range, numeric_scalar_info, range_subsumes};
 use crate::types::{ModelPropertyType, ModelType, ScalarType, Type, TypeArena, TypeId, UnionType};
@@ -131,11 +131,7 @@ impl<'a> TypeRelationChecker<'a> {
             numeric_scalar_info(self.arena.get(source)),
             numeric_scalar_info(self.arena.get(target)),
         ) {
-            if source_info.range.min.is_infinite()
-                && source_info.range.max.is_infinite()
-                && target_info.range.min.is_infinite()
-                && target_info.range.max.is_infinite()
-            {
+            if source_info.range.unbounded && target_info.range.unbounded {
                 return false;
             }
             return (!target_info.integer || source_info.integer)
@@ -293,25 +289,25 @@ impl<'a> TypeRelationChecker<'a> {
                 self.scalar_related(target, intrinsic_target_id(self.arena, "boolean"))
             }
             (Type::NumericLiteral(source), _) => {
-                self.numeric_literal_assignable_to_scalar(source.value, target)
+                self.numeric_literal_assignable_to_scalar(&source.value, target)
             }
             _ => false,
         }
     }
 
-    fn numeric_literal_assignable_to_scalar(&self, value: f64, target: TypeId) -> bool {
+    fn numeric_literal_assignable_to_scalar(&self, value: &Numeric, target: TypeId) -> bool {
         let target = self.nearest_numeric_intrinsic(target);
         let Some(target) = target else {
             return false;
         };
         match self.arena.get(target) {
             Type::Numeric | Type::Decimal | Type::Decimal128 | Type::Float => true,
-            Type::Integer => value.fract() == 0.0,
+            Type::Integer => value.is_integer(),
             ty => {
                 let Some(info) = numeric_scalar_info(ty) else {
                     return false;
                 };
-                (!info.integer || value.fract() == 0.0) && is_in_range(value, &info.range)
+                (!info.integer || value.is_integer()) && is_in_range(value, &info.range)
             }
         }
     }
@@ -690,7 +686,7 @@ pub fn type_name(arena: &TypeArena, type_id: TypeId) -> String {
         Type::Unknown => "unknown".to_string(),
         Type::Null => "null".to_string(),
         Type::StringLiteral(value) => format!("\"{}\"", value.value),
-        Type::NumericLiteral(value) => format_number(value.value),
+        Type::NumericLiteral(value) => value.value.to_string(),
         Type::BooleanLiteral(value) => value.value.to_string(),
         Type::Error => "<error>".to_string(),
     }
@@ -717,14 +713,6 @@ fn union_type_name(arena: &TypeArena, union: &UnionType) -> String {
         })
         .collect::<Vec<_>>()
         .join(" | ")
-}
-
-fn format_number(value: f64) -> String {
-    if value.fract() == 0.0 {
-        format!("{value:.0}")
-    } else {
-        value.to_string()
-    }
 }
 
 fn is_intrinsic_scalar(ty: &Type) -> bool {
