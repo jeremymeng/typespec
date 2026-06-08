@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-08T18:12:01Z",
+  "updated_at": "2026-06-08T18:27:44Z",
   "updated_by": "agent:rust-port-m8",
   "tasks": [
     {
@@ -959,7 +959,7 @@
     {
       "id": "M8",
       "title": "TS-shaped Program adapter for emitter compatibility",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M7"],
       "plan_section": "docs/rust-port/plan.md#m8--ts-shaped-program-adapter-for-emitter-compatibility",
       "complexity": "medium",
@@ -967,7 +967,7 @@
       "branch": "jeremymeng/rust-port-m8-program-adapter",
       "pr": null,
       "started_at": "2026-06-08T18:12:01Z",
-      "completed_at": null,
+      "completed_at": "2026-06-08T18:27:44Z",
       "key_source_files": [
         "packages/compiler/src/core/types.ts",
         "packages/compiler/src/core/semantic-walker.ts",
@@ -977,71 +977,71 @@
       ],
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "packages/compiler-rust/src/program.ts: createProgram(checkResult) builds Program-shaped object graph from napi output"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Type identity preserved via Map<TypeId, JsObject> cache during materialization (verified by === comparisons)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Structural fields materialized eagerly: kind, name, properties as real Map, namespace pointers, base/source links"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Decorator state side table exposed (e.g., program._decoratorState WeakMap) for helpers to consult"
         },
         {
-          "done": false,
+          "done": true,
           "text": "packages/compiler-rust/src/walker.ts: navigateProgram(program, callbacks) matching TS callback order for namespaces/types/inheritance"
         },
         {
-          "done": false,
+          "done": true,
           "text": "packages/compiler-rust/src/decorator-helpers.ts: getDoc, getSummary, getDeprecated, getKey reading the side table"
         },
         {
-          "done": false,
+          "done": true,
           "text": "packages/compiler-rust/src/type-utils.ts: getNamespaceFullName, isTemplateDeclaration, isType (minimal set used by test emitter)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "packages/compiler-rust/src/diagnostics.ts: Diagnostic shape + program.reportDiagnostic collector"
         },
         {
-          "done": false,
+          "done": true,
           "text": "packages/compiler-rust/test/emitter-compat/test-emitter.ts: reusable test emitter that walks program and emits structured JSON"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Comparison tests run the test emitter against both Rust-adapter-Program and TS-Program; assert identical JSON"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Test cases: empty file, single model, nested models, doc/summary/deprecated decorators, enum + values, union variants, operation with params + return, interface with multiple ops, nested namespaces"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Test cases: templated model instantiated multiple times (both show up), mutual recursion, alias to literal, augment decorator"
         },
         {
-          "done": false,
+          "done": true,
           "text": "navigateProgram callback invocation order matches TS exactly for inheritance chains and nested namespaces"
         },
         {
-          "done": false,
+          "done": true,
           "text": "All 837 existing tests still pass"
         },
         {
-          "done": false,
+          "done": true,
           "text": "cargo build / test / clippy -D warnings / fmt --check all green (any napi-side changes)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "pnpm -C packages/compiler-rust build / test all green"
         },
         {
-          "done": false,
+          "done": true,
           "text": "TypeScript compilation of new adapter files green (verify how packages/compiler-rust handles its own TS sources)"
         }
       ],
@@ -1050,6 +1050,16 @@
           "timestamp": "2026-06-08T18:12:01Z",
           "author": "agent:rust-port-m8",
           "text": "Claimed M8 and chose TypeScript source with Vitest/esbuild execution; no tsc emit step planned."
+        },
+        {
+          "timestamp": "2026-06-08T18:27:44Z",
+          "author": "agent:rust-port-m8",
+          "text": "Completed M8: TypeScript adapter materializes TS-shaped Program/Type graph, walker/helpers/type-utils/diagnostics are implemented, and 22 emitter-compat tests compare Rust adapter output with TS Program output."
+        },
+        {
+          "timestamp": "2026-06-08T18:27:44Z",
+          "author": "agent:rust-port-m8",
+          "text": "Validation green: cargo build/test/clippy/fmt, pnpm -C packages/compiler-rust build/typecheck/test, and docs prettier check."
         }
       ]
     }
