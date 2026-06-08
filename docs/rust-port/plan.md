@@ -538,12 +538,78 @@ The checker is too large to deliver as a single milestone. It's subdivided into 
 
 ---
 
+### M7 — Replace f64 with arbitrary-precision Numeric for literal values
+
+**Status when added**: M5b chose `f64` for `NumericLiteralType.value`, `EnumMemberValue::Numeric`, and intrinsic `NumericRange` bounds as a pragmatic simplification. This leaves latent precision bugs the current comparison suite does not surface (int64 above 2⁵³, uint64 boundaries, decimal128, exact decimal equality like `0.1 + 0.2`). M7 reverses that decision and aligns with TS's arbitrary-precision `Numeric` representation.
+
+**Goal**: Introduce a `Numeric` value type that mirrors TypeSpec's `Numeric` (BigInt mantissa + decimal exponent + sign + decimal-digit count). Replace every `f64` use for literal values, enum-member values, and numeric range bounds. Marshal across the napi-rs boundary using napi v3's native `BigInt` support.
+
+**Reference**: see [ADR-0002](../adr/0002-arbitrary-precision-numeric.md).
+
+**Key source files to mirror from**:
+
+- `packages/compiler/src/core/numeric.ts` — the `Numeric` class with `InternalData { n: bigint; e: number; d: number; s: 1 | -1 }` and parser
+- `packages/compiler/src/core/numeric-ranges.ts` — intrinsic ranges (already ported to Rust in M5d, but with `f64` bounds)
+
+**Deliverables**:
+
+- New `crates/typespec-source/src/numeric.rs` (or in `typespec-checker` if you prefer; `typespec-source` is recommended since literals are foundational):
+  - `pub struct Numeric { n: BigInt, e: i32, d: u32, s: i8 }`
+  - `Numeric::from_str(&str) -> Result<Numeric, InvalidNumericError>` mirroring TS `parse`
+  - `as_i64`, `as_u64`, `as_bigint`, `to_string`, `is_integer`
+  - `equals`, `gt`, `lt`, `gte`, `lte` (consider implementing `PartialOrd`/`Ord` and `PartialEq`/`Eq` with care for canonical form)
+  - Canonical form normalization so `Numeric("1.0")` and `Numeric("1")` compare equal (mirror TS behavior — verify with TS tests)
+  - Unit tests including the precision cases below
+- `crates/typespec-checker/src/types.rs` updates:
+  - `NumericLiteralType { value: f64 }` → `NumericLiteralType { value: Numeric }`
+  - `EnumMemberValue::Numeric(f64)` → `EnumMemberValue::Numeric(Numeric)`
+- `crates/typespec-checker/src/numeric_ranges.rs` updates:
+  - `NumericRange { min: f64, max: f64 }` → `NumericRange { min: Numeric, max: Numeric }`
+  - `is_in_range`, `ranges_overlap`, `range_subsumes` use `Numeric` comparisons
+  - Intrinsic range tables (int8…int64, uint8…uint64, safeint, float32/64, integer, numeric, decimal/decimal128) populated with `Numeric::from_str(...)` for boundary values that f64 can't represent
+- `crates/typespec-checker/src/type_relation.rs` updates:
+  - Literal narrowing uses `Numeric::lte`/`gte` instead of f64 comparison
+  - String→literal parsing in tests goes through `Numeric::from_str` not `parse::<f64>()`
+- `crates/typespec-checker/src/instantiation.rs` (M5e cache key):
+  - If the memoization key embeds `f64` literal values, switch to `Numeric` so `Foo<9_223_372_036_854_775_807>` and `Foo<9_223_372_036_854_775_806>` produce different cache entries (today they collide because f64 rounds both to the same value)
+- napi marshalling in `crates/typespec-napi/src/`:
+  - Add `value_bigint: Option<BigInt>` for integer-valued numerics
+  - Add `value_string: Option<String>` for non-integer numerics (decimal exponent representation as `"123.45e-2"` or `{n, e, d, s}` payload)
+  - Keep `value_number: Option<f64>` as a convenience field for backwards compat — set only when the Numeric is `as_number().is_some()` (i.e., fits in f64 without loss)
+  - JS-side test helper that reconstructs the Numeric from the BigInt/string fields for comparison
+- New comparison tests that PROBE precision (these are the tests that would fail today but should pass with M7):
+  - `int64` literal at boundary: `const x: int64 = 9223372036854775807;` — accept
+  - `int64` literal one past: `const x: int64 = 9223372036854775808;` — diagnostic (out of range)
+  - `uint64` literal at boundary
+  - `safeint` boundary
+  - Distinct `Foo<2^53>` vs `Foo<2^53 + 1>` instantiations get distinct cache entries
+  - Decimal equality: `alias A = 0.3; alias B = 0.1; alias C = 0.2; ...` — Numeric equality semantics
+  - Enum member with very large integer value
+  - Range narrowing for decimal scalars
+
+**Acceptance criteria**:
+
+- All 822 existing tests still pass (this is a representation refactor, not a behavior change for in-range cases)
+- New precision-probing tests (target ~10–15) pass on Rust and match TS exactly
+- Zero remaining `f64` uses for literal value storage (search `crates/typespec-checker` and `crates/typespec-source` for `f64` and document any remaining justified uses; float scalars like `float32` may legitimately keep `f32`/`f64` representation for their _range bounds_ but the literal value type is `Numeric`)
+- `Numeric` API parity with TS `Numeric` for the methods actually used by the checker
+
+**Out of scope**:
+
+- Performance optimization — BigInt arithmetic is 10–100× slower than f64; that's acceptable for a learning project
+- Replacing scalar runtime representation in user-facing types (this is about literal _values_, not the storage of decorated numeric data)
+- Custom decimal arithmetic (use `num-bigint` for the mantissa; expose only the operations the checker needs)
+
+**Estimated complexity**: Medium (~300–500 LOC for `Numeric` itself + ~200–400 LOC of touches + ~50–100 LOC of napi marshalling + ~10–15 new tests)
+
+---
+
 ## Implementation Order
 
 ```
 M1 (Scaffold) → M1.5 (Spike) → M2 (Scanner) → M2.5 (napi v3/ESM) → M3 (Parser) → M4 (Binder)
   → M5a (Models) → M5b (Enums/Unions) → M5c (Ops/Interfaces) → M5d (Relations) → M5e (Templates)
-  → M6 (Decorators)
+  → M6 (Decorators) → M7 (Numeric precision)
 ```
 
 Each milestone depends on the previous one. They cannot be parallelized.

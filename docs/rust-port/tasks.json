@@ -3,8 +3,8 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-06T20:35:07Z",
-  "updated_by": "agent:rust-port-m6",
+  "updated_at": "2026-06-08T16:22:22.390Z",
+  "updated_by": "jeremymeng",
   "tasks": [
     {
       "id": "M1",
@@ -843,6 +843,107 @@
           "text": "Completed M6 with per-call JS decorator registries, napi-rs synchronous callbacks, opaque TypeRef handle marshalling, checker side-table effect storage, doc-comment synthesis, augment decorators, and 31 new comparison tests."
         }
       ]
+    },
+    {
+      "id": "M7",
+      "title": "Replace f64 with arbitrary-precision Numeric for literal values",
+      "status": "not_started",
+      "depends_on": ["M6"],
+      "plan_section": "docs/rust-port/plan.md#m7--replace-f64-with-arbitrary-precision-numeric-for-literal-values",
+      "complexity": "medium",
+      "assignee": null,
+      "branch": null,
+      "pr": null,
+      "started_at": null,
+      "completed_at": null,
+      "key_source_files": [
+        "packages/compiler/src/core/numeric.ts",
+        "packages/compiler/src/core/numeric-ranges.ts",
+        "docs/adr/0002-arbitrary-precision-numeric.md"
+      ],
+      "checklist": [
+        {
+          "done": false,
+          "text": "num-bigint added as dependency of typespec-source (and used downstream)"
+        },
+        {
+          "done": false,
+          "text": "crates/typespec-source/src/numeric.rs: Numeric struct mirroring TS InternalData {n: BigInt, e, d, s}"
+        },
+        {
+          "done": false,
+          "text": "Numeric::from_str parses TS-compatible numeric literals (signs, exponents, decimals)"
+        },
+        {
+          "done": false,
+          "text": "Numeric arithmetic: equals/gt/lt/gte/lte with canonical-form semantics matching TS"
+        },
+        {
+          "done": false,
+          "text": "Numeric::as_i64, as_u64, as_bigint, to_string, is_integer"
+        },
+        {
+          "done": false,
+          "text": "NumericLiteralType.value: f64 -> Numeric (in typespec-checker/src/types.rs)"
+        },
+        {
+          "done": false,
+          "text": "EnumMemberValue::Numeric(f64) -> EnumMemberValue::Numeric(Numeric)"
+        },
+        {
+          "done": false,
+          "text": "NumericRange { min: f64, max: f64 } -> Numeric bounds; intrinsic ranges populated with exact int64/uint64/decimal128 boundaries"
+        },
+        {
+          "done": false,
+          "text": "Type relation literal narrowing uses Numeric comparisons not f64"
+        },
+        {
+          "done": false,
+          "text": "M5e instantiation memoization keys use Numeric so distinct large literals get distinct cache entries"
+        },
+        {
+          "done": false,
+          "text": "napi marshalling: BigInt for integer-valued Numerics, structured payload for non-integer (value_string or {n,e,d,s})"
+        },
+        {
+          "done": false,
+          "text": "JS-side test helper reconstructs Numeric from BigInt/string fields"
+        },
+        {
+          "done": false,
+          "text": "New precision-probing comparison tests: int64.MAX, int64.MAX+1, uint64 boundary, safeint boundary"
+        },
+        {
+          "done": false,
+          "text": "New precision tests: distinct Foo<2^53> vs Foo<2^53+1> instantiations"
+        },
+        {
+          "done": false,
+          "text": "New precision tests: decimal equality (0.1, 0.2, 0.3) and decimal-range narrowing"
+        },
+        {
+          "done": false,
+          "text": "New precision tests: enum member with very large integer value"
+        },
+        {
+          "done": false,
+          "text": "Zero remaining f64 uses for literal value storage in typespec-checker (search documented; legitimate float-scalar range bounds noted)"
+        },
+        {
+          "done": false,
+          "text": "All 822 existing tests still pass"
+        },
+        {
+          "done": false,
+          "text": "cargo build / test / clippy -D warnings / fmt --check all green"
+        },
+        {
+          "done": false,
+          "text": "pnpm -C packages/compiler-rust build / test all green"
+        }
+      ],
+      "log": []
     }
   ]
 }
