@@ -3,8 +3,8 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-08T18:07:45.562Z",
-  "updated_by": "jeremymeng",
+  "updated_at": "2026-06-08T18:12:01Z",
+  "updated_by": "agent:rust-port-m8",
   "tasks": [
     {
       "id": "M1",
@@ -126,7 +126,7 @@
         },
         {
           "done": true,
-          "text": "Answer: arena lifetime vs JS object lifetime â€” can arena be freed safely?"
+          "text": "Answer: arena lifetime vs JS object lifetime \u00e2\u20ac\u201d can arena be freed safely?"
         },
         {
           "done": true,
@@ -959,14 +959,14 @@
     {
       "id": "M8",
       "title": "TS-shaped Program adapter for emitter compatibility",
-      "status": "not_started",
+      "status": "in_progress",
       "depends_on": ["M7"],
       "plan_section": "docs/rust-port/plan.md#m8--ts-shaped-program-adapter-for-emitter-compatibility",
       "complexity": "medium",
-      "assignee": null,
-      "branch": null,
+      "assignee": "agent:rust-port-m8",
+      "branch": "jeremymeng/rust-port-m8-program-adapter",
       "pr": null,
-      "started_at": null,
+      "started_at": "2026-06-08T18:12:01Z",
       "completed_at": null,
       "key_source_files": [
         "packages/compiler/src/core/types.ts",
@@ -1045,7 +1045,13 @@
           "text": "TypeScript compilation of new adapter files green (verify how packages/compiler-rust handles its own TS sources)"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-06-08T18:12:01Z",
+          "author": "agent:rust-port-m8",
+          "text": "Claimed M8 and chose TypeScript source with Vitest/esbuild execution; no tsc emit step planned."
+        }
+      ]
     }
   ]
 }
