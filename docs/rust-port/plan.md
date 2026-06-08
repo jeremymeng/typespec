@@ -604,12 +604,86 @@ The checker is too large to deliver as a single milestone. It's subdivided into 
 
 ---
 
+### M8 — TS-shaped Program adapter for emitter compatibility
+
+**Status when added**: The plan's "explicit non-goals" listed the emitter framework as out-of-scope. M8 partially walks that back: instead of porting the emitter framework to Rust, expose the Rust `check()` output as a **TS-shaped `Program` object** so existing JS-authored emitters can consume it via a thin adapter layer.
+
+**Goal**: A JavaScript-side adapter (`packages/compiler-rust/program-adapter.js` or similar) that takes the napi `check()` output and presents it as a JS object graph matching the TS `Program` / `Type` interfaces closely enough that a typical navigator-style emitter Just Works. Validate against a small custom test emitter (not a real-world one — too much surface area).
+
+**Reference**: see [ADR-0003](../adr/0003-ts-shaped-program-adapter.md).
+
+**Key source files to mirror from**:
+
+- `packages/compiler/src/core/types.ts` — `Program`, `Checker`, `Type` discriminated union (esp. Namespace, Model, ModelProperty, Scalar, Enum, EnumMember, Union, UnionVariant, Operation, Interface, Alias)
+- `packages/compiler/src/core/semantic-walker.ts` — `navigateProgram(program, callbacks)` walker
+- `packages/compiler/src/lib/intrinsic/decorators.ts` (M6 already handles state storage) — getters like `getDoc(program, target)`, `getSummary`, `getDeprecated`, `getKey`
+- `packages/compiler/src/core/type-utils.ts` — small helpers emitters use frequently (`isErrorModel`, `getNamespaceFullName`, `isTemplateDeclaration`)
+
+**Deliverables**:
+
+- `packages/compiler-rust/src/program.ts` (or `.js` — TS for type safety, compiled if needed):
+  - `createProgram(checkResult)` — takes napi `CheckResultJs`, returns a JS object graph matching TS `Program` shape
+  - **Type identity is critical**: a single `Map<TypeId, JsTypeObject>` cache during materialization so `model.properties.get("x").model === model` holds and emitter `WeakMap<Type, ...>` caching works
+  - Eager materialization for structural fields (kind, name, properties as a real `Map`, namespace pointer, etc.)
+  - Decorator state side table exposed as `program._decoratorState: WeakMap<Type, Record<string, unknown>>` for the helpers to consult
+- `packages/compiler-rust/src/walker.ts` — `navigateProgram(program, callbacks)` matching TS semantic-walker behavior (model, modelProperty, namespace, scalar, enum, enumMember, union, unionVariant, operation, interface, alias callbacks)
+- `packages/compiler-rust/src/decorator-helpers.ts` — `getDoc(program, target)`, `getSummary`, `getDeprecated`, `getKey` (the 4 from M6) reading from the side table
+- `packages/compiler-rust/src/type-utils.ts` — small set of helpers a navigator-style emitter typically needs: `isType`, `isTemplateDeclaration`, `getNamespaceFullName`, `isErrorModel` (if M6 added `@error` — likely not; document)
+- `packages/compiler-rust/src/diagnostics.ts` — `Diagnostic` shape matching TS, `program.reportDiagnostic(d)` collecting into a list
+- A **custom test emitter** at `packages/compiler-rust/test/emitter-compat/test-emitter.ts`:
+  - Walks the program via `navigateProgram`
+  - For each namespace/model/op, collects: kind, full name, doc (via `getDoc`), property list with types
+  - Returns a structured JSON description of the spec
+  - Reusable across Rust-adapter input and TS-Program input for comparison
+- Comparison tests at `packages/compiler-rust/test/emitter-compat/*.test.ts`:
+  - Run the test emitter against the Rust adapter
+  - Run the same test emitter against the TS compiler's Program
+  - Assert the output JSON matches structurally
+
+**Test emitter validation cases** (target ~15–25 cases):
+
+- Empty file
+- Single model with primitive properties
+- Nested models
+- Model with `@doc`
+- Enum with members + `@doc` on enum and a member
+- Union with named variants
+- Operation with parameters and return type
+- Interface with multiple operations
+- Nested namespaces + types
+- Templated model instantiated at multiple sites — verify both instantiations show up
+- Mutual model recursion
+- Alias to a literal type
+- `@deprecated` propagating through getDeprecated
+- A model with `@@doc` augment decorator applied — both forms produce the same doc
+
+**Acceptance criteria**:
+
+- Test emitter produces structurally-identical JSON output when fed Rust-adapter-Program vs TS-Program for every case above
+- `navigateProgram` callback invocation order matches TS for nested namespaces and inheritance chains
+- Type identity holds across multiple property accesses (no duplicate JS objects for the same TypeId; verified via `===`)
+- All 837 existing tests still pass
+- `getDoc`/`getSummary`/`getDeprecated`/`getKey` return identical values to TS for every M6-decorated case
+
+**Out of scope** (real emitters need these, but defer to M9+ if anyone ever wants them):
+
+- Library / source-loading APIs (`program.checker.getGlobalNamespaceType` works; `program.host.readFile` doesn't)
+- Source maps in emitFile / file-writing infrastructure
+- Real-world emitters (JSON Schema, OpenAPI3) — the adapter targets navigator-style emitters; full Program interface fidelity is out of scope
+- Mutable type graphs (TS emitters occasionally mutate; Rust adapter returns a frozen view)
+- `Projection` / `templateMapper` / `getEffectiveModelType` / etc. — only the helpers the test emitter actually exercises
+- Asset emitter framework (`@typespec/compiler/emitter-framework`)
+
+**Estimated complexity**: Medium-Large (~600–1,200 LOC of JS/TS adapter code + walker + helpers + test emitter + 15–25 comparison tests; modest napi changes if the existing `check()` output already exposes enough state)
+
+---
+
 ## Implementation Order
 
 ```
 M1 (Scaffold) → M1.5 (Spike) → M2 (Scanner) → M2.5 (napi v3/ESM) → M3 (Parser) → M4 (Binder)
   → M5a (Models) → M5b (Enums/Unions) → M5c (Ops/Interfaces) → M5d (Relations) → M5e (Templates)
-  → M6 (Decorators) → M7 (Numeric precision)
+  → M6 (Decorators) → M7 (Numeric precision) → M8 (Program adapter)
 ```
 
 Each milestone depends on the previous one. They cannot be parallelized.

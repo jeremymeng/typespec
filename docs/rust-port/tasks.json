@@ -3,8 +3,8 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-08T16:51:18Z",
-  "updated_by": "agent:rust-port-m7",
+  "updated_at": "2026-06-08T18:07:45.562Z",
+  "updated_by": "jeremymeng",
   "tasks": [
     {
       "id": "M1",
@@ -955,6 +955,97 @@
           "text": "Completed M7: Numeric now uses num-bigint, checker/napi marshalling are updated, precision comparison tests added, and validation is green."
         }
       ]
+    },
+    {
+      "id": "M8",
+      "title": "TS-shaped Program adapter for emitter compatibility",
+      "status": "not_started",
+      "depends_on": ["M7"],
+      "plan_section": "docs/rust-port/plan.md#m8--ts-shaped-program-adapter-for-emitter-compatibility",
+      "complexity": "medium",
+      "assignee": null,
+      "branch": null,
+      "pr": null,
+      "started_at": null,
+      "completed_at": null,
+      "key_source_files": [
+        "packages/compiler/src/core/types.ts",
+        "packages/compiler/src/core/semantic-walker.ts",
+        "packages/compiler/src/lib/intrinsic/decorators.ts",
+        "packages/compiler/src/core/type-utils.ts",
+        "docs/adr/0003-ts-shaped-program-adapter.md"
+      ],
+      "checklist": [
+        {
+          "done": false,
+          "text": "packages/compiler-rust/src/program.ts: createProgram(checkResult) builds Program-shaped object graph from napi output"
+        },
+        {
+          "done": false,
+          "text": "Type identity preserved via Map<TypeId, JsObject> cache during materialization (verified by === comparisons)"
+        },
+        {
+          "done": false,
+          "text": "Structural fields materialized eagerly: kind, name, properties as real Map, namespace pointers, base/source links"
+        },
+        {
+          "done": false,
+          "text": "Decorator state side table exposed (e.g., program._decoratorState WeakMap) for helpers to consult"
+        },
+        {
+          "done": false,
+          "text": "packages/compiler-rust/src/walker.ts: navigateProgram(program, callbacks) matching TS callback order for namespaces/types/inheritance"
+        },
+        {
+          "done": false,
+          "text": "packages/compiler-rust/src/decorator-helpers.ts: getDoc, getSummary, getDeprecated, getKey reading the side table"
+        },
+        {
+          "done": false,
+          "text": "packages/compiler-rust/src/type-utils.ts: getNamespaceFullName, isTemplateDeclaration, isType (minimal set used by test emitter)"
+        },
+        {
+          "done": false,
+          "text": "packages/compiler-rust/src/diagnostics.ts: Diagnostic shape + program.reportDiagnostic collector"
+        },
+        {
+          "done": false,
+          "text": "packages/compiler-rust/test/emitter-compat/test-emitter.ts: reusable test emitter that walks program and emits structured JSON"
+        },
+        {
+          "done": false,
+          "text": "Comparison tests run the test emitter against both Rust-adapter-Program and TS-Program; assert identical JSON"
+        },
+        {
+          "done": false,
+          "text": "Test cases: empty file, single model, nested models, doc/summary/deprecated decorators, enum + values, union variants, operation with params + return, interface with multiple ops, nested namespaces"
+        },
+        {
+          "done": false,
+          "text": "Test cases: templated model instantiated multiple times (both show up), mutual recursion, alias to literal, augment decorator"
+        },
+        {
+          "done": false,
+          "text": "navigateProgram callback invocation order matches TS exactly for inheritance chains and nested namespaces"
+        },
+        {
+          "done": false,
+          "text": "All 837 existing tests still pass"
+        },
+        {
+          "done": false,
+          "text": "cargo build / test / clippy -D warnings / fmt --check all green (any napi-side changes)"
+        },
+        {
+          "done": false,
+          "text": "pnpm -C packages/compiler-rust build / test all green"
+        },
+        {
+          "done": false,
+          "text": "TypeScript compilation of new adapter files green (verify how packages/compiler-rust handles its own TS sources)"
+        }
+      ],
+      "log": []
     }
   ]
 }
