@@ -3,8 +3,8 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-11-19T22:52:06Z",
-  "updated_by": "agent:rust-port-m9",
+  "updated_at": "2026-11-19T23:02:49Z",
+  "updated_by": "agent:rust-port-m10",
   "tasks": [
     {
       "id": "M1",
@@ -1166,14 +1166,14 @@
     {
       "id": "M10",
       "title": "Standard library loading and built-in decorator declarations",
-      "status": "not_started",
+      "status": "in_progress",
       "depends_on": ["M9"],
       "plan_section": "docs/rust-port/plan.md#m10--standard-library-loading-and-built-in-decorator-declarations",
       "complexity": "medium",
-      "assignee": null,
-      "branch": null,
+      "assignee": "agent:rust-port-m10",
+      "branch": "jeremymeng/rust-port-m10-stdlib",
       "pr": null,
-      "started_at": null,
+      "started_at": "2026-11-19T23:02:49Z",
       "completed_at": null,
       "key_source_files": [
         "packages/compiler/lib/intrinsics.tsp",
@@ -1228,7 +1228,13 @@
           "text": "pnpm -C packages/compiler-rust build / test all green"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-11-19T23:02:49Z",
+          "author": "agent:rust-port-m10",
+          "text": "Claimed M10 on jeremymeng/rust-port-m10-stdlib (based on jeremymeng/rust-port-upstream-sync 56009461d)."
+        }
+      ]
     },
     {
       "id": "M11",
