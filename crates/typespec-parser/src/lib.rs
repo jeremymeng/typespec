@@ -1,6 +1,7 @@
 #![doc = "Parser crate for the TypeSpec Rust port."]
 
 pub mod ast;
+pub mod program;
 pub mod syntax_kind;
 
 use std::cell::RefCell;
@@ -15,10 +16,23 @@ use typespec_scanner::token::{
 use typespec_scanner::{Scanner, TokenFlags};
 use typespec_source::{Diagnostic, DiagnosticSeverity, SourceFile, Span};
 
+pub use program::{
+    parse_program, parse_program_with_options, ImportGraph, InMemorySourceHost,
+    ModuleResolutionError, ProgramParseResult, ResolvedModule, SourceHost,
+};
+
 #[derive(Debug)]
 pub struct ParseResult {
     pub arena: AstArena,
+    /// Root `TypeSpecScript` of the entry file (or the only file).
     pub root: NodeId,
+    /// Every `TypeSpecScript` in the program, in source-load order. A
+    /// single-file parse has exactly `[root]`.
+    pub scripts: Vec<NodeId>,
+    /// Scripts loaded from a library (TS location context `"library"`): files
+    /// reached through a package import. Project-only checks such as
+    /// `unused-using` skip them.
+    pub library_scripts: Vec<NodeId>,
     pub diagnostics: Vec<Diagnostic>,
     pub comments: Vec<NodeId>,
 }
@@ -211,11 +225,17 @@ pub fn parse_with_options(source: &SourceFile, options: ParseOptions) -> ParseRe
 
 impl<'src> Parser<'src> {
     pub fn new(source: &'src SourceFile, options: ParseOptions) -> Self {
+        Self::new_in(source, options, AstArena::new())
+    }
+
+    /// Create a parser that appends nodes to an existing arena, so several
+    /// files can share one arena with program-unique `NodeId`s.
+    pub fn new_in(source: &'src SourceFile, options: ParseOptions, arena: AstArena) -> Self {
         let diagnostics = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&diagnostics);
         let mut parser = Self {
             scanner: Scanner::new(source, move |diagnostic| sink.borrow_mut().push(diagnostic)),
-            arena: AstArena::new(),
+            arena,
             diagnostics,
             parse_error_in_next_finished_node: false,
             previous_token_end: -1,
@@ -236,6 +256,8 @@ impl<'src> Parser<'src> {
         ParseResult {
             arena: self.arena,
             root,
+            scripts: vec![root],
+            library_scripts: Vec::new(),
             diagnostics,
             comments: self.comments,
         }
@@ -270,6 +292,9 @@ impl<'src> Parser<'src> {
 
     fn parse_type_spec_script_item_list(&mut self) -> Vec<NodeId> {
         let mut statements = Vec::new();
+        let mut seen_blockless_ns = false;
+        let mut seen_decl = false;
+        let mut seen_using = false;
         while self.token() != Token::EndOfFile {
             let annotations = self.parse_annotations();
             let tok = self.token();
@@ -317,9 +342,40 @@ impl<'src> Parser<'src> {
             if tok != Token::NamespaceKeyword {
                 self.attach_annotations(item, annotations.docs, annotations.directives);
             }
+            let kind = self.arena.get(item).kind;
+            if self.is_blockless_namespace(item) {
+                if seen_blockless_ns {
+                    self.error_at("multiple-blockless-namespace", self.node_span(item));
+                }
+                if seen_decl {
+                    self.error_at("blockless-namespace-first", self.node_span(item));
+                }
+                seen_blockless_ns = true;
+            } else if kind == SyntaxKind::ImportStatement {
+                if seen_decl || seen_blockless_ns || seen_using {
+                    self.error_at("import-first", self.node_span(item));
+                }
+            } else if kind == SyntaxKind::UsingStatement {
+                seen_using = true;
+            } else {
+                seen_decl = true;
+            }
             statements.push(item);
         }
         statements
+    }
+
+    fn is_blockless_namespace(&self, mut node: NodeId) -> bool {
+        loop {
+            let NodeData::NamespaceStatement { statements, .. } = &self.arena.get(node).data else {
+                return false;
+            };
+            match statements {
+                None => return true,
+                Some(ast::NamespaceBody::Statements(_)) => return false,
+                Some(ast::NamespaceBody::Nested(inner)) => node = *inner,
+            }
+        }
     }
 
     fn parse_statement_list(&mut self) -> Vec<NodeId> {
@@ -338,7 +394,11 @@ impl<'src> Parser<'src> {
                 Token::ImportKeyword => {
                     self.report_invalid_decorators(&annotations.decorators, "import statement");
                     let node = self.parse_import_statement();
-                    self.error_at("import-first", self.node_span(node));
+                    self.error_at_with_message(
+                        "import-first",
+                        self.node_span(node),
+                        Some("topLevel"),
+                    );
                     node
                 }
                 Token::UsingKeyword => {
@@ -374,6 +434,13 @@ impl<'src> Parser<'src> {
                 }
                 _ => self.parse_invalid_statement(annotations.pos, annotations.decorators),
             };
+            if self.is_blockless_namespace(item) {
+                self.error_at_with_message(
+                    "blockless-namespace-first",
+                    self.node_span(item),
+                    Some("topLevel"),
+                );
+            }
             self.attach_annotations(item, annotations.docs, annotations.directives);
             statements.push(item);
         }
@@ -2976,9 +3043,18 @@ fn diagnostic_message(code: &'static str, detail: Option<&str>) -> String {
         "invalid-template-argument-name" => {
             "Template argument name must be an identifier.".to_string()
         }
-        "import-first" => {
-            "Imports must come prior to any other declarations or namespaces.".to_string()
-        }
+        "import-first" => match detail {
+            Some("topLevel") => {
+                "Imports must be top-level and come prior to namespaces or other declarations."
+                    .to_string()
+            }
+            _ => "Imports must come prior to namespaces or other declarations.".to_string(),
+        },
+        "multiple-blockless-namespace" => "Cannot use multiple blockless namespaces.".to_string(),
+        "blockless-namespace-first" => match detail {
+            Some("topLevel") => "Blockless namespace can only be top-level.".to_string(),
+            _ => "Blockless namespaces can't follow other declarations.".to_string(),
+        },
         _ => match detail {
             Some(detail) => format!("{code}: {detail}"),
             None => code.to_string(),
