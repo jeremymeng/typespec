@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-11-19T23:02:49Z",
+  "updated_at": "2026-11-19T23:39:00Z",
   "updated_by": "agent:rust-port-m10",
   "tasks": [
     {
@@ -1166,7 +1166,7 @@
     {
       "id": "M10",
       "title": "Standard library loading and built-in decorator declarations",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M9"],
       "plan_section": "docs/rust-port/plan.md#m10--standard-library-loading-and-built-in-decorator-declarations",
       "complexity": "medium",
@@ -1174,57 +1174,57 @@
       "branch": "jeremymeng/rust-port-m10-stdlib",
       "pr": null,
       "started_at": "2026-11-19T23:02:49Z",
-      "completed_at": null,
+      "completed_at": "2026-11-19T23:39:00Z",
       "key_source_files": [
         "packages/compiler/lib/intrinsics.tsp",
-        "packages/compiler/lib/main.tsp",
+        "packages/compiler/lib/std/main.tsp",
         "packages/compiler/lib/std",
         "packages/compiler/src/lib/intrinsic/tsp-index.ts",
         "packages/compiler/src/lib/intrinsic/decorators.ts"
       ],
       "checklist": [
         {
-          "done": false,
-          "text": "Stdlib .tsp located via host (@typespec/compiler/lib/main.tsp resolved through M9 module resolution)"
+          "done": true,
+          "text": "Stdlib .tsp located via host (@typespec/compiler resolved by the JS host; lib/intrinsics.tsp + lib/std/main.tsp loaded like TS)"
         },
         {
-          "done": false,
-          "text": "Checker::new() loads and binds stdlib BEFORE user program"
+          "done": true,
+          "text": "Stdlib scripts loaded, bound and checked BEFORE the user program (single program, no separate pre-pass)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Stdlib types populate the type arena (Array<T>, Record<T>, reflection types)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "M5a hard-coded intrinsics reconcile with their stdlib declarations (one Type::String, not two)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "extern dec declarations parsed and bound; symbols marked as decorator declarations"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Array<T> and Record<T> instantiation produces same TypeIds/properties as TS"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Stdlib reflection types (Reflection.Model, Reflection.Operation) resolvable and usable as template constraints"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Comparison tests verify Record<int32>, Array<string>, Array<Foo> resolve identically"
         },
         {
-          "done": false,
-          "text": "All previous tests still pass (delta only where TS would also emit diagnostics)"
+          "done": true,
+          "text": "All previous tests still pass (delta only where TS would also emit diagnostics; single-source check() suites stay stdlib-less, sweep with stdlib: only harness lookup failures)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "cargo build / test / clippy -D warnings / fmt --check all green"
         },
         {
-          "done": false,
+          "done": true,
           "text": "pnpm -C packages/compiler-rust build / test all green"
         }
       ],
@@ -1233,6 +1233,11 @@
           "timestamp": "2026-11-19T23:02:49Z",
           "author": "agent:rust-port-m10",
           "text": "Claimed M10 on jeremymeng/rust-port-m10-stdlib (based on jeremymeng/rust-port-upstream-sync 56009461d)."
+        },
+        {
+          "timestamp": "2026-11-19T23:39:00Z",
+          "author": "agent:rust-port-m10",
+          "text": "Completed M10: stdlib (lib/intrinsics.tsp + lib/std/main.tsp) loaded via @typespec/compiler package resolution; intrinsics reconciled with TypeSpec declarations (implicit using, ambiguous-symbol); Array/Record indexers, record spreads, no-array-properties/incompatible-indexer; decorator arity validation; invalid-argument for template constraints. Validation: cargo fmt/clippy -D warnings/test green; compiler-rust 1049 passed, 5 skipped (new stdlib.comparison.test.ts 32 cases, multi-file suite on stdlib 47/47). Deferred: decorator argument/target/missing-implementation (M11), multi-indexer intersection merge, compiler-feature gating (M13)."
         }
       ]
     },

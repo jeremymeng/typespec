@@ -20,7 +20,7 @@ Branch: `jeremymeng/rust-port-upstream-sync` (merged from `jeremymeng/rust-port-
 | `16caf10f0` Template scope for op parameter defaults       | Decorators are skipped on types checked in template declarations (incl. template parameter default instances and instances whose arguments reference template parameters); decorator arguments on instances resolve through the template mapper; a template parameter is assignable wherever its constraint is.                                                                                                                                 |
 | `9c9055062` Decorators on concrete types from templates    | Concrete declarations (including enums and members reached via `Target.member`) are checked once outside any template context, so their decorators run exactly once regardless of whether they are first referenced from a template.                                                                                                                                                                                                            |
 | `0bd0c1742` Recursive type assignability stack overflow    | Type relation guards source-union (cycle resolves as related) and target-union (cycle resolves as unrelated) pairs in the in-progress relation set, matching the existing model guard.                                                                                                                                                                                                                                                          |
-| `49aab186c` No property/record spreads in array models     | `no-array-properties` for properties and property-introducing spreads in array models (own or inherited indexer); such spreads are reported once and skipped. `model X is T[]` is accepted as in TS (array expressions are anonymous in the port). Record spreads are not applicable: the port has no `Record<T>` (std library, M10).                                                                                                           |
+| `49aab186c` No property/record spreads in array models     | `no-array-properties` for properties and property-introducing spreads in array models (own or inherited indexer); such spreads are reported once and skipped. `model X is T[]` is accepted as in TS (array expressions are anonymous in the port). Record spreads into array models (`model A is string[] { ...Record<string> }`) are reported once at the spread as of M10 (standard library loading).                                         |
 | `325c16580` `using` before the file namespace (M9)         | Per-file `File` scopes hold file-level usings; a `using` declared before the file's blockless namespace resolves from the global namespace (covered by `multi-file.comparison.test.ts` and `crates/typespec-checker/tests/multi_file.rs`).                                                                                                                                                                                                      |
 
 Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.comparison.test.ts`, and
@@ -32,7 +32,8 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   `union-extends` / `declaration-expressions` features (enabled per library by `655c74139`). The Rust
   port has no feature configuration yet, so it always reports `union-extends-disabled` and
   `declaration-expression-disabled` — matching TS with features disabled (the default for user code).
-  Revisit with M10/M13 when library loading and `tspconfig.yaml` exist.
+  M10 loads the standard library without needing either feature (it uses neither), so per-library feature
+  configuration is still absent. Owner: M13 (library metadata / `tspconfig.yaml`).
 - **Spread sources in template instances.** Instantiating `model Bar<U> { ...Foo<U> }` substitutes the
   copied properties directly instead of re-instantiating `Foo<A>`, so decorators run on `Bar<A>`'s
   properties (with resolved arguments) but `Foo<A>` is only created when referenced elsewhere.
@@ -68,7 +69,8 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
     reports the same parameters with code `@typespec/compiler/unused-template-parameter`. Rust
     reports it unconditionally from the checker (`check` → `report_unused_template_parameters`,
     `crates/typespec-checker/src/checker.rs:150`, `checker.rs:1730`) with the unqualified code
-    `unused-template-parameter`, and iterates a `HashMap` so the report order is not stable.
+    `unused-template-parameter`, and iterates a `HashMap` so the report order is not stable. Since M10
+    it is skipped for library files (including the standard library), like TS linting only project files.
   - _Fix:_ stop reporting from the checker; expose the usage map (like
     `getTemplateParameterUsageMap`) and run the rule in a linter stage gated by the linter rule set,
     reporting `@typespec/compiler/unused-template-parameter` in source order. Owner: M13 (linter
@@ -83,7 +85,30 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   it per namespace statement. File-level usings are per file and match TS.
 - **Module resolution gaps (M9).** The JS host port of `module-resolver.ts` does not support `#imports`
   subpath imports, realpath/symlink canonicalization, or `tspconfig.yaml` entrypoints; imported `.js`
-  files are recorded in the source list but not executed (decorator registration is M10/M11).
+  files are recorded in the source list but not executed (decorator registration is M11).
+- **Decorator argument validation is arity-only (M10).**
+  - _Symptom:_ Rust reports `invalid-argument-count` like TS but not argument type/value errors,
+    target errors, or missing JS implementations.
+  - _Repro:_ `@doc(123) model A {}` (TS: `invalid-argument` "Argument of type '123' is not assignable to
+    parameter of type 'valueof string'"); `@doc("a", "b", "c") model A {}` (TS additionally reports
+    `invalid-argument` for `"b"`); `@minValue(1) model A {}` (TS: `decorator-wrong-target`);
+    `extern dec foo(target: unknown);` without a JS implementation (TS: `missing-implementation`).
+  - _Root cause:_ TS `checkDecoratorArguments` / `checkDecoratorTarget`
+    (`packages/compiler/src/core/checker.ts`) check each argument against `valueof`/type constraints
+    with the value system and require a registered JS implementation; the Rust checker has no value
+    system and does not load decorator JS (`check_decorator_argument_count` in
+    `crates/typespec-checker/src/checker.rs` ports only the arity part).
+  - _Fix / owner:_ M11 (value-typed decorator arguments, target validation, JS implementation registry).
+- **Intersections with several record indexers (M10).**
+  - _Symptom:_ `alias I = Record<string> & Record<int32>` has no indexer in Rust; TS merges the value
+    types (`indexer = { key: string, value: <merged string & int32> }`).
+  - _Root cause:_ TS `checkIntersectionExpression` calls `mergeModelTypes` on the indexer values; Rust
+    keeps an indexer only when exactly one option has one (`check_intersection` in `checker.rs`).
+  - _Fix / owner:_ port the indexer-value merge (follow-up to M10; needed before M12 emitters see such types).
+- **Single-source `check()` has no standard library (M10).** The napi `check(source)` API used by the
+  M2–M8 comparison suites keeps the built-in intrinsic stubs (TS `nostdlib`-like): `Array`/`Record`,
+  `TypeSpec` declarations and decorator declarations are only available through `checkProgram`. Owner:
+  M12 (adapter on top of `checkProgram`).
 
 ### Deferred (outside current scope or to be picked up by a later milestone)
 
