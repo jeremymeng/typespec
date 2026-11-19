@@ -17,6 +17,7 @@ Branch: `jeremymeng/rust-port-upstream-sync` (merged from `jeremymeng/rust-port-
 | `8e16f8cff` Declarations as expressions (#11019)           | `Model/Scalar/Union/EnumDeclarationExpression` syntax kinds and AST nodes; parsing in primary expressions and expression lists; binding/resolution in node scope; checker `expression` flag on Model/Scalar/Enum (not registered in namespaces), `declaration-expression-disabled`, `templated-declaration-in-expression`; napi + adapter `expression`. Union declaration expressions are no longer flattened into enclosing union expressions. |
 | `FunctionTypeExpression` syntax kind renumbering           | `SyntaxKind` numbering matches TS (`FunctionTypeExpression = 72`, declaration expressions `73–76`).                                                                                                                                                                                                                                                                                                                                             |
 | `0bd0c1742` Recursive type assignability stack overflow    | Type relation guards source-union (cycle resolves as related) and target-union (cycle resolves as unrelated) pairs in the in-progress relation set, matching the existing model guard.                                                                                                                                                                                                                                                          |
+| `49aab186c` No property/record spreads in array models     | `no-array-properties` for properties and property-introducing spreads in array models (own or inherited indexer); such spreads are reported once and skipped. `model X is T[]` is accepted as in TS (array expressions are anonymous in the port). Record spreads are not applicable: the port has no `Record<T>` (std library, M10).                                                                                                           |
 
 Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.comparison.test.ts`, and
 `checker-models.comparison.test.ts`.
@@ -36,7 +37,6 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
 - `4f8e31935` auto-decorator semantics (`auto-decorator-disabled`, `declarationKind`, modifier
   validation) — M10/M11.
 - `8574d5453` typeref values (`TypeRefValue`, `getTypeRefType`, value kind) — M11/M12.
-- `49aab186c` disallow property/record spreads in array model declarations (`no-array-properties`).
 - `isDeclarationExpressionSym` handling for augment-decorator targets — M11.
 - Re-checking enums under a template mapper.
 - `9c9055062` preserve decorators on concrete types referenced from templates.
