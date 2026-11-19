@@ -40,7 +40,9 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
 - `isDeclarationExpressionSym` handling for augment-decorator targets — M11.
 - Re-checking enums under a template mapper.
 - `9c9055062` preserve decorators on concrete types referenced from templates.
-- `a06a62d03` suppress deprecated-type warnings inside deprecated operations.
+- `a06a62d03` suppress deprecated-type warnings inside deprecated operations — blocked: the Rust
+  checker does not implement deprecation tracking (`#deprecated` directive, `@deprecated`
+  semantics) or the `deprecated` diagnostic yet — M11/M13.
 - `5a18007e6` honor `@encodedName` on enum members — M11.
 - `108ef0689` `Sym.node` / `getSymNode` typing (TS-only typing fix).
 - `57f06f3db` `$provideTypeInfo` / `program.getTypeInfo` — M12.
