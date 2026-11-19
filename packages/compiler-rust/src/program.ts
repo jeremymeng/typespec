@@ -470,6 +470,12 @@ export function createProgram(checkResult: CheckResultJs): Program {
         }
         type.templateArguments = typeArray(serialized.templateArgumentIds);
         type.templateParameters = typeArray<TemplateParameter>(serialized.templateParameterIds);
+        if (serialized.indexerTypeId !== undefined && serialized.indexerKeyTypeId !== undefined) {
+          type.indexer = {
+            key: requiredType<Scalar>(serialized.indexerKeyTypeId, "model indexer key"),
+            value: requiredType(serialized.indexerTypeId, "model indexer value"),
+          };
+        }
         break;
       case "ModelProperty":
         type.model = optionalType<Model>(serialized.baseTypeId);

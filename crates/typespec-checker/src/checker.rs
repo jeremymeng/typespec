@@ -16,9 +16,9 @@ use crate::name_resolver::ResolutionResult;
 use crate::type_relation::{type_name, TypeRelationChecker};
 use crate::types::{
     AliasType, BooleanLiteralType, DecoratorRef, EnumMemberType, EnumMemberValue, EnumType,
-    InterfaceType, ModelPropertyType, ModelType, NamespaceType, NumericLiteralType, OperationType,
-    ScalarType, StringLiteralType, SymbolFlags, SymbolId, SymbolTable, TemplateParameterType, Type,
-    TypeArena, TypeId, UnionType, UnionVariantType,
+    InterfaceType, IntrinsicDeclaration, ModelIndexer, ModelPropertyType, ModelType, NamespaceType,
+    NumericLiteralType, OperationType, ScalarType, StringLiteralType, SymbolFlags, SymbolId,
+    SymbolTable, TemplateParameterType, Type, TypeArena, TypeId, UnionType, UnionVariantType,
 };
 
 pub struct Checker<'p> {
@@ -42,11 +42,15 @@ pub struct Checker<'p> {
     reported_operation_cycles: HashSet<SymbolId>,
     template_instantiations: InstantiationMap,
     template_parameter_usage: HashMap<NodeId, bool>,
+    /// Spreads of template parameters (`...T`) in template declarations, applied on
+    /// instantiation: model -> (property insertion index, template parameter).
+    template_parameter_spreads: HashMap<TypeId, Vec<(usize, TypeId)>>,
     /// Template mapper each instantiated type (and its cloned members) was created with, used to
     /// resolve decorator arguments and to skip decorators on instances still inside a template
     /// declaration.
     instance_contexts: HashMap<TypeId, HashMap<TypeId, TypeId>>,
     decorator_state: DecoratorState,
+    intrinsic_declarations: HashMap<TypeId, IntrinsicDeclaration>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -75,6 +79,9 @@ pub struct CheckResult {
     pub node_to_type: HashMap<NodeId, TypeId>,
     pub diagnostics: Vec<Diagnostic>,
     pub decorator_state: DecoratorState,
+    /// Intrinsic scalar type -> its `lib/intrinsics.tsp` declaration (standard
+    /// library loaded only).
+    pub intrinsic_declarations: HashMap<TypeId, IntrinsicDeclaration>,
 }
 
 pub fn check(
@@ -151,11 +158,14 @@ impl<'p> Checker<'p> {
             template_instantiations: InstantiationMap::default(),
             instance_contexts: HashMap::new(),
             template_parameter_usage: HashMap::new(),
+            template_parameter_spreads: HashMap::new(),
             decorator_state: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
         }
     }
 
     fn finish(mut self) -> CheckResult {
+        self.check_decorator_argument_counts();
         self.report_unused_template_parameters();
         let binder_diagnostics = self
             .symbol_table
@@ -175,6 +185,7 @@ impl<'p> Checker<'p> {
             node_to_type: self.node_to_type,
             diagnostics: self.diagnostics,
             decorator_state: self.decorator_state,
+            intrinsic_declarations: self.intrinsic_declarations,
         }
     }
 
@@ -391,26 +402,9 @@ impl<'p> Checker<'p> {
         }
 
         self.type_arena.replace(type_id, Type::Model(model.clone()));
-        let is_array_model = self.find_indexer(&model).is_some();
-        for property in properties {
-            if let NodeData::ModelProperty { id, .. } = self.node(property).data {
-                let prop_id = self.check_model_property(property, type_id);
-                if is_array_model {
-                    self.report_no_array_properties(property);
-                }
-                let name = self.identifier_name(id);
-                if model.properties.contains_key(&name) {
-                    self.report_duplicate_property(&model.name, &name, property);
-                } else {
-                    model.properties.insert(name, prop_id);
-                }
-            } else if let NodeData::ModelSpreadProperty { target } = self.node(property).data {
-                if is_array_model && self.spread_introduces_properties(target) {
-                    self.report_no_array_properties(property);
-                    continue;
-                }
-                self.check_spread_property(target, type_id, &mut model);
-            }
+        self.check_model_members(&properties, type_id, &mut model);
+        if let Some(indexer) = self.native_indexer(&decorators) {
+            model.indexer = Some(indexer);
         }
 
         let base_model = model.base_model;
@@ -466,19 +460,7 @@ impl<'p> Checker<'p> {
             template_parameters: Vec::new(),
             is_template_declaration: false,
         };
-        for property in properties {
-            if let NodeData::ModelProperty { id, .. } = self.node(property).data {
-                let prop_id = self.check_model_property(property, type_id);
-                let name = self.identifier_name(id);
-                if model.properties.contains_key(&name) {
-                    self.report_duplicate_property("", &name, property);
-                } else {
-                    model.properties.insert(name, prop_id);
-                }
-            } else if let NodeData::ModelSpreadProperty { target } = self.node(property).data {
-                self.check_spread_property(target, type_id, &mut model);
-            }
-        }
+        self.check_model_members(&properties, type_id, &mut model);
         self.type_arena.replace(type_id, Type::Model(model));
         type_id
     }
@@ -507,6 +489,10 @@ impl<'p> Checker<'p> {
                 _ => panic!("expected scalar statement"),
             };
         let symbol = self.symbol_for_node(node_id);
+        if let Some(intrinsic) = symbol.and_then(|symbol| self.intrinsic_for_symbol(symbol)) {
+            return self
+                .check_intrinsic_scalar_declaration(node_id, intrinsic, extends, decorators);
+        }
         let namespace = self.namespace_for_symbol(symbol);
         let type_id = self.type_arena.reserve();
         self.cache_type(node_id, type_id);
@@ -545,6 +531,73 @@ impl<'p> Checker<'p> {
                 type_id,
                 NamespaceMemberKind::Scalar,
             );
+        }
+        type_id
+    }
+
+    /// The intrinsic type a standard library scalar declaration stands for
+    /// (`scalar string;` in the `TypeSpec` namespace), if any.
+    fn intrinsic_for_symbol(&self, symbol: SymbolId) -> Option<TypeId> {
+        let implicit = self.symbol_table.implicit_using?;
+        let name = &self.symbol_table.symbols[symbol.index()].name;
+        let type_id = self.intrinsics.by_name(name)?;
+        (self.symbol_table.scopes[implicit.index()].symbols.get(name) == Some(&symbol))
+            .then_some(type_id)
+    }
+
+    /// The declared type of a `TypeSpec` namespace member (e.g. `Array`,
+    /// `Record`) when the standard library is loaded.
+    fn std_template(&mut self, name: &str) -> Option<TypeId> {
+        let implicit = self.symbol_table.implicit_using?;
+        let symbol = self.symbol_table.scopes[implicit.index()]
+            .symbols
+            .get(name)
+            .copied()?;
+        if self.symbol_table.symbols[symbol.index()]
+            .declarations
+            .is_empty()
+        {
+            return None;
+        }
+        Some(self.type_for_symbol(symbol))
+    }
+
+    /// Whether the indexer is an array (integer-keyed) indexer.
+    fn is_integer_indexer(&self, indexer: ModelIndexer) -> bool {
+        indexer.key == self.intrinsics.integer
+    }
+
+    /// Checks a standard library declaration of an intrinsic scalar. The type
+    /// stays the intrinsic unit variant (so relations and literal checks keep
+    /// working); TS `Scalar` declaration details are recorded on the side.
+    fn check_intrinsic_scalar_declaration(
+        &mut self,
+        node_id: NodeId,
+        type_id: TypeId,
+        extends: Option<NodeId>,
+        decorators: Vec<NodeId>,
+    ) -> TypeId {
+        let symbol = self
+            .symbol_for_node(node_id)
+            .expect("intrinsic declaration has a symbol");
+        self.cache_type(node_id, type_id);
+        let namespace = self.namespace_for_symbol(Some(symbol));
+        let base_scalar =
+            extends.and_then(|extends| self.check_scalar_extends(Some(symbol), extends));
+        let decorators = self.collect_decorators(&decorators);
+        self.intrinsic_declarations.insert(
+            type_id,
+            IntrinsicDeclaration {
+                node: node_id,
+                symbol,
+                namespace,
+                base_scalar,
+                decorators,
+            },
+        );
+        if let Some(namespace) = namespace {
+            let name = self.symbol_table.symbols[symbol.index()].name.clone();
+            self.register_namespace_member(namespace, name, type_id, NamespaceMemberKind::Scalar);
         }
         type_id
     }
@@ -964,17 +1017,21 @@ impl<'p> Checker<'p> {
                 continue;
             };
             if let Some(indexer) = option.indexer {
-                self.report(
-                    "intersect-invalid-index",
-                    "Cannot intersect an array model.",
-                    option_node,
-                );
-                indexers.push(indexer);
+                if self.is_integer_indexer(indexer) {
+                    self.report(
+                        "intersect-invalid-index",
+                        "Cannot intersect an array model.",
+                        option_node,
+                    );
+                } else {
+                    indexers.push(indexer);
+                }
             }
             model_options.push(option_type);
         }
 
         for option_type in model_options {
+            let option_indexer = self.model_type(option_type).and_then(|m| m.indexer);
             for (name, prop_id) in self.walk_model_properties_inherited(option_type) {
                 let Some(prop) = self.model_property_type(prop_id).cloned() else {
                     continue;
@@ -999,6 +1056,11 @@ impl<'p> Checker<'p> {
                     decorators: prop.decorators,
                 }));
                 model.properties.insert(name, cloned);
+                for indexer in indexers.clone() {
+                    if Some(indexer) != option_indexer {
+                        self.check_property_compatible_with_indexer(indexer, cloned, node_id);
+                    }
+                }
             }
         }
         if indexers.len() == 1 {
@@ -1461,7 +1523,9 @@ impl<'p> Checker<'p> {
             _ => Vec::new(),
         };
         let resolution = match self.resolutions.get(&node_id).cloned() {
-            Some(ResolutionResult::Resolved(symbol)) => Some(ResolutionResult::Resolved(symbol)),
+            Some(resolution @ (ResolutionResult::Resolved(_) | ResolutionResult::Ambiguous(_))) => {
+                Some(resolution)
+            }
             _ => self
                 .reference_target(node_id)
                 .and_then(|target| self.resolutions.get(&target))
@@ -1469,6 +1533,12 @@ impl<'p> Checker<'p> {
         };
         let symbol = match resolution {
             Some(ResolutionResult::Resolved(symbol)) => symbol,
+            Some(ResolutionResult::Ambiguous(_)) => {
+                // TS `checkTypeReference` yields the error type for ambiguous references.
+                let error = self.type_arena.add(Type::Error);
+                self.cache_type(node_id, error);
+                return error;
+            }
             _ => {
                 let Some(symbol) = self.fallback_reference_symbol(node_id) else {
                     self.cache_type(node_id, self.intrinsics.unknown);
@@ -1523,12 +1593,17 @@ impl<'p> Checker<'p> {
         if let Some(type_id) = self.symbol_to_type.get(&symbol).copied() {
             return type_id;
         }
-        if let Some(type_id) = self
-            .intrinsics
-            .by_name(&self.symbol_table.symbols[symbol.index()].name)
+        if self.symbol_table.symbols[symbol.index()]
+            .declarations
+            .is_empty()
         {
-            self.symbol_to_type.insert(symbol, type_id);
-            return type_id;
+            if let Some(type_id) = self
+                .intrinsics
+                .by_name(&self.symbol_table.symbols[symbol.index()].name)
+            {
+                self.symbol_to_type.insert(symbol, type_id);
+                return type_id;
+            }
         }
         let Some(node) = self.symbol_table.symbols[symbol.index()]
             .declarations
@@ -1583,11 +1658,11 @@ impl<'p> Checker<'p> {
 
     fn check_array_expression(&mut self, node_id: NodeId, element_type: NodeId) -> TypeId {
         self.alias_structural_depth += 1;
-        let element_has_template_args = matches!(
+        let element_is_plain_reference = matches!(
             self.node(element_type).data.clone(),
-            NodeData::TypeReference { arguments, .. } if !arguments.is_empty()
+            NodeData::TypeReference { arguments, .. } if arguments.is_empty()
         );
-        let element = if element_has_template_args {
+        let element = if !element_is_plain_reference {
             self.type_for_node(element_type)
         } else {
             self.resolved_symbol(node_id)
@@ -1595,6 +1670,11 @@ impl<'p> Checker<'p> {
                 .unwrap_or_else(|| self.type_for_node(element_type))
         };
         self.alias_structural_depth -= 1;
+        if let Some(array_decl) = self.std_template("Array") {
+            let instance = self.instantiate_template(array_decl, vec![element], node_id);
+            self.cache_type(node_id, instance);
+            return instance;
+        }
         let model = ModelType {
             expression: false,
             name: String::new(),
@@ -1603,7 +1683,10 @@ impl<'p> Checker<'p> {
             properties: IndexMap::new(),
             base_model: None,
             source_model: None,
-            indexer: Some(element),
+            indexer: Some(ModelIndexer {
+                key: self.intrinsics.integer,
+                value: element,
+            }),
             decorators: Vec::new(),
             namespace: None,
             derived_models: Vec::new(),
@@ -1648,11 +1731,18 @@ impl<'p> Checker<'p> {
         if let Some(default_node) = default {
             self.report_invalid_later_template_default(node_id, default_node);
         }
+        let default_node = default;
         let default = default.map(|default| self.type_for_node(default));
-        if let (Some(default), Some(constraint)) = (default, constraint) {
+        if let (Some(default), Some(default_node), Some(constraint)) =
+            (default, default_node, constraint)
+        {
             let diagnostics = {
                 let relation = TypeRelationChecker::new(&self.type_arena);
-                relation.check_type_assignable_span(default, constraint, self.node_span(node_id))
+                relation.check_type_assignable_span(
+                    default,
+                    constraint,
+                    self.node_span(default_node),
+                )
             };
             self.diagnostics.extend(diagnostics);
         }
@@ -1746,6 +1836,15 @@ impl<'p> Checker<'p> {
         }
     }
 
+    /// Whether `node` is in a library or compiler (standard library) file.
+    fn is_library_node(&self, node: NodeId) -> bool {
+        let pos = self.node(node).pos;
+        self.parse_result.library_scripts.iter().any(|script| {
+            let script = self.node(*script);
+            script.pos <= pos && pos <= script.end
+        })
+    }
+
     fn report_unused_template_parameters(&mut self) {
         let unused = self
             .template_parameter_usage
@@ -1753,6 +1852,10 @@ impl<'p> Checker<'p> {
             .filter_map(|(node, used)| (!*used).then_some(*node))
             .collect::<Vec<_>>();
         for node in unused {
+            // A linter rule in TS: only reported in project files.
+            if self.is_library_node(node) {
+                continue;
+            }
             let Some(symbol) = self.symbol_for_node(node) else {
                 continue;
             };
@@ -1849,7 +1952,7 @@ impl<'p> Checker<'p> {
                             *arg_node,
                         );
                     } else {
-                        positional[param_index] = Some(arg_type);
+                        positional[param_index] = Some((arg_type, *arg_node));
                     }
                 } else {
                     self.report(
@@ -1871,22 +1974,22 @@ impl<'p> Checker<'p> {
                     node_id,
                 );
             } else if positional[index].is_none() {
-                positional[index] = Some(arg_type);
+                positional[index] = Some((arg_type, *arg_node));
             }
         }
 
         let mut result = Vec::with_capacity(params.len());
         let mut subst = HashMap::new();
         for (index, param_id) in params.iter().enumerate() {
-            let arg = if let Some(arg) = positional[index] {
-                arg
+            let (arg, arg_node) = if let Some((arg, arg_node)) = positional[index] {
+                (arg, Some(arg_node))
             } else {
                 let default = match self.type_arena.get(*param_id) {
                     Type::TemplateParameter(param) => param.default,
                     _ => None,
                 };
                 if let Some(default) = default {
-                    self.substitute_type(default, &subst)
+                    (self.substitute_type(default, &subst), None)
                 } else {
                     let name = match self.type_arena.get(*param_id) {
                         Type::TemplateParameter(param) => param.name.clone(),
@@ -1897,46 +2000,48 @@ impl<'p> Checker<'p> {
                         &format!("Template argument '{name}' is required and not specified."),
                         node_id,
                     );
-                    match self.type_arena.get(*param_id) {
+                    let constraint = match self.type_arena.get(*param_id) {
                         Type::TemplateParameter(param) => {
                             param.constraint.unwrap_or(self.intrinsics.unknown)
                         }
                         _ => self.intrinsics.unknown,
-                    }
+                    };
+                    (constraint, None)
                 }
             };
             let constraint = match self.type_arena.get(*param_id) {
                 Type::TemplateParameter(param) => param.constraint,
                 _ => None,
             };
-            let arg = if let Some(constraint) = constraint {
-                let constraint = self.substitute_type(constraint, &subst);
-                let diagnostics = {
-                    let relation = TypeRelationChecker::new(&self.type_arena);
-                    relation.check_type_assignable_span(arg, constraint, self.node_span(node_id))
-                };
-                if diagnostics.is_empty() {
-                    arg
-                } else {
-                    let param_name = match self.type_arena.get(*param_id) {
-                        Type::TemplateParameter(param) => param.name.clone(),
-                        _ => String::new(),
+            // Mirrors TS `checkArgumentAssignable`: only explicit arguments are
+            // validated here; defaults are validated at their declaration.
+            let arg = match (constraint, arg_node) {
+                (Some(constraint), Some(arg_node)) => {
+                    let constraint = self.substitute_type(constraint, &subst);
+                    let diagnostics = {
+                        let relation = TypeRelationChecker::new(&self.type_arena);
+                        relation.check_type_assignable_span(
+                            arg,
+                            constraint,
+                            self.node_span(arg_node),
+                        )
                     };
-                    self.diagnostics.push(Diagnostic {
-                        severity: DiagnosticSeverity::Error,
-                        code: "unassignable",
-                        message: format!(
-                            "Type '{}' is not assignable to template parameter '{}' which extends '{}'.",
-                            type_name(&self.type_arena, arg),
-                            param_name,
-                            type_name(&self.type_arena, constraint)
-                        ),
-                        target: self.node_span(node_id),
-                    });
-                    constraint
+                    if diagnostics.is_empty() {
+                        arg
+                    } else {
+                        self.report(
+                            "invalid-argument",
+                            &format!(
+                                "Argument of type '{}' is not assignable to parameter of type '{}'",
+                                type_name(&self.type_arena, arg),
+                                type_name(&self.type_arena, constraint)
+                            ),
+                            arg_node,
+                        );
+                        constraint
+                    }
                 }
-            } else {
-                arg
+                _ => arg,
             };
             subst.insert(*param_id, arg);
             result.push(arg);
@@ -2062,9 +2167,10 @@ impl<'p> Checker<'p> {
             source_model: source
                 .source_model
                 .map(|source| self.substitute_type(source, subst)),
-            indexer: source
-                .indexer
-                .map(|indexer| self.substitute_type(indexer, subst)),
+            indexer: source.indexer.map(|indexer| ModelIndexer {
+                key: self.substitute_type(indexer.key, subst),
+                value: self.substitute_type(indexer.value, subst),
+            }),
             decorators: source.decorators,
             namespace: source.namespace,
             derived_models: Vec::new(),
@@ -2098,6 +2204,9 @@ impl<'p> Checker<'p> {
             self.record_instance_context(prop_id, cloned, subst);
             model.properties.insert(name, cloned);
         }
+        if let Some(spreads) = self.template_parameter_spreads.get(&source_id).cloned() {
+            self.apply_template_parameter_spreads(model_id, &mut model, &spreads, subst);
+        }
         if let Some(base_model) = model.base_model {
             if let Type::Model(base) = self.type_arena.get_mut(base_model) {
                 if source_id != model_id && !base.derived_models.contains(&model_id) {
@@ -2106,6 +2215,59 @@ impl<'p> Checker<'p> {
             }
         }
         model
+    }
+
+    /// Inserts the properties of models substituted for spread template
+    /// parameters (`model Foo<T> { ...T }`) at their declaration positions.
+    fn apply_template_parameter_spreads(
+        &mut self,
+        model_id: TypeId,
+        model: &mut ModelType,
+        spreads: &[(usize, TypeId)],
+        subst: &HashMap<TypeId, TypeId>,
+    ) {
+        let mut existing = std::mem::take(&mut model.properties).into_iter();
+        let mut consumed = 0;
+        for &(index, param) in spreads {
+            while consumed < index {
+                if let Some((name, prop)) = existing.next() {
+                    model.properties.insert(name, prop);
+                }
+                consumed += 1;
+            }
+            let source = self.substitute_type(param, subst);
+            let source = self.get_non_alias_type(source);
+            let Some(source_model) = self.model_type(source) else {
+                continue;
+            };
+            if source_model
+                .indexer
+                .is_some_and(|indexer| self.is_integer_indexer(indexer))
+            {
+                continue;
+            }
+            for (name, prop_id) in self.walk_model_properties_inherited(source) {
+                if model.properties.contains_key(&name) {
+                    continue;
+                }
+                let Some(prop) = self.model_property_type(prop_id).cloned() else {
+                    continue;
+                };
+                let cloned = self.type_arena.add(Type::ModelProperty(ModelPropertyType {
+                    name: name.clone(),
+                    node: prop.node,
+                    symbol: None,
+                    model: model_id,
+                    property_type: prop.property_type,
+                    optional: prop.optional,
+                    default: prop.default,
+                    source_property: Some(prop_id),
+                    decorators: prop.decorators,
+                }));
+                model.properties.insert(name, cloned);
+            }
+        }
+        model.properties.extend(existing);
     }
 
     fn instantiate_union(
@@ -2302,14 +2464,14 @@ impl<'p> Checker<'p> {
         match self.type_arena.get(type_id) {
             Type::TemplateParameter(_) => true,
             Type::Model(model) if model.name.is_empty() => {
-                model
-                    .indexer
-                    .is_some_and(|indexer| self.contains_template_parameter_inner(indexer, visited))
-                    || model.properties.values().any(|prop| {
-                        self.model_property_type(*prop).is_some_and(|prop| {
-                            self.contains_template_parameter_inner(prop.property_type, visited)
-                        })
+                model.indexer.is_some_and(|indexer| {
+                    self.contains_template_parameter_inner(indexer.key, visited)
+                        || self.contains_template_parameter_inner(indexer.value, visited)
+                }) || model.properties.values().any(|prop| {
+                    self.model_property_type(*prop).is_some_and(|prop| {
+                        self.contains_template_parameter_inner(prop.property_type, visited)
                     })
+                })
             }
             Type::Union(union) if union.expression => union.variants.values().any(|variant| {
                 self.union_variant_type(*variant).is_some_and(|variant| {
@@ -2692,8 +2854,7 @@ impl<'p> Checker<'p> {
     }
 
     /// Finds the indexer that applies to a model, either its own or inherited from a base model.
-    /// Indexers are only created by array expressions, so any indexer makes this an array model.
-    fn find_indexer(&self, model: &ModelType) -> Option<TypeId> {
+    fn find_indexer(&self, model: &ModelType) -> Option<ModelIndexer> {
         let mut indexer = model.indexer;
         let mut base = model.base_model;
         let mut seen = HashSet::new();
@@ -2709,13 +2870,6 @@ impl<'p> Checker<'p> {
         indexer
     }
 
-    fn spread_introduces_properties(&mut self, target: NodeId) -> bool {
-        let source = self.type_for_node(target);
-        let source = self.get_non_alias_type(source);
-        matches!(self.type_arena.get(source), Type::Model(_))
-            && !self.walk_model_properties_inherited(source).is_empty()
-    }
-
     fn report_no_array_properties(&mut self, node: NodeId) {
         self.report(
             "no-array-properties",
@@ -2724,38 +2878,242 @@ impl<'p> Checker<'p> {
         );
     }
 
-    fn check_spread_property(&mut self, target: NodeId, model_id: TypeId, model: &mut ModelType) {
+    /// Mirrors TS `checkModelProperties`: checks declared and spread members,
+    /// validating them against the model indexer and accumulating spread indexers.
+    fn check_model_members(&mut self, members: &[NodeId], model_id: TypeId, model: &mut ModelType) {
+        let mut spread_indexers: Vec<ModelIndexer> = Vec::new();
+        for &member in members {
+            match self.node(member).data {
+                NodeData::ModelProperty { id, .. } => {
+                    let prop_id = self.check_model_property(member, model_id);
+                    if let Some(indexer) = self.find_indexer(model) {
+                        self.check_property_compatible_with_indexer(indexer, prop_id, member);
+                    }
+                    let name = self.identifier_name(id);
+                    if model.properties.contains_key(&name) {
+                        self.report_duplicate_property(&model.name, &name, member);
+                    } else {
+                        model.properties.insert(name, prop_id);
+                    }
+                }
+                NodeData::ModelSpreadProperty { target } => {
+                    let spread_type = self.type_for_node(target);
+                    let spread_type = self.get_non_alias_type(spread_type);
+                    if matches!(self.type_arena.get(spread_type), Type::TemplateParameter(_)) {
+                        self.template_parameter_spreads
+                            .entry(model_id)
+                            .or_default()
+                            .push((model.properties.len(), spread_type));
+                        continue;
+                    }
+                    let Some(source) = self.check_spread_source(target) else {
+                        continue;
+                    };
+                    let source_props = self.walk_model_properties_inherited(source);
+                    let additional_indexer = self.model_type(source).and_then(|m| m.indexer);
+                    if self
+                        .find_indexer(model)
+                        .is_some_and(|indexer| self.is_integer_indexer(indexer))
+                        && (!source_props.is_empty() || additional_indexer.is_some())
+                    {
+                        self.report_no_array_properties(member);
+                        continue;
+                    }
+                    spread_indexers.extend(additional_indexer);
+                    for (name, prop_id) in source_props {
+                        let Some(prop) = self.model_property_type(prop_id).cloned() else {
+                            continue;
+                        };
+                        let cloned = self.type_arena.add(Type::ModelProperty(ModelPropertyType {
+                            name: name.clone(),
+                            node: prop.node,
+                            symbol: None,
+                            model: model_id,
+                            property_type: prop.property_type,
+                            optional: prop.optional,
+                            default: prop.default,
+                            source_property: Some(prop_id),
+                            decorators: prop.decorators,
+                        }));
+                        if let Some(indexer) = self.find_indexer(model) {
+                            self.check_property_compatible_with_indexer(indexer, cloned, member);
+                        }
+                        if model.properties.contains_key(&name) {
+                            self.report_duplicate_property(&model.name, &name, target);
+                            continue;
+                        }
+                        model.properties.insert(name, cloned);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(first) = spread_indexers.first().copied() {
+            let value = if spread_indexers.len() == 1 {
+                first.value
+            } else {
+                let values = spread_indexers.iter().map(|i| i.value).collect::<Vec<_>>();
+                self.create_anonymous_union(&values)
+            };
+            model.indexer = Some(ModelIndexer {
+                key: first.key,
+                value,
+            });
+        }
+    }
+
+    /// Mirrors TS `checkSpreadProperty` validation; returns the model to spread.
+    fn check_spread_source(&mut self, target: NodeId) -> Option<TypeId> {
         let source = self.type_for_node(target);
         let source = self.get_non_alias_type(source);
-        if !matches!(self.type_arena.get(source), Type::Model(_)) {
-            self.report(
-                "spread-model",
-                "Cannot spread properties of non-model type.",
-                target,
-            );
+        match self.type_arena.get(source) {
+            Type::TemplateParameter(_) | Type::Error => None,
+            Type::Model(model)
+                if !model
+                    .indexer
+                    .is_some_and(|indexer| self.is_integer_indexer(indexer)) =>
+            {
+                Some(source)
+            }
+            _ => {
+                self.report(
+                    "spread-model",
+                    "Cannot spread properties of non-model type.",
+                    target,
+                );
+                None
+            }
+        }
+    }
+
+    /// Mirrors TS `checkPropertyCompatibleWithIndexer`.
+    fn check_property_compatible_with_indexer(
+        &mut self,
+        indexer: ModelIndexer,
+        prop_id: TypeId,
+        target: NodeId,
+    ) {
+        if self.is_integer_indexer(indexer) {
+            self.report_no_array_properties(target);
             return;
         }
-        for (name, prop_id) in self.walk_model_properties_inherited(source) {
-            let Some(prop) = self.model_property_type(prop_id).cloned() else {
+        let Some(property_type) = self.model_property_type(prop_id).map(|p| p.property_type) else {
+            return;
+        };
+        let target = match self.node(target).data {
+            NodeData::ModelProperty { value, .. } => value,
+            _ => target,
+        };
+        let diagnostics = {
+            let relation = TypeRelationChecker::new(&self.type_arena);
+            relation.check_type_assignable_span(
+                property_type,
+                indexer.value,
+                self.node_span(target),
+            )
+        };
+        if !diagnostics.is_empty() {
+            let message = diagnostics
+                .iter()
+                .map(|d| format!("  {}", d.message))
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.report(
+                "incompatible-indexer",
+                &format!("Property is incompatible with indexer:\n{message}"),
+                target,
+            );
+        }
+    }
+
+    /// Recognizes the JS-only `TypeSpec.@indexer(key, value)` decorator natively.
+    /// Mirrors the arity part of TS `checkDecoratorArguments`. TS checks decorators once per
+    /// checked type (template declarations and each instance), so this walks every type.
+    fn check_decorator_argument_counts(&mut self) {
+        let mut checks = Vec::new();
+        for index in 0..self.type_arena.types().len() {
+            let type_id = TypeId::new(index as u32);
+            checks.extend(
+                self.decorators_for_type(type_id)
+                    .into_iter()
+                    .map(|decorator| decorator.node),
+            );
+        }
+        checks.extend(self.symbol_table.augment_decorators.iter().copied());
+        for node in checks {
+            self.check_decorator_argument_count(node);
+        }
+    }
+
+    fn check_decorator_argument_count(&mut self, node: NodeId) {
+        let (target, actual) = match &self.node(node).data {
+            NodeData::DecoratorExpression { target, arguments }
+            | NodeData::AugmentDecoratorStatement {
+                target, arguments, ..
+            } => (*target, arguments.len()),
+            _ => return,
+        };
+        let Some(symbol) = self.resolved_symbol(target) else {
+            return;
+        };
+        let Some(parameters) = self.symbol_table.symbols[symbol.index()]
+            .declarations
+            .iter()
+            .find_map(|declaration| match &self.node(*declaration).data {
+                NodeData::DecoratorDeclarationStatement { parameters, .. } => {
+                    Some(parameters.clone())
+                }
+                _ => None,
+            })
+        else {
+            return;
+        };
+        let flags = parameters
+            .iter()
+            .filter_map(|parameter| match &self.node(*parameter).data {
+                NodeData::FunctionParameter { optional, rest, .. } => Some((*optional, *rest)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let min = flags
+            .iter()
+            .filter(|(optional, rest)| !optional && !rest)
+            .count();
+        let max = match flags.last() {
+            Some((_, true)) => None,
+            _ => Some(flags.len()),
+        };
+        if actual >= min && max.is_none_or(|max| actual <= max) {
+            return;
+        }
+        let message = match max {
+            None => format!("Expected at least {min} arguments, but got {actual}."),
+            Some(max) if max == min => format!("Expected {min} arguments, but got {actual}."),
+            Some(max) => format!("Expected {min}-{max} arguments, but got {actual}."),
+        };
+        self.report("invalid-argument-count", &message, node);
+    }
+
+    fn native_indexer(&mut self, decorators: &[NodeId]) -> Option<ModelIndexer> {
+        let implicit = self.symbol_table.implicit_using?;
+        let indexer_symbol = self.symbol_table.scopes[implicit.index()]
+            .symbols
+            .get("@indexer")
+            .copied()?;
+        for &decorator in decorators {
+            let NodeData::DecoratorExpression { target, arguments } =
+                self.node(decorator).data.clone()
+            else {
                 continue;
             };
-            if model.properties.contains_key(&name) {
-                self.report_duplicate_property(&model.name, &name, target);
+            if self.resolved_symbol(target) != Some(indexer_symbol) || arguments.len() != 2 {
                 continue;
             }
-            let cloned = self.type_arena.add(Type::ModelProperty(ModelPropertyType {
-                name: name.clone(),
-                node: prop.node,
-                symbol: None,
-                model: model_id,
-                property_type: prop.property_type,
-                optional: prop.optional,
-                default: prop.default,
-                source_property: Some(prop_id),
-                decorators: prop.decorators,
-            }));
-            model.properties.insert(name, cloned);
+            let key = self.type_for_node(arguments[0]);
+            let value = self.type_for_node(arguments[1]);
+            return Some(ModelIndexer { key, value });
         }
+        None
     }
 
     fn collect_decorators(&mut self, decorators: &[NodeId]) -> Vec<DecoratorRef> {
@@ -2920,7 +3278,11 @@ impl<'p> Checker<'p> {
             Type::Operation(ty) => ty.decorators.clone(),
             Type::Interface(ty) => ty.decorators.clone(),
             Type::Namespace(ty) => ty.decorators.clone(),
-            _ => Vec::new(),
+            _ => self
+                .intrinsic_declarations
+                .get(&type_id)
+                .map(|declaration| declaration.decorators.clone())
+                .unwrap_or_default(),
         }
     }
 
@@ -3029,7 +3391,10 @@ impl<'p> Checker<'p> {
             Type::Interface(ty) => ty.node,
             Type::Namespace(ty) => ty.node,
             Type::TemplateParameter(ty) => Some(ty.node),
-            _ => None,
+            _ => self
+                .intrinsic_declarations
+                .get(&type_id)
+                .map(|declaration| declaration.node),
         }
     }
 
@@ -3410,6 +3775,41 @@ impl<'p> Checker<'p> {
 
     fn synthetic_union_variant_name(&self, index: usize) -> String {
         format!("Symbol(name)#{index}")
+    }
+
+    /// Mirrors TS `createUnion`: a node-less expression union of `options`.
+    fn create_anonymous_union(&mut self, options: &[TypeId]) -> TypeId {
+        let type_id = self.type_arena.reserve();
+        let mut variants = IndexMap::new();
+        for (index, option) in options.iter().enumerate() {
+            let name = self.synthetic_union_variant_name(index);
+            let variant = self.type_arena.add(Type::UnionVariant(UnionVariantType {
+                name: name.clone(),
+                node: None,
+                union: type_id,
+                variant_type: *option,
+                decorators: Vec::new(),
+            }));
+            variants.insert(name, variant);
+        }
+        self.type_arena.replace(
+            type_id,
+            Type::Union(UnionType {
+                base_type: None,
+                name: String::new(),
+                node: None,
+                symbol: None,
+                variants,
+                expression: true,
+                decorators: Vec::new(),
+                namespace: None,
+                template_node: None,
+                template_arguments: Vec::new(),
+                template_parameters: Vec::new(),
+                is_template_declaration: false,
+            }),
+        );
+        type_id
     }
 
     fn cache_type(&mut self, node_id: NodeId, type_id: TypeId) {
@@ -4046,10 +4446,31 @@ mod tests {
     fn validates_template_parameter_constraints() {
         let result =
             check_source("model Foo<T extends string> { value: T; } model X { a: Foo<boolean>; }");
-        assert!(result
+        let diagnostics = result
             .diagnostics
             .iter()
-            .any(|d| d.code == "unassignable" && d.message.contains("template parameter 'T'")));
+            .map(|d| (d.code, d.message.as_str(), d.target.pos))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            diagnostics,
+            [(
+                "invalid-argument",
+                "Argument of type 'boolean' is not assignable to parameter of type 'string'",
+                59
+            )]
+        );
+    }
+
+    #[test]
+    fn invalid_template_parameter_default_is_reported_once_at_declaration() {
+        let result =
+            check_source("model Foo<T extends string = int32> { value: T; } model X { a: Foo; }");
+        let diagnostics = result
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.target.pos))
+            .collect::<Vec<_>>();
+        assert_eq!(diagnostics, [("unassignable", 29)]);
     }
 
     #[test]

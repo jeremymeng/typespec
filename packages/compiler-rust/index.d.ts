@@ -22,7 +22,16 @@ export interface BindResult {
 export declare function check(source: string, decorators?: object | undefined | null): CheckResultJs
 
 /** Load, parse and check the program rooted at `entry_path`. */
-export declare function checkProgram(entryPath: string, readFile: (arg: string) => string | null, resolveModule: (arg0: string, arg1: string) => ModuleResolutionJs, decorators?: object | undefined | null): CheckProgramResultJs
+export declare function checkProgram(entryPath: string, readFile: (arg: string) => string | null, resolveModule: (arg0: string, arg1: string) => ModuleResolutionJs, decorators?: object | undefined | null, options?: CheckProgramOptionsJs | undefined | null): CheckProgramResultJs
+
+export interface CheckProgramOptionsJs {
+  /**
+   * Standard library entrypoints (`lib/intrinsics.tsp`, `lib/std/main.tsp`)
+   * loaded before the entry file in the compiler context (M10). Omitted or
+   * empty: no standard library (built-in intrinsic stubs).
+   */
+  stdlib?: Array<string>
+}
 
 export interface CheckProgramResultJs {
   types: Array<SerializedType>
@@ -221,7 +230,9 @@ export interface SerializedType {
   propertyNames: Array<string>
   baseTypeId?: number
   sourceModelId?: number
+  /** Indexer value type. */
   indexerTypeId?: number
+  indexerKeyTypeId?: number
   namespaceId?: number
   propertyTypeId?: number
   optional?: boolean

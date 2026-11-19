@@ -38,14 +38,65 @@ impl<'p> Binder<'p> {
         binder
     }
 
+    fn stdlib_loaded(&self) -> bool {
+        !self.parse_result.compiler_scripts.is_empty()
+    }
+
     fn finish(mut self) -> SymbolTable {
+        if self.stdlib_loaded() {
+            self.link_typespec_namespace();
+        }
         self.table
             .diagnostics
             .extend(self.parse_result.diagnostics.iter().cloned());
         self.table
     }
 
+    /// With the standard library loaded, the `TypeSpec` namespace declared by
+    /// `lib/intrinsics.tsp` replaces the pre-bound global stubs: every file
+    /// implicitly uses it (TS `name-resolver` adds a `TypeSpec` using to each
+    /// file), and members TS binds from JS (`$decorators` in
+    /// `lib/intrinsic/tsp-index.ts`) or adds itself (`null`) are declared on it.
+    fn link_typespec_namespace(&mut self) {
+        let global = self.table.global_scope;
+        let Some(typespec) = self.table.scopes[global.index()]
+            .symbols
+            .get("TypeSpec")
+            .copied()
+        else {
+            return;
+        };
+        let Some(members) = self.table.symbols[typespec.index()].members else {
+            return;
+        };
+        let previous = self.current_scope;
+        self.current_scope = members;
+        for (name, flags) in [
+            ("null", SymbolFlags::Scalar | SymbolFlags::Declaration),
+            (
+                "@indexer",
+                SymbolFlags::Decorator | SymbolFlags::Declaration | SymbolFlags::Internal,
+            ),
+            (
+                "@docFromComment",
+                SymbolFlags::Decorator | SymbolFlags::Declaration | SymbolFlags::Internal,
+            ),
+        ] {
+            if !self.table.scopes[members.index()]
+                .symbols
+                .contains_key(name)
+            {
+                self.declare_prebound(name, flags);
+            }
+        }
+        self.current_scope = previous;
+        self.table.implicit_using = Some(members);
+    }
+
     fn add_intrinsics(&mut self) {
+        if self.stdlib_loaded() {
+            return;
+        }
         for name in [
             "string",
             "boolean",

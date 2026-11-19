@@ -24,7 +24,9 @@ pub struct SerializedType {
     pub property_names: Vec<String>,
     pub base_type_id: Option<u32>,
     pub source_model_id: Option<u32>,
+    /// Indexer value type.
     pub indexer_type_id: Option<u32>,
+    pub indexer_key_type_id: Option<u32>,
     pub namespace_id: Option<u32>,
     pub property_type_id: Option<u32>,
     pub optional: Option<bool>,
@@ -235,14 +237,29 @@ fn serialize_check_result(
         .collect::<Vec<_>>();
     node_to_type.sort_by_key(|entry| (entry.node_id, entry.type_id));
 
-    CheckResultJs {
-        types: result
-            .type_arena
-            .types()
+    let mut types = result
+        .type_arena
+        .types()
+        .iter()
+        .enumerate()
+        .map(|(id, ty)| serialize_type(id as u32, ty, &result.type_arena))
+        .collect::<Vec<_>>();
+    // Intrinsic scalars declared by the standard library (`scalar string;`).
+    for (type_id, declaration) in &result.intrinsic_declarations {
+        let serialized = &mut types[type_id.index()];
+        serialized.node_id = Some(declaration.node.as_u32());
+        serialized.symbol_id = Some(declaration.symbol.as_u32());
+        serialized.namespace_id = declaration.namespace.map(|id| id.as_u32());
+        serialized.base_type_id = declaration.base_scalar.map(|id| id.as_u32());
+        serialized.decorator_node_ids = declaration
+            .decorators
             .iter()
-            .enumerate()
-            .map(|(id, ty)| serialize_type(id as u32, ty, &result.type_arena))
-            .collect(),
+            .map(|d| d.node.as_u32())
+            .collect();
+    }
+
+    CheckResultJs {
+        types,
         symbol_to_type,
         node_to_type,
         diagnostics: diagnostics.into_iter().map(convert_diagnostic).collect(),
@@ -314,6 +331,7 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
         base_type_id: None,
         source_model_id: None,
         indexer_type_id: None,
+        indexer_key_type_id: None,
         namespace_id: None,
         property_type_id: None,
         optional: None,
@@ -395,7 +413,8 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
             serialized.property_ids = model.properties.values().map(|id| id.as_u32()).collect();
             serialized.base_type_id = model.base_model.map(|id| id.as_u32());
             serialized.source_model_id = model.source_model.map(|id| id.as_u32());
-            serialized.indexer_type_id = model.indexer.map(|id| id.as_u32());
+            serialized.indexer_type_id = model.indexer.map(|indexer| indexer.value.as_u32());
+            serialized.indexer_key_type_id = model.indexer.map(|indexer| indexer.key.as_u32());
             serialized.expression = Some(model.expression);
             serialized.effective_type_id =
                 Some(get_effective_model_type(arena, TypeId::new(id)).as_u32());

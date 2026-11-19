@@ -4,7 +4,9 @@
 use napi::bindgen_prelude::{FnArgs, Function, Object};
 use napi::{Env, Result};
 use napi_derive::napi;
-use typespec_parser::{parse_program, ModuleResolutionError, ResolvedModule, SourceHost};
+use typespec_parser::{
+    parse_program_with_stdlib, ModuleResolutionError, ParseOptions, ResolvedModule, SourceHost,
+};
 use typespec_source::{ProgramSources, SourceFileKind, Span};
 
 use crate::checker::{check_parsed, DecoratorStateEntry, NodeToType, SerializedType, SymbolToType};
@@ -42,6 +44,14 @@ pub struct ProgramSourceFileInfo {
     pub path: String,
     /// `"typespec"`, `"js"` or `"external"`.
     pub kind: String,
+}
+
+#[napi(object)]
+pub struct CheckProgramOptionsJs {
+    /// Standard library entrypoints (`lib/intrinsics.tsp`, `lib/std/main.tsp`)
+    /// loaded before the entry file in the compiler context (M10). Omitted or
+    /// empty: no standard library (built-in intrinsic stubs).
+    pub stdlib: Option<Vec<String>>,
 }
 
 #[napi(object)]
@@ -121,13 +131,18 @@ pub fn check_program<'env>(
     read_file: Function<'env, String, Option<String>>,
     resolve_module: Function<'env, FnArgs<(String, String)>, ModuleResolutionJs>,
     decorators: Option<Object<'env>>,
+    options: Option<CheckProgramOptionsJs>,
 ) -> Result<CheckProgramResultJs> {
     let mut host = NapiSourceHost {
         read_file,
         resolve_module,
         error: None,
     };
-    let program = parse_program(&entry_path, &mut host);
+    let stdlib = options
+        .and_then(|options| options.stdlib)
+        .unwrap_or_default();
+    let program =
+        parse_program_with_stdlib(&entry_path, &mut host, ParseOptions::default(), &stdlib);
     if let Some(error) = host.error {
         return Err(error);
     }

@@ -4,7 +4,7 @@ use typespec_parser::ast::{NamespaceBody, NodeData, NodeId};
 use typespec_parser::ParseResult;
 use typespec_source::{Diagnostic, DiagnosticSeverity, Span};
 
-use crate::types::{ScopeId, SymbolFlags, SymbolId, SymbolTable};
+use crate::types::{ScopeId, ScopeKind, SymbolFlags, SymbolId, SymbolTable};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolutionResult {
@@ -439,8 +439,9 @@ impl<'p, 't> NameResolver<'p, 't> {
                 self.resolve_value_expr(expression);
                 self.resolve_node(literal);
             }
-            NodeData::TemplateArgument { name, argument } => {
-                self.resolve_optional_type_ref(name);
+            NodeData::TemplateArgument { argument, .. } => {
+                // The name of a named argument (`Foo<T = X>`) refers to a template parameter
+                // of the referenced template; the checker matches it, it is not a reference.
                 self.resolve_type_ref(argument);
             }
             NodeData::ObjectLiteral { properties, .. } => self.resolve_nodes(&properties),
@@ -613,6 +614,7 @@ impl<'p, 't> NameResolver<'p, 't> {
         let using_symbol = self.table.scopes[file_scope.index()]
             .usings
             .iter()
+            .chain(self.table.implicit_using.iter())
             .find_map(|using| self.table.scopes[using.index()].symbols.get(name).copied());
         Some(match using_symbol {
             Some(using_symbol) => ResolutionResult::Ambiguous(vec![global_symbol, using_symbol]),
@@ -622,18 +624,33 @@ impl<'p, 't> NameResolver<'p, 't> {
     fn lookup_usings(&mut self, scope_id: ScopeId, name: &str) -> Option<ResolutionResult> {
         let mut using_matches = Vec::new();
         let usings = self.table.scopes[scope_id.index()].usings.clone();
-        for using_scope in usings {
+        for using_scope in &usings {
             if let Some(symbol) = self.table.scopes[using_scope.index()]
                 .symbols
                 .get(name)
                 .copied()
             {
                 using_matches.push(symbol);
-                self.mark_using_used(scope_id, using_scope);
+                self.mark_using_used(scope_id, *using_scope);
             }
         }
         using_matches.sort_by_key(|id| id.as_u32());
         using_matches.dedup();
+        if self.table.scopes[scope_id.index()].kind == ScopeKind::File {
+            if let Some(implicit) = self.table.implicit_using {
+                if let Some(symbol) = self.table.scopes[implicit.index()]
+                    .symbols
+                    .get(name)
+                    .copied()
+                {
+                    // An explicit `using TypeSpec;` binds the same symbol a second
+                    // time; TS reports it as ambiguous with itself.
+                    if usings.contains(&implicit) || !using_matches.contains(&symbol) {
+                        using_matches.push(symbol);
+                    }
+                }
+            }
+        }
         match using_matches.len() {
             0 => None,
             1 => Some(ResolutionResult::Resolved(using_matches[0])),

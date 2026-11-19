@@ -65,6 +65,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      # The standard library (M10) imports `@typespec/compiler`'s built `dist/**/tsp-index.js`.
+      - name: Build @typespec/compiler
+        run: pnpm -r --filter "@typespec/compiler" build
+
       - name: Build native module
         run: pnpm -C packages/compiler-rust build
 
