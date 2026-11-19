@@ -35,16 +35,38 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Tests.Providers.MrwSerializat
             protected override ConstructorProvider[] BuildConstructors() => [];
         }
 
-        [Test]
-        public void KebabCaseSerializedName()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void KebabCaseSerializedName(bool relaxedConstructor)
         {
             var inputModelProperty = InputFactory.Property("kebab-case", InputPrimitiveType.String, wireName: "kebab-case", isRequired: true);
+            if (relaxedConstructor)
+            {
+                inputModelProperty.Update(isRequiredInConstructor: false);
+            }
             var inputModel = InputFactory.Model("TestModel", properties: [inputModelProperty]);
 
             var mrwProvider = new ModelProvider(inputModel).SerializationProviders.First();
             var writer = new TypeProviderWriter(mrwProvider);
             var file = writer.Write();
             Assert.AreEqual(Helpers.GetExpectedFromFile(), file.Content);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ConstructorOverrideDoesNotChangeSerialization(bool relaxedConstructor)
+        {
+            var baseProperty = InputFactory.Property("value", InputPrimitiveType.String, isRequired: true);
+            var property = InputFactory.Property("value", InputPrimitiveType.String, isRequired: true);
+            if (relaxedConstructor)
+            {
+                property.Update(isRequiredInConstructor: false);
+            }
+            var baseModel = InputFactory.Model("Base", properties: [baseProperty], usage: InputModelTypeUsage.Input | InputModelTypeUsage.Json);
+            var inputModel = InputFactory.Model("TestModel", properties: [property], baseModel: baseModel, usage: InputModelTypeUsage.Input | InputModelTypeUsage.Json);
+
+            var mrwProvider = new ModelProvider(inputModel).SerializationProviders.First();
+            Assert.That(new TypeProviderWriter(mrwProvider).Write().Content, Is.EqualTo(Helpers.GetExpectedFromFile()).NoClip);
         }
 
         [Test]
@@ -149,6 +171,7 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Tests.Providers.MrwSerializat
             Assert.AreEqual(Helpers.GetExpectedFromFile(parameters: wireKindName), file.Content);
         }
 
+
         // Validates that duration properties encoded as float/double milliseconds preserve the
         // floating-point value (no integer rounding).
         [TestCase(nameof(InputPrimitiveType.Float32))]
@@ -170,6 +193,34 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Tests.Providers.MrwSerializat
             var writer = new TypeProviderWriter(mrwProvider);
             var file = writer.Write();
             Assert.AreEqual(Helpers.GetExpectedFromFile(parameters: wireKindName), file.Content);
+        }
+
+        // Validates that a required FileBinaryContent property is serialized via WriteObjectValue.
+        [Test]
+        public void RequiredFileBinaryContentProperty()
+        {
+            var inputModel = InputFactory.Model(
+                "TestModel",
+                properties: [InputFactory.Property("profileImage", InputFactory.FileType(), isRequired: true)]);
+
+            var mrwProvider = new ModelProvider(inputModel).SerializationProviders.First();
+            var writer = new TypeProviderWriter(mrwProvider);
+            var file = writer.Write();
+            Assert.AreEqual(Helpers.GetExpectedFromFile(), file.Content);
+        }
+
+        // Validates that an optional FileBinaryContent property is wrapped in Optional.IsDefined before WriteObjectValue.
+        [Test]
+        public void OptionalFileBinaryContentProperty()
+        {
+            var inputModel = InputFactory.Model(
+                "TestModel",
+                properties: [InputFactory.Property("profileImage", InputFactory.FileType(), isRequired: false)]);
+
+            var mrwProvider = new ModelProvider(inputModel).SerializationProviders.First();
+            var writer = new TypeProviderWriter(mrwProvider);
+            var file = writer.Write();
+            Assert.AreEqual(Helpers.GetExpectedFromFile(), file.Content);
         }
     }
 }

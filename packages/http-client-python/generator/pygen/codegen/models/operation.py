@@ -33,7 +33,7 @@ from .parameter import (
 )
 from .parameter_list import ParameterList
 from .model_type import ModelType
-from .primitive_types import BinaryIteratorType, BinaryType
+from .primitive_types import BinaryIteratorType, BinaryType, ByteArraySchema
 from .base import BaseType
 from .combined_type import CombinedType
 from .request_builder import OverloadedRequestBuilder, RequestBuilder
@@ -105,6 +105,11 @@ class OperationBase(  # pylint: disable=too-many-public-methods,too-many-instanc
         )
 
     @property
+    def has_structured_stream_response(self) -> bool:
+        """Whether any success response is a structured (JSONL / SSE) stream returning Stream[T]."""
+        return any(getattr(r, "is_structured_stream", False) for r in self.responses)
+
+    @property
     def has_form_data_body(self):
         return self.parameters.has_form_data_body
 
@@ -153,6 +158,8 @@ class OperationBase(  # pylint: disable=too-many-public-methods,too-many-instanc
             retval = add_to_pylint_disable(retval, "too-many-locals")
         elif not self.is_overload and len(method_params) > (LOCALS_LENGTH_LIMIT - OPERATION_BODY_VARIABLES_LENGTH):
             retval = add_to_pylint_disable(retval, "too-many-locals")
+        if not self.is_overload and self.has_structured_stream_response:
+            retval = add_to_pylint_disable(retval, "too-many-statements")
 
         return retval
 
@@ -224,7 +231,15 @@ class OperationBase(  # pylint: disable=too-many-public-methods,too-many-instanc
 
     @property
     def need_import_iobase(self) -> bool:
-        return self.parameters.has_body and isinstance(self.parameters.body_parameter.type, CombinedType)
+        if not (self.parameters.has_body and isinstance(self.parameters.body_parameter.type, CombinedType)):
+            return False
+        # For a binary `bytes` body the combined type is `bytes` + `IO[bytes]`. Both overloads
+        # serialize to raw content, so the body serialization collapses to a single assignment
+        # without an `isinstance` branch. In that case `IOBase` is never referenced, so avoid
+        # importing it to prevent an unused-import lint error in the generated code.
+        if any(isinstance(t, ByteArraySchema) for t in self.parameters.body_parameter.type.types):
+            return False
+        return True
 
     @staticmethod
     def has_kwargs_to_pop_with_default(
@@ -326,7 +341,7 @@ class OperationBase(  # pylint: disable=too-many-public-methods,too-many-instanc
             file_import.merge(
                 response.imports(async_mode=async_mode, need_import_iobase=self.need_import_iobase, **kwargs)
             )
-        if self.code_model.options["models-mode"]:
+        if self.code_model.options["models-mode"] or self.code_model.generate_typeddict_only:
             for exception in self.exceptions:
                 file_import.merge(exception.imports(async_mode=async_mode, **kwargs))
 
@@ -458,6 +473,7 @@ class OperationBase(  # pylint: disable=too-many-public-methods,too-many-instanc
                 r.type
                 and not isinstance(r.type, BinaryIteratorType)
                 and not xml_serializable(str(r.default_content_type))
+                and not (isinstance(r.type, ModelType) and r.type.is_typed_dict_only)
                 for r in self.responses
             ):
                 file_import.add_submodule_import(relative_path, "_deserialize", ImportType.LOCAL)
@@ -497,7 +513,7 @@ class OperationBase(  # pylint: disable=too-many-public-methods,too-many-instanc
 
     @property
     def has_stream_response(self) -> bool:
-        return any(r.is_stream_response for r in self.responses)
+        return any(r.is_stream_response or r.is_structured_stream for r in self.responses)
 
     @classmethod
     def get_request_builder(cls, yaml_data: dict[str, Any], client: "Client"):
@@ -543,7 +559,12 @@ class Operation(OperationBase[Response]):
                 "distributed_trace_async",
                 ImportType.SDKCORE,
             )
-        if self.has_response_body and not self.has_optional_return_type and not self.code_model.options["models-mode"]:
+        if (
+            self.has_response_body
+            and not self.has_optional_return_type
+            and not self.code_model.options["models-mode"]
+            and not self.code_model.generate_typeddict_only
+        ):
             file_import.add_submodule_import("typing", "cast", ImportType.STDLIB)
 
         return file_import

@@ -8,7 +8,7 @@ description: |
 
 on:
   issues:
-    types: [opened, reopened]
+    types: [opened]
   workflow_dispatch:
     inputs:
       issue-number:
@@ -17,7 +17,10 @@ on:
   roles: all
   reaction: eyes
 
-permissions: read-all
+permissions:
+  contents: read
+  issues: read
+  copilot-requests: write
 
 network: defaults
 
@@ -30,6 +33,8 @@ safe-outputs:
   add-comment:
 
 tools:
+  bash: [safeoutputs]
+  cli-proxy: false
   web-fetch:
   github:
     toolsets: [issues, repos]
@@ -40,7 +45,9 @@ tools:
 
 timeout-minutes: 10
 source: githubnext/agentics/workflows/issue-triage.md@346204513ecfa08b81566450d7d599556807389f
-engine: copilot
+engine:
+  id: copilot
+model: gpt-5.6-sol
 ---
 
 # Agentic Triage

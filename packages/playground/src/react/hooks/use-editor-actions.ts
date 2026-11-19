@@ -3,6 +3,11 @@ import { KeyCode, KeyMod, editor } from "monaco-editor";
 import { useCallback, useMemo, type RefObject } from "react";
 import type { PlaygroundState } from "../use-playground-state.js";
 
+/**
+ * Snapshot passed to the playground's save callback, including the current editor text.
+ * `sampleName` is supplied only while the editor text still matches the selected sample.
+ * `tspconfig` carries the raw configuration alongside the derived emitter and compiler options.
+ */
 export interface PlaygroundSaveData extends PlaygroundState {
   /** Current content of the playground. */
   content: string;
@@ -15,6 +20,7 @@ export interface UseEditorActionsOptions {
   editorRef: RefObject<editor.IStandaloneCodeEditor | undefined>;
   selectedEmitter: string;
   compilerOptions: CompilerOptions;
+  tspconfig: string;
   selectedSampleName: string;
   isSampleUntouched: boolean;
   selectedViewer?: string;
@@ -35,6 +41,7 @@ export function useEditorActions({
   editorRef,
   selectedEmitter,
   compilerOptions,
+  tspconfig,
   selectedSampleName,
   isSampleUntouched,
   selectedViewer,
@@ -49,6 +56,7 @@ export function useEditorActions({
         content: currentContent,
         emitter: selectedEmitter,
         compilerOptions,
+        tspconfig,
         sampleName: isSampleUntouched ? selectedSampleName : undefined,
         selectedViewer,
         viewerState,
@@ -59,6 +67,7 @@ export function useEditorActions({
     onSave,
     selectedEmitter,
     compilerOptions,
+    tspconfig,
     selectedSampleName,
     isSampleUntouched,
     selectedViewer,

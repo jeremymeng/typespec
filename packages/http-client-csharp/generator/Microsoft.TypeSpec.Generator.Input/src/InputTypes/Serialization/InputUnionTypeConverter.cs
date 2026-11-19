@@ -38,13 +38,25 @@ namespace Microsoft.TypeSpec.Generator.Input
             IReadOnlyList<InputType>? variantTypes = null;
             IReadOnlyList<InputDecoratorInfo>? decorators = null;
             InputExternalTypeMetadata? external = null;
+            InputExperimentalDetails? experimental = null;
+            string? @namespace = null;
+            InputModelType? baseModel = null;
+            string? discriminatorPropertyName = null;
+            string? envelopePropertyName = null;
+            IReadOnlyDictionary<string, InputModelType>? discriminatedSubtypes = null;
             bool isExactName = false;
             while (reader.TokenType != JsonTokenType.EndObject)
             {
                 var isKnownProperty = reader.TryReadString("name", ref name)
+                    || reader.TryReadString("namespace", ref @namespace)
                     || reader.TryReadComplexType("variantTypes", options, ref variantTypes)
+                    || reader.TryReadComplexType("baseModel", options, ref baseModel)
+                    || reader.TryReadString("discriminatorPropertyName", ref discriminatorPropertyName)
+                    || reader.TryReadString("envelopePropertyName", ref envelopePropertyName)
+                    || reader.TryReadComplexType("discriminatedSubtypes", options, ref discriminatedSubtypes)
                     || reader.TryReadComplexType("decorators", options, ref decorators)
                     || reader.TryReadComplexType("external", options, ref external)
+                    || reader.TryReadComplexType("experimental", options, ref experimental)
                     || reader.TryReadBoolean("isExactName", ref isExactName);
 
                 if (!isKnownProperty)
@@ -59,8 +71,14 @@ namespace Microsoft.TypeSpec.Generator.Input
                 throw new JsonException("Union must have a least one union type");
             }
             union.VariantTypes = variantTypes;
+            union.Namespace = @namespace ?? string.Empty;
+            union.BaseModel = baseModel;
+            union.DiscriminatorPropertyName = discriminatorPropertyName;
+            union.EnvelopePropertyName = envelopePropertyName;
+            union.DiscriminatedSubtypes = discriminatedSubtypes;
             union.Decorators = decorators ?? [];
             union.External = external;
+            union.Experimental = experimental;
             union.IsExactName = isExactName;
             return union;
         }

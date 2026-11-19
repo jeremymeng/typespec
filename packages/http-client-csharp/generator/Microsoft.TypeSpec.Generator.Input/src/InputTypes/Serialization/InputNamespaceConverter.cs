@@ -35,6 +35,7 @@ namespace Microsoft.TypeSpec.Generator.Input
             IReadOnlyList<InputLiteralType>? constants = null;
             IReadOnlyList<InputEnumType>? enums = null;
             IReadOnlyList<InputModelType>? models = null;
+            IReadOnlyList<InputUnionType>? unions = null;
             IReadOnlyList<InputClient>? clients = null;
             InputAuth? auth = null;
 
@@ -45,6 +46,7 @@ namespace Microsoft.TypeSpec.Generator.Input
                     || reader.TryReadComplexType("constants", options, ref constants)
                     || reader.TryReadComplexType("enums", options, ref enums)
                     || reader.TryReadComplexType("models", options, ref models)
+                    || reader.TryReadComplexType("unions", options, ref unions)
                     || reader.TryReadComplexType("clients", options, ref clients)
                     || reader.TryReadComplexType("auth", options, ref auth);
 
@@ -61,13 +63,18 @@ namespace Microsoft.TypeSpec.Generator.Input
             clients ??= [];
 
             return new InputNamespace(
-                name ?? throw new JsonException(),
+                name ?? throw new JsonException(
+                    "Required property 'name' was missing or null on the root InputNamespace. " +
+                    "The input code model is incomplete or was corrupted in transit."),
                 apiVersions,
                 constants,
                 enums,
                 models,
                 clients,
-                auth);
+                auth)
+            {
+                Unions = unions ?? []
+            };
         }
     }
 }

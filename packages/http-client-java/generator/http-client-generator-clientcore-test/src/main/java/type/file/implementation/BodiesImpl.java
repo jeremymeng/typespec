@@ -16,7 +16,7 @@ import io.clientcore.core.http.pipeline.HttpPipeline;
 import io.clientcore.core.instrumentation.Instrumentation;
 import io.clientcore.core.models.binarydata.BinaryData;
 import java.lang.reflect.InvocationTargetException;
-import type.file.UploadFileMultipleContentTypesContentType;
+import type.file.body.UploadFileMultipleContentTypesContentType;
 
 /**
  * An instance of this class provides access to all the operations defined in Bodies.
@@ -261,6 +261,7 @@ public final class BodiesImpl {
      * 
      * @param file The file parameter.
      * @param contentLength The Content-Length header for the request.
+     * @param contentType Body parameter's content type. Known values are *&#47;*.
      * @param requestContext The context to configure the HTTP request before HTTP client sends it.
      * @throws IllegalArgumentException thrown if parameters fail the validation.
      * @throws HttpResponseException thrown if the service returns an error.
@@ -269,10 +270,9 @@ public final class BodiesImpl {
      */
     @ServiceMethod(returns = ReturnType.SINGLE)
     public Response<Void> uploadFileDefaultContentTypeWithResponse(BinaryData file, long contentLength,
-        RequestContext requestContext) {
+        String contentType, RequestContext requestContext) {
         return this.instrumentation.instrumentWithResponse("Type.File.Body.uploadFileDefaultContentType",
             requestContext, updatedContext -> {
-                final String contentType = "*/*";
                 return service.uploadFileDefaultContentType(this.client.getEndpoint(), contentType, file, contentLength,
                     updatedContext);
             });

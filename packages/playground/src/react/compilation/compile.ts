@@ -10,24 +10,46 @@ export async function compile(
   host: BrowserHost,
   content: string,
   selectedEmitter: string,
-  options: CompilerOptions,
+  tspconfig: string,
 ): Promise<CompilationState> {
   await host.writeFile("main.tsp", content);
+  await host.writeFile("tspconfig.yaml", tspconfig);
   await emptyOutputDir(host);
   try {
     const typespecCompiler = host.compiler;
-    const program = await typespecCompiler.compile(host, resolveVirtualPath("main.tsp"), {
-      ...options,
+
+    // Deferred emitters are only imported once they are actually used.
+    if (selectedEmitter) {
+      await host.loadLibrary(selectedEmitter);
+    }
+
+    // Resolve the compiler options natively from the tspconfig.yaml so the playground
+    // honors the full config (emit, options, linter, imports, warn-as-error, ...).
+    const [resolvedOptions] = await typespecCompiler.resolveCompilerOptions(host, {
+      cwd: resolveVirtualPath("."),
+      entrypoint: resolveVirtualPath("main.tsp"),
+    });
+
+    // The tspconfig.yaml can request emitters other than the selected one.
+    await Promise.all((resolvedOptions.emit ?? []).map((name) => host.loadLibrary(name)));
+
+    const options: CompilerOptions = {
+      ...resolvedOptions,
       options: {
-        ...options.options,
-        [selectedEmitter]: {
-          ...options.options?.[selectedEmitter],
-          "emitter-output-dir": outputDir,
-        },
+        ...resolvedOptions.options,
+        ...(selectedEmitter
+          ? {
+              [selectedEmitter]: {
+                ...resolvedOptions.options?.[selectedEmitter],
+                "emitter-output-dir": outputDir,
+              },
+            }
+          : {}),
       },
       outputDir,
-      emit: selectedEmitter ? [selectedEmitter] : [],
-    });
+    };
+
+    const program = await typespecCompiler.compile(host, resolveVirtualPath("main.tsp"), options);
     const outputFiles = await findOutputFiles(host);
     return { program, outputFiles };
   } catch (error) {

@@ -17,11 +17,102 @@ namespace Microsoft.TypeSpec.Generator
 {
     public class TypeFactory
     {
-        private ChangeTrackingListDefinition ChangeTrackingListProvider { get; } = new();
+        private ChangeTrackingListDefinition ChangeTrackingListProvider
+            => _changeTrackingListProvider ??= new();
+        private ChangeTrackingListDefinition? _changeTrackingListProvider;
 
-        private ChangeTrackingDictionaryDefinition ChangeTrackingDictionaryProvider { get; } = new();
+        private ChangeTrackingDictionaryDefinition ChangeTrackingDictionaryProvider
+            => _changeTrackingDictionaryProvider ??= new();
+        private ChangeTrackingDictionaryDefinition? _changeTrackingDictionaryProvider;
+
+        private OptionalDefinition? _optionalProvider;
+        private OptionalDefinition OptionalProvider => _optionalProvider ??= new();
 
         private Dictionary<InputModelType, ModelProvider?> InputTypeToModelProvider { get; } = [];
+
+        internal IEnumerable<ModelProvider> CreatedModelProviders
+            => InputTypeToModelProvider.Values.OfType<ModelProvider>();
+
+        private IReadOnlyDictionary<InputModelType, string>? _modelNames;
+        internal IReadOnlyDictionary<InputModelType, string> ModelNames => _modelNames ??= BuildModelNames();
+
+        protected virtual IEnumerable<(string Name, string Namespace, string OriginalName)> GetReservedModelTypeNames() => [];
+
+        private IReadOnlyDictionary<InputModelType, string> BuildModelNames()
+        {
+            var input = CodeModelGenerator.Instance.InputLibrary.InputNamespace;
+            var candidates = new Dictionary<InputModelType, (string Name, string FinalName, string OriginalName, string Namespace, string FinalNamespace, bool CanRename, bool HasTypeMapping)>();
+            var nameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var reservedNames = GetReservedModelTypeNames().ToArray();
+            var originalNames = reservedNames.Select(type => type.OriginalName).ToHashSet(StringComparer.Ordinal);
+            var reservedTypes = reservedNames.Select(type => (type.Name, type.Namespace)).ToHashSet();
+
+            void ReserveName(string name)
+            {
+                nameCounts.TryGetValue(name, out var count);
+                nameCounts[name] = count + 1;
+            }
+
+            void AddModel(InputModelType model)
+            {
+                if (model.External is not null || candidates.ContainsKey(model))
+                {
+                    return;
+                }
+
+                // Do not construct CSharpTypes while collecting names: their creation calls BuildName.
+                var candidate = new ModelProvider(model).GetNameForCollisionCheck();
+                candidates.Add(model, candidate);
+                originalNames.Add(candidate.OriginalName);
+                ReserveName(candidate.FinalName);
+                var unknown = model.DiscriminatedSubtypes.Values.FirstOrDefault(m => m.IsUnknownDiscriminatorModel);
+                if (unknown is not null)
+                {
+                    AddModel(unknown);
+                }
+            }
+
+            foreach (var model in input.Models)
+            {
+                AddModel(model);
+            }
+
+            foreach (var inputEnum in input.Enums)
+            {
+                if (inputEnum.External is null && !inputEnum.Usage.HasFlag(InputModelTypeUsage.ApiVersionEnum))
+                {
+                    ReserveName(EnumProvider.Create(inputEnum).Name);
+                    originalNames.Add(inputEnum.IsExactName ? inputEnum.Name : inputEnum.Name.ToIdentifierName().NormalizeCSharpAcronyms());
+                }
+            }
+
+            var result = new Dictionary<InputModelType, string>();
+            foreach (var (model, candidate) in candidates)
+            {
+                // A direct input takes precedence over an implicit suffix match for the same mapping.
+                var mappingBelongsToModel = candidate.HasTypeMapping &&
+                    !originalNames.Contains(candidate.Name);
+                if (!candidate.CanRename || mappingBelongsToModel ||
+                    (nameCounts[candidate.FinalName] == 1 && !reservedTypes.Contains((candidate.FinalName, candidate.FinalNamespace))))
+                {
+                    result.Add(model, candidate.Name);
+                    continue;
+                }
+
+                // Models and enums share an output directory, including across namespaces.
+                var name = candidate.OriginalName;
+                for (var suffix = 1; nameCounts.ContainsKey(name) ||
+                    reservedTypes.Contains((name, candidate.Namespace)) ||
+                    (name != candidate.OriginalName && originalNames.Contains(name)); suffix++)
+                {
+                    name = $"{candidate.OriginalName}{suffix}";
+                }
+                ReserveName(name);
+                result.Add(model, name);
+            }
+
+            return result;
+        }
 
         public IDictionary<CSharpType, TypeProvider?> CSharpTypeMap { get; } = new Dictionary<CSharpType, TypeProvider?>(CSharpType.IgnoreNullableComparer);
 
@@ -34,14 +125,59 @@ namespace Microsoft.TypeSpec.Generator
         private Dictionary<InputSerializationOptions, SerializationOptions?> SerializationOptionsCache { get; } = [];
 
         private Dictionary<InputProperty, PropertyProvider?> PropertyCache { get; } = [];
+        private readonly Dictionary<InputModelType, HashSet<(string Name, string Type, bool IsRequired, bool IsNullable)>> _relaxedConstructorOverrides = [];
+        private readonly Dictionary<InputModelType, HashSet<(string Name, string Type, bool IsRequired, bool IsNullable)>> _descendantRelaxedConstructorOverrides = [];
 
         private IReadOnlyList<LibraryVisitor> Visitors => CodeModelGenerator.Instance.Visitors;
         private Dictionary<InputType, IReadOnlyList<TypeProvider>> SerializationsCache { get; } = [];
 
-        internal HashSet<string> UnionVariantTypesToKeep { get; } = [];
-
         protected internal TypeFactory()
         {
+        }
+
+        internal CSharpType? CreateLastContractModelBase(CSharpType previousBase, InputModelType currentModel)
+            => CreateLastContractModelBaseCore(previousBase, currentModel);
+
+        /// <summary>
+        /// Resolves a last-contract model base that cannot be represented by the current input.
+        /// Downstream generators can override this for their known inheritable framework types.
+        /// </summary>
+        /// <param name="previousBase">The base type from the last contract.</param>
+        /// <param name="currentModel">The current model whose base is being restored.</param>
+        /// <returns>The mapped base type, or <see langword="null"/> when the base is not supported.</returns>
+        protected virtual CSharpType? CreateLastContractModelBaseCore(CSharpType previousBase, InputModelType currentModel)
+            => null;
+
+        internal bool IsLastContractModelBasePropertyCompatible(
+            CSharpType mappedBase,
+            InputModelProperty currentProperty,
+            PropertyProvider lastContractProperty)
+            => MethodSignatureHelper.IsPublicApi(lastContractProperty.Modifiers, lastContractProperty.Attributes) &&
+                !lastContractProperty.Modifiers.HasFlag(MethodSignatureModifiers.Static) &&
+                IsLastContractModelBasePropertyCompatibleCore(mappedBase, currentProperty, lastContractProperty);
+
+        /// <summary>
+        /// Determines whether a current input property is represented by a property on a mapped last-contract base.
+        /// Downstream generators can override this for mappings that intentionally change the CLR property shape.
+        /// </summary>
+        /// <param name="mappedBase">The mapped CLR base type.</param>
+        /// <param name="currentProperty">The property inherited from the current input base.</param>
+        /// <param name="lastContractProperty">A property exposed by the mapped last-contract base.</param>
+        protected virtual bool IsLastContractModelBasePropertyCompatibleCore(
+            CSharpType mappedBase,
+            InputModelProperty currentProperty,
+            PropertyProvider lastContractProperty)
+        {
+            var currentType = CreateCSharpType(currentProperty.Type);
+            var currentName = currentProperty.IsExactName
+                ? currentProperty.Name
+                : currentProperty.Name.ToIdentifierName().NormalizeCSharpAcronyms(currentProperty.Type.IsDateTimeInputType());
+            return currentType is not null &&
+                lastContractProperty.Name == currentName &&
+                lastContractProperty.Type.Equals(currentType, ignoreNullable: true) &&
+                (!currentType.IsValueType || lastContractProperty.Type.IsNullable == currentType.IsNullable) &&
+                !lastContractProperty.IsInitOnly &&
+                lastContractProperty.Body.HasSetter == !currentProperty.IsReadOnly;
         }
 
         public CSharpType? CreateCSharpType(InputType inputType)
@@ -74,7 +210,7 @@ namespace Microsoft.TypeSpec.Generator
             // Check if this type has external type information
             if (inputType.External != null)
             {
-                return CreateExternalType(inputType.External);
+                return CreateExternalType(inputType.External, inputType);
             }
 
             CSharpType? type;
@@ -90,6 +226,15 @@ namespace Microsoft.TypeSpec.Generator
                     type = enumValue != null ? CSharpType.FromLiteral(enumValue, enumValueType.Value) : null;
                     break;
                 case InputUnionType unionType:
+                    // Unions without a discriminator property (SSE events unions) are only selected by the
+                    // out-of-band event type, so they map to their base on the SSE convenience path alone.
+                    if (unionType.BaseModel is { } baseModel &&
+                        unionType.DiscriminatorPropertyName is not null &&
+                        HasCompatibleUnionBase(unionType))
+                    {
+                        type = CreateCSharpType(baseModel);
+                        break;
+                    }
                     var unionInputs = new List<CSharpType>();
                     foreach (var variant in unionType.VariantTypes)
                     {
@@ -97,11 +242,6 @@ namespace Microsoft.TypeSpec.Generator
                         if (unionInput != null)
                         {
                             unionInputs.Add(unionInput);
-                            // we only keep the type if it is not framework type and not literal
-                            if (!unionInput.IsFrameworkType && !unionInput.IsLiteral)
-                            {
-                                UnionVariantTypesToKeep.Add(unionInput.Name);
-                            }
                         }
                     }
                     type = CSharpType.FromUnion(unionInputs);
@@ -109,6 +249,12 @@ namespace Microsoft.TypeSpec.Generator
                 case InputArrayType listType:
                     var arrayInput = CreateCSharpType(listType.ValueType);
                     type = arrayInput != null ? new CSharpType(typeof(IList<>), arrayInput) : null;
+                    break;
+                case InputStreamingType streamingType:
+                    var streamingValueType = CreateCSharpType(streamingType.ValueType);
+                    type = streamingValueType != null
+                        ? new CSharpType(typeof(IAsyncEnumerable<>), streamingValueType)
+                        : null;
                     break;
                 case InputDictionaryType dictionaryType:
                     var inputValueType = CreateCSharpType(dictionaryType.ValueType);
@@ -132,6 +278,68 @@ namespace Microsoft.TypeSpec.Generator
         }
 
         /// <summary>
+        /// Determines whether every union payload retains the declared base in its C# hierarchy.
+        /// </summary>
+        /// <param name="union">The union whose payload hierarchy is checked.</param>
+        protected internal bool HasCompatibleUnionBase(InputUnionType union)
+        {
+            if (union.BaseModel is not { External: null } unionBase || union.DiscriminatedSubtypes is null)
+            {
+                return false;
+            }
+
+            var providers = new Dictionary<InputModelType, ModelProvider?>();
+            ModelProvider? GetProvider(InputModelType model)
+            {
+                if (!providers.TryGetValue(model, out var provider))
+                {
+                    // Inspect custom identities without building Type, which can re-enter this check
+                    // while the union base is deciding whether it is abstract.
+                    provider = InputTypeToModelProvider.GetValueOrDefault(model) ?? CreateModelCore(model);
+                    providers.Add(model, provider);
+                }
+                return provider;
+            }
+
+            bool ReachesBase(InputModelType model, HashSet<InputModelType> visited)
+            {
+                if (model.External is not null || !visited.Add(model))
+                {
+                    return false;
+                }
+                if (model == unionBase)
+                {
+                    return true;
+                }
+                var provider = GetProvider(model);
+                if (provider?.CustomCodeView?.BaseType is not { } customBase)
+                {
+                    return model.BaseModel is not null && ReachesBase(model.BaseModel, visited);
+                }
+
+                var visitedTypes = new HashSet<CSharpType>();
+                for (var type = customBase; type is not null && visitedTypes.Add(type);
+                    type = CodeModelGenerator.Instance.SourceInputModel.FindForTypeInCurrentCompilation(
+                        type.Namespace, type.Name, type.DeclaringType?.Name)?.BaseType ?? type.BaseType)
+                {
+                    if (GetProvider(unionBase)?.HasTypeIdentity(type) == true)
+                    {
+                        return true;
+                    }
+                    var inputBase = CodeModelGenerator.Instance.InputLibrary.InputNamespace.Models
+                        .FirstOrDefault(candidate => GetProvider(candidate)?.HasTypeIdentity(type) == true);
+                    if (inputBase is not null)
+                    {
+                        return ReachesBase(inputBase, visited);
+                    }
+                }
+                return false;
+            }
+
+            return union.DiscriminatedSubtypes.Values.All(model => ReachesBase(model, []));
+        }
+
+        /// <summary>
         /// Factory method for creating a <see cref="CSharpType"/> based on an input type <paramref name="inputType"/>.
         /// </summary>
         /// <param name="inputType">The <see cref="InputType"/> to convert.</param>
@@ -150,8 +358,12 @@ namespace Microsoft.TypeSpec.Generator
                 InputPrimitiveTypeKind.Float64 => typeof(double),
                 InputPrimitiveTypeKind.Int8 => typeof(sbyte),
                 InputPrimitiveTypeKind.UInt8 => typeof(byte),
+                InputPrimitiveTypeKind.Int16 => typeof(short),
+                InputPrimitiveTypeKind.UInt16 => typeof(ushort),
                 InputPrimitiveTypeKind.Int32 => typeof(int),
+                InputPrimitiveTypeKind.UInt32 => typeof(uint),
                 InputPrimitiveTypeKind.Int64 => typeof(long),
+                InputPrimitiveTypeKind.UInt64 => typeof(ulong),
                 InputPrimitiveTypeKind.SafeInt => typeof(long),
                 InputPrimitiveTypeKind.Integer => typeof(long), // in typespec, integer is the base type of int related types, see type relation: https://typespec.io/docs/language-basics/type-relations
                 InputPrimitiveTypeKind.Float => typeof(double), // in typespec, float is the base type of float32 and float64, see type relation: https://typespec.io/docs/language-basics/type-relations
@@ -175,13 +387,21 @@ namespace Microsoft.TypeSpec.Generator
         public ModelProvider? CreateModel(InputModelType model)
         {
             if (InputTypeToModelProvider.TryGetValue(model, out var modelProvider))
+            {
                 return modelProvider;
+            }
 
             // Add sentinel before construction to prevent re-entrant creation of the same model
             // (e.g., when BuildBaseModelProvider triggers CreateModel for all input models).
             InputTypeToModelProvider[model] = null;
 
-            modelProvider = CreateModelCore(model);
+            // A model marked as external maps to a type that already exists in a framework or
+            // referenced assembly, so it must not be generated. Represent it with a
+            // SystemObjectModelProvider so that generated models deriving from it still get a
+            // ModelProvider base (enabling constructor chaining and discriminator forwarding)
+            // rather than a bare TypeProvider that cannot serve as a base model. This is handled
+            // here, before the overridable CreateModelCore, so all generators share the behavior.
+            modelProvider = CreateExternalModel(model) ?? CreateModelCore(model);
 
             foreach (var visitor in Visitors)
             {
@@ -203,7 +423,37 @@ namespace Microsoft.TypeSpec.Generator
             return modelProvider;
         }
 
-        protected virtual ModelProvider? CreateModelCore(InputModelType model) => new ModelProvider(model);
+        protected virtual ModelProvider? CreateModelCore(InputModelType model)
+            => new ModelProvider(model);
+
+        /// <summary>
+        /// Maps an external <see cref="InputModelType"/> (one marked via <c>@alternateType</c>) to a
+        /// <see cref="SystemObjectModelProvider"/> that wraps the resolved framework/referenced type.
+        /// Returns <c>null</c> when the model is not external or the external type cannot be resolved,
+        /// in which case normal model creation proceeds.
+        /// </summary>
+        private SystemObjectModelProvider? CreateExternalModel(InputModelType model)
+        {
+            if (model.External == null)
+            {
+                return null;
+            }
+
+            var externalType = CreateExternalType(model.External);
+            return externalType != null ? new SystemObjectModelProvider(externalType, model) : null;
+        }
+
+        /// <summary>
+        /// Factory method for creating the <see cref="ModelFactoryProvider"/> that emits the
+        /// generated <c>ModelFactory</c> for the current output library.
+        /// </summary>
+        /// <param name="models">The input models to generate factory methods for.</param>
+        /// <returns>An instance of <see cref="ModelFactoryProvider"/>.</returns>
+        public ModelFactoryProvider CreateModelFactory(IEnumerable<InputModelType> models)
+            => CreateModelFactoryCore(models);
+
+        protected virtual ModelFactoryProvider CreateModelFactoryCore(IEnumerable<InputModelType> models)
+            => new ModelFactoryProvider(models);
 
         /// <summary>
         /// Factory method for creating a <see cref="TypeProvider"/> based on an <see cref="InputEnumType"> <paramref name="enumType"/>.
@@ -215,7 +465,21 @@ namespace Microsoft.TypeSpec.Generator
         {
             var enumCacheKey = new EnumCacheKey(enumType, declaringType);
             if (EnumCache.TryGetValue(enumCacheKey, out var enumProvider))
+            {
                 return enumProvider;
+            }
+
+            // An enum marked as external maps to a type that already exists in a framework or
+            // referenced assembly, so it must not be generated. Unlike models there is no derived-type
+            // scenario for enums, so we simply skip generation; callers use the resolved external
+            // CSharpType produced by CreateCSharpType (which short-circuits on InputType.External)
+            // instead of a generated provider. This is handled here, before the overridable
+            // CreateEnumCore, so all generators share the behavior and mirror CreateExternalModel.
+            if (enumType.External != null)
+            {
+                EnumCache.TryAdd(enumCacheKey, null);
+                return null;
+            }
 
             enumProvider = CreateEnumCore(enumType, declaringType);
 
@@ -247,15 +511,15 @@ namespace Microsoft.TypeSpec.Generator
                 _ => enumProvider,
             };
 
-            if (enumType.Access == "public")
-            {
-                CodeModelGenerator.Instance.AddTypeToKeep(enumProvider);
-            }
-
             EnumCache.Add(enumCacheKey, enumProvider);
 
             if (enumProvider != null)
             {
+                if (enumType.Access == "public")
+                {
+                    CodeModelGenerator.Instance.AddTypeToKeep(enumProvider);
+                }
+
                 CSharpTypeMap[enumProvider.Type] = enumProvider;
                 TypeProvidersByName[enumProvider.Type.Name] = enumProvider;
             }
@@ -270,37 +534,50 @@ namespace Microsoft.TypeSpec.Generator
         /// Factory method for creating a <see cref="CSharpType"/> based on external type properties.
         /// </summary>
         /// <param name="externalProperties">The <see cref="InputExternalTypeMetadata"/> to convert.</param>
+        /// <param name="inputType">The originating <see cref="InputType"/>, when available, used to preserve
+        /// semantics (such as extensible-enum backing) that reflection alone cannot recover from the resolved type.</param>
         /// <returns>A <see cref="CSharpType"/> representing the external type, or null if the type cannot be resolved.</returns>
-        private CSharpType? CreateExternalType(InputExternalTypeMetadata externalProperties)
+        private CSharpType? CreateExternalType(InputExternalTypeMetadata externalProperties, InputType? inputType = null)
         {
-            // 1. Try to create a framework type from the fully qualified name. This stays as the
-            // first attempt because it's free (no I/O) and is the source of truth for BCL types.
-            var frameworkType = CreateFrameworkType(externalProperties.Identity);
-            if (frameworkType != null)
+            // Resolve the type: first as a framework type from the fully qualified name (free, no I/O, and the
+            // source of truth for BCL types), then, on a miss, dynamically from the NuGet package named in the
+            // metadata. ExternalTypeReferenceResolver consults a process-wide cache populated by the eager
+            // pre-walk in CSharpGen.ExecuteAsync, resolving on-demand when the cache misses.
+            var resolvedType = CreateFrameworkType(externalProperties.Identity);
+            if (resolvedType == null && !string.IsNullOrEmpty(externalProperties.Package))
             {
-                return new CSharpType(frameworkType);
+                resolvedType = ExternalTypeReferenceResolver.TryResolve(externalProperties);
             }
 
-            // 2. Fallback: dynamically resolve the type from the NuGet package named in the metadata.
-            // ExternalTypeReferenceResolver consults a process-wide cache populated by the eager
-            // pre-walk in CSharpGen.ExecuteAsync; on a miss it resolves on-demand.
-            if (!string.IsNullOrEmpty(externalProperties.Package))
+            if (resolvedType != null)
             {
-                var resolvedType = ExternalTypeReferenceResolver.TryResolve(externalProperties);
-                if (resolvedType != null)
+                var externalType = new CSharpType(resolvedType);
+
+                // A referenced extensible enum is implemented as a value-type struct, so the resolved
+                // framework type is not recognized as an enum via reflection and loses its enum semantics.
+                // Rebuild it preserving the underlying enum type so downstream serialization emits inline
+                // construction (e.g. new Kind(value)) instead of a broken ModelReaderWriter.Read<T> fallback.
+                if (inputType is InputEnumType { IsExtensible: true } externalEnum)
                 {
-                    return new CSharpType(resolvedType);
+                    var underlyingType = CreateCSharpType(externalEnum.ValueType);
+                    if (underlyingType is { IsFrameworkType: true })
+                    {
+                        externalType = externalType.WithUnderlyingEnumType(underlyingType.FrameworkType);
+                    }
                 }
+
+                return externalType;
             }
 
-            // 3. Neither path worked — emit a diagnostic that explains what was attempted.
-            // Each branch is a self-contained sentence so the final message reads naturally and
-            // doesn't repeat "could not be resolved".
-            var details = string.IsNullOrEmpty(externalProperties.Package)
-                ? "no package metadata was provided"
-                : string.IsNullOrEmpty(externalProperties.MinVersion)
-                    ? $"package '{externalProperties.Package}' was not found in the NuGet cache or any configured feed"
-                    : $"package '{externalProperties.Package}' (>= {externalProperties.MinVersion}) was not found in the NuGet cache or any configured feed";
+            // Neither path resolved the type — emit a diagnostic that explains what was attempted.
+            // Prefer the concrete reason recorded by the resolver (missing package, unloadable assembly,
+            // unsatisfied dependency, ...) so the message points at the actual problem.
+            var details = ExternalTypeReferenceResolver.GetFailureReason(externalProperties)
+                ?? (string.IsNullOrEmpty(externalProperties.Package)
+                    ? "no package metadata was provided"
+                    : string.IsNullOrEmpty(externalProperties.MinVersion)
+                        ? $"package '{externalProperties.Package}' was not found in the NuGet cache or any configured feed"
+                        : $"package '{externalProperties.Package}' (>= {externalProperties.MinVersion}) was not found in the NuGet cache or any configured feed");
 
             CodeModelGenerator.Instance.Emitter.ReportDiagnostic(
                 "unsupported-external-type",
@@ -328,11 +605,24 @@ namespace Microsoft.TypeSpec.Generator
         public PropertyProvider? CreateProperty(InputProperty property, TypeProvider enclosingType)
         {
             if (PropertyCache.TryGetValue(property, out var propertyProvider))
+            {
                 return propertyProvider;
+            }
 
             propertyProvider = CreatePropertyCore(property, enclosingType);
             PropertyCache.Add(property, propertyProvider);
             return propertyProvider;
+        }
+
+        internal PropertyProvider? CreateUncachedProperty(InputProperty property, TypeProvider enclosingType)
+            => CreatePropertyCore(property, enclosingType);
+
+        internal bool IsPropertyRemoved(InputProperty property, TypeProvider enclosingType)
+        {
+            var provider = PropertyCache.TryGetValue(property, out var cachedProperty)
+                ? cachedProperty
+                : CreateUncachedProperty(property, enclosingType);
+            return provider is null || enclosingType.IsPropertySuppressed(provider);
         }
 
         /// <summary>
@@ -353,6 +643,65 @@ namespace Microsoft.TypeSpec.Generator
                 propertyProvider = visitor.PreVisitProperty(property, propertyProvider);
             }
             return propertyProvider;
+        }
+
+        internal bool HasRelaxedConstructorOverride(InputProperty property, bool includeBaseModels = true)
+        {
+            if (property.EnclosingType is not InputModelType model)
+            {
+                return false;
+            }
+
+            var cache = includeBaseModels ? _relaxedConstructorOverrides : _descendantRelaxedConstructorOverrides;
+            if (!cache.TryGetValue(model, out var signatures))
+            {
+                HashSet<InputModelType> models = [];
+                Stack<InputModelType> pending = new();
+                pending.Push(model);
+                while (pending.TryPop(out var current))
+                {
+                    if (!models.Add(current))
+                    {
+                        continue;
+                    }
+                    if (current.BaseModel is not null)
+                    {
+                        pending.Push(current.BaseModel);
+                    }
+                    foreach (var derived in current.DerivedModels)
+                    {
+                        pending.Push(derived);
+                    }
+                }
+
+                HashSet<(string Name, string Type, bool IsRequired, bool IsNullable)> allSignatures = [];
+                foreach (var current in models)
+                {
+                    _relaxedConstructorOverrides[current] = allSignatures;
+                    _descendantRelaxedConstructorOverrides[current] = [];
+                }
+                foreach (var current in models)
+                {
+                    foreach (var candidate in current.Properties)
+                    {
+                        if (candidate.IsReadOnly || candidate.IsRequiredInConstructor != false)
+                        {
+                            continue;
+                        }
+                        var signature = (candidate.OriginalName, candidate.Type.Name, candidate.IsRequired, candidate.Type is InputNullableType);
+                        allSignatures.Add(signature);
+                        HashSet<InputModelType> ancestors = [];
+                        for (var ancestor = current; ancestor is not null && ancestors.Add(ancestor); ancestor = ancestor.BaseModel)
+                        {
+                            _descendantRelaxedConstructorOverrides[ancestor].Add(signature);
+                        }
+                    }
+                }
+                signatures = cache[model];
+            }
+
+            return signatures.Contains(((property as InputModelProperty)?.OriginalName ?? property.Name,
+                property.Type.Name, property.IsRequired, property.Type is InputNullableType));
         }
 
         /// <summary>
@@ -412,6 +761,7 @@ namespace Microsoft.TypeSpec.Generator
                 InputPrimitiveTypeKind.Integer or InputPrimitiveTypeKind.Int8 or InputPrimitiveTypeKind.Int16 or InputPrimitiveTypeKind.Int32
                     or InputPrimitiveTypeKind.Int64 or InputPrimitiveTypeKind.UInt8 or InputPrimitiveTypeKind.UInt16 or InputPrimitiveTypeKind.UInt32
                     or InputPrimitiveTypeKind.UInt64 or InputPrimitiveTypeKind.SafeInt when primitiveType.Encode is "string" => SerializationFormat.Int_String,
+                InputPrimitiveTypeKind.Boolean when primitiveType.Encode is "string" => SerializationFormat.Boolean_String,
                 _ => SerializationFormat.Default
             },
             _ => SerializationFormat.Default
@@ -454,7 +804,9 @@ namespace Microsoft.TypeSpec.Generator
         public IReadOnlyList<TypeProvider> CreateSerializations(InputType inputType, TypeProvider typeProvider)
         {
             if (SerializationsCache.TryGetValue(inputType, out var serializations))
+            {
                 return serializations;
+            }
 
             serializations = CreateSerializationsCore(inputType, typeProvider);
             SerializationsCache.Add(inputType, serializations);

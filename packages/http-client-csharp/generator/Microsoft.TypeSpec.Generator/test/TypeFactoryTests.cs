@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -129,6 +130,35 @@ namespace Microsoft.TypeSpec.Generator.Tests
             Assert.IsTrue(ReferenceEquals(expected3, actual3));
             Assert.IsFalse(ReferenceEquals(actual3, actual));
             Assert.IsFalse(ReferenceEquals(actual3, actual2));
+        }
+
+        [TestCase(InputPrimitiveTypeKind.Int8, typeof(sbyte))]
+        [TestCase(InputPrimitiveTypeKind.Int16, typeof(short))]
+        [TestCase(InputPrimitiveTypeKind.Int32, typeof(int))]
+        [TestCase(InputPrimitiveTypeKind.Int64, typeof(long))]
+        [TestCase(InputPrimitiveTypeKind.UInt8, typeof(byte))]
+        [TestCase(InputPrimitiveTypeKind.UInt16, typeof(ushort))]
+        [TestCase(InputPrimitiveTypeKind.UInt32, typeof(uint))]
+        [TestCase(InputPrimitiveTypeKind.UInt64, typeof(ulong))]
+        [TestCase(InputPrimitiveTypeKind.String, typeof(string))]
+        [TestCase(InputPrimitiveTypeKind.Boolean, typeof(bool))]
+        [TestCase(InputPrimitiveTypeKind.Unknown, typeof(BinaryData))]
+        public void CreateCSharpType_PrimitiveAndCollections(InputPrimitiveTypeKind kind, Type expectedType)
+        {
+            var name = kind.ToString().ToLowerInvariant();
+            var input = new InputPrimitiveType(kind, name, $"TypeSpec.{name}");
+            var factory = CodeModelGenerator.Instance.TypeFactory;
+
+            Assert.Multiple(() =>
+            {
+                Assert.AreEqual(new CSharpType(expectedType), factory.CreateCSharpType(input));
+                Assert.AreEqual(new CSharpType(expectedType, isNullable: true),
+                    factory.CreateCSharpType(new InputNullableType(input)));
+                Assert.AreEqual(new CSharpType(typeof(IList<>), expectedType),
+                    factory.CreateCSharpType(new InputArrayType("Array", "TypeSpec.Array", input)));
+                Assert.AreEqual(new CSharpType(typeof(IDictionary<,>), typeof(string), expectedType),
+                    factory.CreateCSharpType(new InputDictionaryType("Record", InputPrimitiveType.String, input)));
+            });
         }
 
         [Test]
@@ -340,6 +370,107 @@ namespace Microsoft.TypeSpec.Generator.Tests
             Assert.IsTrue(enumProvider!.IsExtensible);
         }
 
+        [TestCase(true)]
+        [TestCase(false)]
+        public void CreateEnum_ExternalEnum_ReturnsNull(bool isExtensible)
+        {
+            // An enum mapped to an existing external type (via @alternateType, surfaced as
+            // InputType.External) must not be generated -- it mirrors CreateExternalModel for models.
+            // Previously a provider was produced and threw "Not an enum type" while building its
+            // serialization (ScmTypeFactory.CreateExtensibleEnumSerializations -> UnderlyingEnumType).
+            var input = InputFactory.StringEnum(
+                "ExternalToolType",
+                [("value1", "value1"), ("value2", "value2")],
+                usage: InputModelTypeUsage.Input,
+                isExtensible: isExtensible,
+                external: new InputExternalTypeMetadata("System.Uri", null, null));
+
+            var enumProvider = CodeModelGenerator.Instance.TypeFactory.CreateEnum(input);
+
+            Assert.IsNull(enumProvider);
+        }
+
+        [Test]
+        public void CreateCSharpType_ExternalEnum_ResolvesToExternalFrameworkType()
+        {
+            // Although no provider is generated for an external enum, references to it must still
+            // resolve to the external framework type so consumers (properties, parameters) compile.
+            var input = InputFactory.StringEnum(
+                "ExternalToolType",
+                [("value1", "value1"), ("value2", "value2")],
+                usage: InputModelTypeUsage.Input,
+                isExtensible: true,
+                external: new InputExternalTypeMetadata("System.Uri", null, null));
+
+            var type = CodeModelGenerator.Instance.TypeFactory.CreateCSharpType(input);
+
+            Assert.IsNotNull(type);
+            Assert.IsTrue(type!.IsFrameworkType);
+            Assert.AreEqual(typeof(Uri), type.FrameworkType);
+        }
+
+        [Test]
+        public void CreateCSharpType_ExternalExtensibleStringEnum_PreservesEnumSemantics()
+        {
+            // A referenced extensible enum is implemented as a value-type struct, so reflection does not
+            // report it as an enum. The resolved external type must still carry enum semantics (underlying
+            // type + struct) so serialization emits inline construction instead of a broken model read.
+            var input = InputFactory.StringEnum(
+                "ExternalKind",
+                [("value1", "value1"), ("value2", "value2")],
+                usage: InputModelTypeUsage.Input,
+                isExtensible: true,
+                external: new InputExternalTypeMetadata("System.Guid", null, null));
+
+            var type = CodeModelGenerator.Instance.TypeFactory.CreateCSharpType(input);
+
+            Assert.IsNotNull(type);
+            Assert.IsTrue(type!.IsFrameworkType);
+            Assert.AreEqual(typeof(Guid), type.FrameworkType);
+            Assert.IsTrue(type.IsEnum);
+            Assert.IsTrue(type.IsStruct);
+            Assert.AreEqual(typeof(string), type.UnderlyingEnumType);
+        }
+
+        [Test]
+        public void CreateCSharpType_ExternalExtensibleInt32Enum_PreservesEnumSemantics()
+        {
+            var input = InputFactory.Int32Enum(
+                "ExternalKind",
+                [("value1", 1), ("value2", 2)],
+                usage: InputModelTypeUsage.Input,
+                isExtensible: true,
+                external: new InputExternalTypeMetadata("System.Guid", null, null));
+
+            var type = CodeModelGenerator.Instance.TypeFactory.CreateCSharpType(input);
+
+            Assert.IsNotNull(type);
+            Assert.IsTrue(type!.IsEnum);
+            Assert.IsTrue(type.IsStruct);
+            Assert.AreEqual(typeof(int), type.UnderlyingEnumType);
+        }
+
+        [Test]
+        public void CreateCSharpType_ExternalFixedEnum_DoesNotForceEnumSemantics()
+        {
+            // Fixed (non-extensible) external enums are left untouched; they resolve to their external
+            // framework type as-is (which, for a real .NET enum, already reports enum semantics).
+            var input = InputFactory.StringEnum(
+                "ExternalKind",
+                [("value1", "value1"), ("value2", "value2")],
+                usage: InputModelTypeUsage.Input,
+                isExtensible: false,
+                external: new InputExternalTypeMetadata("System.Uri", null, null));
+
+            var type = CodeModelGenerator.Instance.TypeFactory.CreateCSharpType(input);
+
+            Assert.IsNotNull(type);
+            Assert.IsTrue(type!.IsFrameworkType);
+            Assert.AreEqual(typeof(Uri), type.FrameworkType);
+            Assert.IsFalse(type.IsEnum);
+            Assert.Throws<InvalidOperationException>(() => _ = type.UnderlyingEnumType);
+        }
+
         [Test]
         public void CreateCSharpType_SelfReferencingModel_DoesNotThrow()
         {
@@ -372,7 +503,9 @@ namespace Microsoft.TypeSpec.Generator.Tests
             protected internal override EnumProvider? PreVisitEnum(InputEnumType enumType, EnumProvider? type)
             {
                 if (type == null)
+                {
                     return type;
+                }
 
                 // Create a new enum provider with modified namespace
                 // replace ".Models" with ".SomeOtherNamespace"

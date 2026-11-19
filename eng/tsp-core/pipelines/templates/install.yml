@@ -2,10 +2,10 @@
 parameters:
   - name: nodeVersion
     type: string
-    default: 24.16.0
+    default: 26.x
 
   - name: useDotNet
-    type: string
+    type: boolean
     default: false
 
   - name: pnpmStorePath
@@ -24,8 +24,10 @@ steps:
         inputs:
           version: 8.0.x
 
-  - script: npm install -g pnpm # Pnpm manage-package-manager-versions will respect packageManager field
-    displayName: Install pnpm
+  - template: /eng/common/pipelines/templates/steps/create-authenticated-npmrc.yml
+
+  - template: /eng/common/pipelines/templates/steps/install-pnpm.yml
+
   - script: pnpm config set store-dir ${{ parameters.pnpmStorePath }}
     displayName: Setup pnpm cache dir
 
@@ -35,6 +37,9 @@ steps:
     retryCountOnTaskFailure: 3
 
   - ${{ if parameters.useDotNet }}:
-      - script: dotnet restore
+      - task: NuGetAuthenticate@1
+        displayName: Authenticate NuGet feed
+
+      - script: dotnet restore --configfile "$(Build.SourcesDirectory)/eng/nuget.config"
         displayName: Restore .NET Dependencies
         workingDirectory: packages/typespec-vs

@@ -24,6 +24,7 @@ import com.microsoft.typespec.http.client.generator.core.extension.model.codemod
 import com.microsoft.typespec.http.client.generator.core.extension.model.codemodel.SealedChoiceSchema;
 import com.microsoft.typespec.http.client.generator.core.extension.model.extensionmodel.XmsExtensions;
 import com.microsoft.typespec.http.client.generator.core.extension.plugin.JavaSettings;
+import com.microsoft.typespec.http.client.generator.core.model.clientmodel.ApiMetadata;
 import com.microsoft.typespec.http.client.generator.core.model.clientmodel.AsyncSyncClient;
 import com.microsoft.typespec.http.client.generator.core.model.clientmodel.ClassType;
 import com.microsoft.typespec.http.client.generator.core.model.clientmodel.Client;
@@ -50,6 +51,7 @@ import com.microsoft.typespec.http.client.generator.core.template.Templates;
 import com.microsoft.typespec.http.client.generator.core.util.ClientModelUtil;
 import com.microsoft.typespec.http.client.generator.core.util.CodeNamer;
 import com.microsoft.typespec.http.client.generator.core.util.SchemaUtil;
+import com.microsoft.typespec.http.client.generator.core.util.SseUtil;
 import io.clientcore.core.utils.CoreUtils;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -132,12 +134,30 @@ public class ClientMapper implements IMapper<CodeModel, Client> {
         builder.xmlSequenceWrappers(parseXmlSequenceWrappers(codeModel, settings));
 
         // class model
-        Stream<ObjectSchema> autoRestModelTypes = Stream.concat(codeModel.getSchemas().getObjects().stream(),
+        Stream<ObjectSchema> autoRestModelTypes = Stream.concat(
+            codeModel.getSchemas()
+                .getObjects()
+                .stream()
+                .filter(schema -> schema.getUsage() == null || !schema.getUsage().contains(SchemaContext.SSE)),
             codeModel.getOperationGroups()
                 .stream()
                 .flatMap(og -> og.getOperations().stream())
                 .map(o -> parseHeader(o, settings))
                 .filter(Objects::nonNull));
+
+        // Typed response-header models used by convenience APIs are nested under clients (data-plane
+        // code model), not the top-level operation groups, so parse their schemas here as well.
+        Stream<ObjectSchema> responseHeaderModelTypes = codeModel.getClients()
+            .stream()
+            .flatMap(c -> c.getOperationGroups().stream())
+            .flatMap(og -> og.getOperations().stream())
+            .filter(o -> o.getConvenienceApi() != null
+                && (o.getConvenienceApi().isResponseHeadersAsModel()
+                    || (settings.isAzureV1() && settings.isModelMaxOverload())))
+            .map(o -> parseHeader(o, settings))
+            .filter(Objects::nonNull);
+
+        autoRestModelTypes = Stream.concat(autoRestModelTypes, responseHeaderModelTypes);
 
         List<ClientModel> clientModelsFromCodeModel = autoRestModelTypes.distinct()
             .map(autoRestCompositeType -> Mappers.getModelMapper().map(autoRestCompositeType))
@@ -147,11 +167,10 @@ public class ClientMapper implements IMapper<CodeModel, Client> {
         // append some models not from CodeModel (currently, only for ##FileDetails models for multipart/form-data
         // request)
         // TODO (weidxu): we can remove this code block, if ##FileDetails moves to azure-core
-        final List<ClientModel> clientModels
+        List<ClientModel> clientModels
             = Stream.concat(clientModelsFromCodeModel.stream(), ClientModels.getInstance().getModels().stream())
                 .distinct()
                 .collect(Collectors.toList());
-        builder.models(clientModels);
 
         // union model (class)
         builder.unionModels(codeModel.getSchemas()
@@ -164,11 +183,12 @@ public class ClientMapper implements IMapper<CodeModel, Client> {
             .collect(Collectors.toList()));
 
         // response model (subclass of Response with headers)
+        final List<ClientModel> initialClientModels = clientModels;
         final List<ClientResponse> responseModels = codeModel.getOperationGroups()
             .stream()
             .flatMap(og -> og.getOperations().stream())
             .distinct()
-            .map(m -> parseResponse(m, clientModels, settings))
+            .map(m -> parseResponse(m, initialClientModels, settings))
             .filter(Objects::nonNull)
             .distinct()
             .collect(Collectors.toList());
@@ -181,12 +201,13 @@ public class ClientMapper implements IMapper<CodeModel, Client> {
         Map<ServiceClient, com.microsoft.typespec.http.client.generator.core.extension.model.codemodel.Client> serviceClientsMap
             = new LinkedHashMap<>();
 
-        boolean multipleClientsWithOperationsPresent = codeModel.getClients()
-            .stream()
-            .flatMap(client -> client.getOperationGroups().stream())
-            .flatMap(og -> og.getOperations().stream())
-            .findAny()
-            .isPresent();
+        boolean multipleClientsWithOperationsPresent = !CoreUtils.isNullOrEmpty(codeModel.getClients())
+            && codeModel.getClients()
+                .stream()
+                .flatMap(client -> client.getOperationGroups().stream())
+                .flatMap(og -> og.getOperations().stream())
+                .findAny()
+                .isPresent();
 
         boolean singleClientOperationsPresent
             = codeModel.getOperationGroups().stream().flatMap(og -> og.getOperations().stream()).findAny().isPresent();
@@ -206,6 +227,18 @@ public class ClientMapper implements IMapper<CodeModel, Client> {
                 }
             }
         }
+
+        // Defer SSE model registration until client mapping identifies which typed SSE APIs will be generated.
+        Set<ObjectSchema> sseSchemas
+            = SseUtil.getSseSchemas(serviceClientsMap.values(), enumTypes, responseModels, exceptions);
+        codeModel.getSchemas()
+            .getObjects()
+            .stream()
+            .filter(sseSchemas::contains)
+            .forEach(schema -> Mappers.getModelMapper().map(schema));
+
+        clientModels = ClientModels.getInstance().getModels();
+        builder.models(clientModels);
 
         // package info
         // client
@@ -328,7 +361,7 @@ public class ClientMapper implements IMapper<CodeModel, Client> {
                         String clientBuilderName = clientName + builderSuffix;
                         ClientBuilder clientBuilder = new ClientBuilder(builderPackage, clientBuilderName,
                             serviceClient, (syncClient == null) ? List.of() : List.of(syncClient), List.of(asyncClient),
-                            serviceClient.getCrossLanguageDefinitionId());
+                            serviceClient.getApiMetadata());
 
                         addBuilderTraits(clientBuilder, serviceClient);
                         clientBuilders.add(clientBuilder);
@@ -342,7 +375,7 @@ public class ClientMapper implements IMapper<CodeModel, Client> {
                 } else {
                     // service client builder
                     ClientBuilder clientBuilder = new ClientBuilder(builderPackage, builderName, serviceClient,
-                        syncClientsLocal, asyncClientsLocal, serviceClient.getCrossLanguageDefinitionId());
+                        syncClientsLocal, asyncClientsLocal, serviceClient.getApiMetadata());
                     addBuilderTraits(clientBuilder, serviceClient);
                     clientBuilders.add(clientBuilder);
 
@@ -356,7 +389,8 @@ public class ClientMapper implements IMapper<CodeModel, Client> {
             asyncClients.addAll(asyncClientsLocal);
         }
         builder.clientBuilders(clientBuilders);
-        builder.crossLanguageDefinitionId(codeModel.getLanguage().getJava().getName());
+        builder.apiMetadata(
+            new ApiMetadata.Builder().crossLanguageDefinitionId(codeModel.getLanguage().getJava().getName()).build());
 
         // example/test
         if (settings.isDataPlaneClient() && (settings.isGenerateSamples() || settings.isGenerateTests())) {
@@ -369,8 +403,10 @@ public class ClientMapper implements IMapper<CodeModel, Client> {
         }
 
         builder.graalVmConfig(Mappers.getGraalVmConfigMapper()
-            .map(new GraalVmConfigMapper.ServiceAndModel(serviceClientsMap.keySet(), exceptions, clientModels,
-                enumTypes)));
+            .map(new GraalVmConfigMapper.ServiceAndModel(serviceClientsMap.keySet(), exceptions, clientModels.stream()
+                .filter(model -> !model.hasUsage(
+                    com.microsoft.typespec.http.client.generator.core.model.clientmodel.ImplementationDetails.Usage.SSE))
+                .collect(Collectors.toList()), enumTypes)));
 
         return builder.build();
     }
@@ -561,6 +597,13 @@ public class ClientMapper implements IMapper<CodeModel, Client> {
 
         String name = CodeNamer.getPlural(operation.getOperationGroup().getLanguage().getJava().getName())
             + CodeNamer.toPascalCase(operation.getLanguage().getJava().getName()) + "Headers";
+        // Honor the "rename-model" option for this synthesized header model. The schema is created here,
+        // after the SchemaRenamer preprocessor pass (which only visits schemas in the code model), so the
+        // rename must be applied explicitly, keyed by the generated header model name.
+        String renamedName = settings.getJavaNamesForRenameModel().get(name);
+        if (!CoreUtils.isNullOrEmpty(renamedName)) {
+            name = renamedName;
+        }
         Map<String, Schema> headerMap = new LinkedHashMap<>();
         Map<String, String> headerClientNameMap = new LinkedHashMap<>();
         Map<String, XmsExtensions> headerExtensions = new LinkedHashMap<>();
@@ -584,10 +627,15 @@ public class ClientMapper implements IMapper<CodeModel, Client> {
         headerSchema.setStronglyTypedHeader(true);
         headerSchema.setUsage(new LinkedHashSet<>(List.of(SchemaContext.OUTPUT)));
 
-        // TODO (weidxu): at present we do not generate convenience API with Header model
-//        if (operation.getConvenienceApi() != null) {
-//            headerSchema.getUsage().add(SchemaContext.CONVENIENCE_API);
-//        }
+        // The strongly-typed header class is part of the public convenience response for
+        // responseHeadersAsModel and model maximum overloads. Data-plane models are generated only
+        // when marked public or internal.
+        if (operation.getConvenienceApi() != null
+            && (operation.getConvenienceApi().isResponseHeadersAsModel()
+                || (settings.isAzureV1() && settings.isModelMaxOverload()))) {
+            headerSchema.getUsage()
+                .add(operation.getInternalApi() == Boolean.TRUE ? SchemaContext.INTERNAL : SchemaContext.PUBLIC);
+        }
 
         for (Map.Entry<String, Schema> header : headerMap.entrySet()) {
             Property property = new Property();
@@ -651,6 +699,13 @@ public class ClientMapper implements IMapper<CodeModel, Client> {
         // export packages that contain Client, ClientBuilder, ServiceVersion
         List<ModuleInfo.ExportModule> exportModules = moduleInfo.getExportModules();
         exportModules.add(new ModuleInfo.ExportModule(settings.getPackage()));
+        if (settings.getExperimentalAnnotation() != null) {
+            String annotationPackage = settings.getExperimentalAnnotation()
+                .substring(0, settings.getExperimentalAnnotation().lastIndexOf('.'));
+            if (exportModules.stream().noneMatch(module -> module.getModuleName().equals(annotationPackage))) {
+                exportModules.add(new ModuleInfo.ExportModule(annotationPackage));
+            }
+        }
         for (ServiceClient client : clients) {
             String builderPackageName = client.getBuilderPackageName();
             if (builderPackageName != null
@@ -710,6 +765,13 @@ public class ClientMapper implements IMapper<CodeModel, Client> {
             packages.addAll(responseModels.stream().map(ClientResponse::getPackage).collect(Collectors.toSet()));
 
             ret = new ArrayList<>(packages);
+        } else {
+            ret = clientModels.stream()
+                .filter(model -> model.hasUsage(
+                    com.microsoft.typespec.http.client.generator.core.model.clientmodel.ImplementationDetails.Usage.SSE))
+                .map(ClientModel::getPackage)
+                .distinct()
+                .collect(Collectors.toList());
         }
 
         return ret;

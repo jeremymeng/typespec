@@ -9,6 +9,7 @@ import com.microsoft.typespec.http.client.generator.core.implementation.Operatio
 import com.microsoft.typespec.http.client.generator.core.mapper.CollectionUtil;
 import com.microsoft.typespec.http.client.generator.core.model.javamodel.JavaVisibility;
 import com.microsoft.typespec.http.client.generator.core.util.CodeNamer;
+import com.microsoft.typespec.http.client.generator.core.util.ExperimentalAnnotationUtil;
 import com.microsoft.typespec.http.client.generator.core.util.MethodUtil;
 import io.clientcore.core.utils.CoreUtils;
 import java.lang.reflect.ParameterizedType;
@@ -29,7 +30,7 @@ public class ClientMethod {
         "StatusCheckPollingStrategy", "SyncDefaultPollingStrategy", "SyncChainedPollingStrategy",
         "SyncOperationResourcePollingStrategy", "SyncLocationPollingStrategy", "SyncStatusCheckPollingStrategy");
 
-    private final String crossLanguageDefinitionId;
+    private final ApiMetadata apiMetadata;
     /**
      * The description of this ClientMethod.
      */
@@ -116,6 +117,7 @@ public class ClientMethod {
     private final OperationInstrumentationInfo instrumentationInfo;
 
     private final ClientMethod overloadedClientMethod;
+    private final ClientMethodSseMetadata sseMetadata;
 
     public ClientMethod.Builder newBuilder() {
         return new ClientMethod.Builder().description(description)
@@ -138,9 +140,10 @@ public class ClientMethod {
             .methodPollingDetails(methodPollingDetails)
             .methodDocumentation(externalDocumentation)
             .operationInstrumentationInfo(instrumentationInfo)
-            .setCrossLanguageDefinitionId(crossLanguageDefinitionId)
+            .apiMetadata(apiMetadata)
             .hasWithContextOverload(hasWithContextOverload)
-            .overloadedClientMethod(overloadedClientMethod);
+            .overloadedClientMethod(overloadedClientMethod)
+            .sseMetadata(sseMetadata);
     }
 
     /**
@@ -172,9 +175,9 @@ public class ClientMethod {
         String groupedParameterTypeName, MethodPageDetails methodPageDetails,
         ParameterTransformations parameterTransformations, JavaVisibility methodVisibility,
         JavaVisibility methodVisibilityInWrapperClient, ImplementationDetails implementationDetails,
-        MethodPollingDetails methodPollingDetails, ExternalDocumentation externalDocumentation,
-        String crossLanguageDefinitionId, boolean hasWithContextOverload,
-        OperationInstrumentationInfo instrumentationInfo, ClientMethod overloadedClientMethod) {
+        MethodPollingDetails methodPollingDetails, ExternalDocumentation externalDocumentation, ApiMetadata apiMetadata,
+        boolean hasWithContextOverload, OperationInstrumentationInfo instrumentationInfo,
+        ClientMethod overloadedClientMethod, ClientMethodSseMetadata sseMetadata) {
         this.description = description;
         this.returnValue = returnValue;
         this.name = name;
@@ -204,7 +207,7 @@ public class ClientMethod {
         this.methodPollingDetails = methodPollingDetails;
         this.externalDocumentation = externalDocumentation;
         this.methodVisibilityInWrapperClient = methodVisibilityInWrapperClient;
-        this.crossLanguageDefinitionId = crossLanguageDefinitionId;
+        this.apiMetadata = apiMetadata;
         this.hasWithContextOverload = hasWithContextOverload;
         if (isPageStreamingType() && methodPageDetails != null) {
             this.parametersDeclaration = getMethodInputParameters().stream()
@@ -220,6 +223,7 @@ public class ClientMethod {
             = getMethodParameters().stream().map(ClientMethodParameter::getName).collect(Collectors.joining(", "));
         this.instrumentationInfo = instrumentationInfo;
         this.overloadedClientMethod = overloadedClientMethod;
+        this.sseMetadata = sseMetadata;
     }
 
     @Override
@@ -248,8 +252,8 @@ public class ClientMethod {
             parameterTransformations, methodVisibility);
     }
 
-    public String getCrossLanguageDefinitionId() {
-        return crossLanguageDefinitionId;
+    public ApiMetadata getApiMetadata() {
+        return apiMetadata;
     }
 
     public final String getDescription() {
@@ -450,6 +454,10 @@ public class ClientMethod {
         return overloadedClientMethod;
     }
 
+    public ClientMethodSseMetadata getSseMetadata() {
+        return sseMetadata;
+    }
+
     /**
      * Add this ClientMethod's imports to the provided set of imports.
      *
@@ -458,7 +466,7 @@ public class ClientMethod {
      * implementations.
      */
     public void addImportsTo(Set<String> imports, boolean includeImplementationImports, JavaSettings settings) {
-
+        ExperimentalAnnotationUtil.addImportsTo(imports, getApiMetadata());
         Annotation.SERVICE_METHOD.addImportsTo(imports);
         Annotation.RETURN_TYPE.addImportsTo(imports);
 
@@ -636,14 +644,15 @@ public class ClientMethod {
         protected ImplementationDetails implementationDetails;
         protected MethodPollingDetails methodPollingDetails;
         protected ExternalDocumentation externalDocumentation;
-        protected String crossLanguageDefinitionId;
+        protected ApiMetadata apiMetadata = new ApiMetadata.Builder().build();
         protected boolean hasWithContextOverload;
         protected boolean hidePageableParams;
         protected OperationInstrumentationInfo instrumentationInfo;
         protected ClientMethod overloadedClientMethod;
+        protected ClientMethodSseMetadata sseMetadata;
 
-        public Builder setCrossLanguageDefinitionId(String crossLanguageDefinitionId) {
-            this.crossLanguageDefinitionId = crossLanguageDefinitionId;
+        public Builder apiMetadata(ApiMetadata apiMetadata) {
+            this.apiMetadata = apiMetadata;
             return this;
         }
 
@@ -901,6 +910,11 @@ public class ClientMethod {
             return this;
         }
 
+        public Builder sseMetadata(ClientMethodSseMetadata sseMetadata) {
+            this.sseMetadata = sseMetadata;
+            return this;
+        }
+
         /**
          * @return an immutable ClientMethod instance with the configurations on this builder.
          */
@@ -910,8 +924,8 @@ public class ClientMethod {
                 clientReference, CollectionUtil.toImmutableList(requiredNullableParameterExpressions),
                 isGroupedParameterRequired, groupedParameterTypeName, methodPageDetails, parameterTransformations,
                 methodVisibility, methodVisibilityInWrapperClient, implementationDetails, methodPollingDetails,
-                externalDocumentation, crossLanguageDefinitionId, hasWithContextOverload, instrumentationInfo,
-                overloadedClientMethod);
+                externalDocumentation, apiMetadata, hasWithContextOverload, instrumentationInfo, overloadedClientMethod,
+                sseMetadata);
         }
     }
 }

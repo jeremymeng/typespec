@@ -36,6 +36,30 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Tests.Providers.MrwSerializat
             discriminatedModels: new Dictionary<string, InputModelType>() { { "cat", _catModel }, { "dog", _dogModel } });
 
         [Test]
+        public void IntermediateModelForwardsInheritedDiscriminator()
+        {
+            var pet = InputFactory.Model("pet", properties:
+            [
+                InputFactory.Property("kind", InputPrimitiveType.String, isRequired: true, isDiscriminator: true),
+                InputFactory.Property("name", InputPrimitiveType.String, isRequired: true)
+            ]);
+            var mammal = InputFactory.Model("mammal", baseModel: pet, properties: []);
+            var cat = InputFactory.Model("cat", baseModel: mammal, discriminatedKind: "cat", properties:
+            [
+                InputFactory.Property("meow", InputPrimitiveType.Boolean, isRequired: true)
+            ]);
+            MockHelpers.LoadMockGenerator(inputModels: () => [pet, mammal, cat]);
+            var factory = ScmCodeModelGenerator.Instance.TypeFactory;
+            var mammalConstructor = factory.CreateModel(mammal)!.Constructors
+                .Single(c => c.Signature.Modifiers.HasFlag(MethodSignatureModifiers.Public));
+            Assert.AreEqual(new[] { "kind", "name" }, mammalConstructor.Signature.Parameters.Select(p => p.Name));
+            var catConstructor = factory.CreateModel(cat)!.Constructors
+                .Single(c => c.Signature.Modifiers.HasFlag(MethodSignatureModifiers.Public));
+            Assert.AreEqual(new[] { "name", "meow" }, catConstructor.Signature.Parameters.Select(p => p.Name));
+            Assert.AreEqual("\"cat\"", catConstructor.Signature.Initializer!.Arguments[0].ToDisplayString());
+        }
+
+        [Test]
         public void UnknownVariantIJsonModelTShouldBeBase()
         {
             MockHelpers.LoadMockGenerator(inputModels: () => [_baseModel, _catModel, _dogModel]);
@@ -71,6 +95,49 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Tests.Providers.MrwSerializat
             var switchStatement = ifBodyStatements!.Statements[0] as SwitchStatement;
             Assert.IsNotNull(switchStatement);
             Assert.AreEqual(2, switchStatement!.Cases.Count);
+        }
+
+        [Test]
+        public void RebasedDerivedModelDoesNotProduceNullSwitchCase()
+        {
+            // A model rebased onto this hierarchy (for example via hierarchyBuilding) is appended to
+            // DerivedModels after the generated unknown variant, so the unknown variant is no longer
+            // last. The discriminator switch cases must still be fully populated.
+            var rebasedModel = InputFactory.Model(
+                "voiceItem",
+                discriminatedKind: "voice",
+                baseModel: _baseModel,
+                properties:
+                [
+                    InputFactory.Property("kind", InputPrimitiveType.String, isRequired: true, isDiscriminator: true)
+                ]);
+
+            MockHelpers.LoadMockGenerator(inputModels: () => [_baseModel, _catModel, _dogModel, rebasedModel]);
+            var baseModel = ScmCodeModelGenerator.Instance.TypeFactory.CreateModel(_baseModel);
+            Assert.IsNotNull(baseModel);
+
+            var unknownVariantIndex = baseModel!.DerivedModels
+                .Select((m, i) => (m, i))
+                .First(t => t.m.IsUnknownDiscriminatorModel).i;
+            Assert.AreNotEqual(
+                baseModel.DerivedModels.Count - 1,
+                unknownVariantIndex,
+                "The unknown variant should not be last, otherwise this scenario is not covered.");
+
+            var serialization = baseModel.SerializationProviders.First();
+            var deserializeMethod = serialization.Methods.First(m => m.Signature.Name == "DeserializePet");
+            var statements = (MethodBodyStatements)deserializeMethod.BodyStatements!;
+            var ifStatement = (IfStatement)statements.Statements[1];
+            var switchStatement = (SwitchStatement)((MethodBodyStatements)ifStatement.Body).Statements[0];
+
+            Assert.AreEqual(3, switchStatement.Cases.Count);
+            for (int i = 0; i < switchStatement.Cases.Count; i++)
+            {
+                Assert.IsNotNull(switchStatement.Cases[i], $"Switch case at index {i} should not be null.");
+            }
+
+            // Writing the type must not throw - a null case previously caused a NullReferenceException.
+            Assert.DoesNotThrow(() => new TypeProviderWriter(serialization).Write());
         }
 
         [Test]

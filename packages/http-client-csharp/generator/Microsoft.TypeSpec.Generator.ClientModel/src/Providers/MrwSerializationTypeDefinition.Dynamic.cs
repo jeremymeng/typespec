@@ -13,6 +13,7 @@ using Microsoft.TypeSpec.Generator.Primitives;
 using Microsoft.TypeSpec.Generator.Providers;
 using Microsoft.TypeSpec.Generator.Snippets;
 using Microsoft.TypeSpec.Generator.Statements;
+using Microsoft.TypeSpec.Generator.Utilities;
 using static Microsoft.TypeSpec.Generator.Snippets.Snippet;
 
 namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
@@ -25,14 +26,70 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
             SerializationFormat serializationFormat,
             ScopedApi<JsonPatch> patchSnippet,
             string serializedName,
-            List<ValueExpression>? parentIndices = null)
+            List<ValueExpression>? parentIndices = null,
+            ValueExpression? parentHasPatch = null,
+            bool suppressPatchLogic = false,
+            InputType? inputType = null)
         {
             parentIndices ??= [];
 
+            MethodBodyStatement CreateDictionaryItemSerialization(KeyValuePairExpression item, ValueExpression? itemParentHasPatch, bool itemSuppressPatchLogic)
+            {
+                List<ValueExpression> itemChildIndices = item.ValueType.IsCollection
+                    ? [.. parentIndices, item.Key]
+                    : parentIndices;
+
+                return new MethodBodyStatement[]
+                {
+                    _utf8JsonWriterSnippet.WritePropertyName(item.Key),
+                    CreateElementSerializationWithPatch(
+                        item.Value,
+                        item.ValueType,
+                        patchSnippet,
+                        serializationFormat,
+                        serializedName,
+                        itemChildIndices,
+                        itemParentHasPatch,
+                        itemSuppressPatchLogic,
+                        GetCollectionItemInputType(inputType))
+                };
+            }
+
+            // The collection is known to have no relevant patch at or below this level, so skip building
+            // any path-dependent patch checks entirely instead of materializing a dead patched branch.
+            if (suppressPatchLogic)
+            {
+                var noPatchForeachStatement = new ForEachStatement("item", dictionary, out KeyValuePairExpression noPatchKeyValuePair);
+                noPatchForeachStatement.Add(CreateDictionaryItemSerialization(noPatchKeyValuePair, null, itemSuppressPatchLogic: true));
+
+                return new MethodBodyStatement[]
+                {
+                    _utf8JsonWriterSnippet.WriteStartObject(),
+                    noPatchForeachStatement,
+                    _utf8JsonWriterSnippet.WriteEndObject()
+                };
+            }
+
             var jsonPathTemplate = BuildJsonPathForElement(serializedName, parentIndices);
+            MethodBodyStatement? hasPatchDeclaration = null;
+            ValueExpression hasPatch;
+            if (parentHasPatch == null)
+            {
+                hasPatchDeclaration = Declare(
+                    "hasPatch",
+                    typeof(bool),
+                    patchSnippet.Contains(LiteralU8("$"), LiteralU8(serializedName)),
+                    out var localHasPatch);
+                hasPatch = localHasPatch;
+            }
+            else
+            {
+                hasPatch = parentHasPatch;
+            }
+
             ValueExpression jsonPath = parentIndices.Count > 0
                 ? Utf8Snippets.GetBytes(new FormattableStringExpression(jsonPathTemplate, [.. parentIndices]).As<string>())
-                : LiteralU8($"$.{serializedName}");
+                : LiteralU8(jsonPathTemplate);
 
             var foreachStatement = new ForEachStatement("item", dictionary, out KeyValuePairExpression keyValuePair);
 
@@ -59,21 +116,10 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
                         ReadOnlySpanSnippets.Slice(bufferVar, Int(0), bytesWrittenVar))),
                 out var patchContainsNet8Var);
 
-            List<ValueExpression> childIndices = keyValuePair.ValueType.IsCollection
-                ? [.. parentIndices, keyValuePair.Key]
-                : parentIndices;
-
             // Process key-value pair if patch doesn't contain it
             var ifPatchDoesNotContainStatement = new IfStatement(Not(patchContainsNet8Var))
             {
-                _utf8JsonWriterSnippet.WritePropertyName(keyValuePair.Key),
-                CreateElementSerializationWithPatch(
-                    keyValuePair.Value,
-                    keyValuePair.ValueType,
-                    patchSnippet,
-                    serializationFormat,
-                    serializedName,
-                    childIndices)
+                CreateDictionaryItemSerialization(keyValuePair, hasPatch, itemSuppressPatchLogic: false)
             };
 
             var innerIfElseProcessorStatement = new IfElsePreprocessorStatement(
@@ -86,15 +132,30 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
             foreachStatement.Add(innerIfElseProcessorStatement);
             foreachStatement.Add(ifPatchDoesNotContainStatement);
 
-            return new[]
+            var patchedStatements = new MethodBodyStatement[]
             {
-                _utf8JsonWriterSnippet.WriteStartObject(),
                 new IfElsePreprocessorStatement("NET8_0_OR_GREATER", bufferDeclaration),
                 foreachStatement,
                 MethodBodyStatement.EmptyLine,
-                patchSnippet.WriteTo(_utf8JsonWriterSnippet, jsonPath).Terminate(),
-                _utf8JsonWriterSnippet.WriteEndObject(),
+                patchSnippet.WriteTo(_utf8JsonWriterSnippet, jsonPath).Terminate()
             };
+
+            var unpatchedForeachStatement = new ForEachStatement("item", dictionary, out KeyValuePairExpression unpatchedKeyValuePair);
+            // This branch only runs when the collection has no relevant patch, so serializers can skip path-dependent patch work.
+            unpatchedForeachStatement.Add(CreateDictionaryItemSerialization(unpatchedKeyValuePair, null, itemSuppressPatchLogic: true));
+
+            var dictionaryStatements = new List<MethodBodyStatement>
+            {
+                _utf8JsonWriterSnippet.WriteStartObject(),
+            };
+            if (hasPatchDeclaration != null)
+            {
+                dictionaryStatements.Add(hasPatchDeclaration);
+            }
+
+            dictionaryStatements.Add(new IfElseStatement(hasPatch.As<bool>(), patchedStatements, unpatchedForeachStatement));
+            dictionaryStatements.Add(_utf8JsonWriterSnippet.WriteEndObject());
+            return dictionaryStatements.ToArray();
         }
 
         private MethodBodyStatement CreateListSerializationWithPatch(
@@ -104,34 +165,96 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
             ScopedApi<JsonPatch> patchSnippet,
             SerializationFormat serializationFormat,
             string serializedName,
-            List<ValueExpression>? parentIndices = null)
+            List<ValueExpression>? parentIndices = null,
+            ValueExpression? parentHasPatch = null,
+            bool suppressPatchLogic = false,
+            InputType? inputType = null)
         {
             parentIndices ??= [];
             var indexDeclaration = Declare<int>("i", out var indexVar);
             var allIndices = new List<ValueExpression>(parentIndices) { indexVar };
-            var jsonPathTemplate = BuildJsonPathForElement(serializedName, parentIndices);
-            ScopedApi<bool> patchIsRemovedCondition;
 
-            // Handle model types with their own patch property
+            // Handle model types with their own patch property. This is independent of whether this
+            // collection has a relevant patch, so it applies in both the patched and no-patch paths below.
+            ScopedApi<bool>? childIsRemovedCondition = null;
             if (ScmCodeModelGenerator.Instance.TypeFactory.CSharpTypeMap.TryGetValue(type, out var provider) &&
                 provider is ScmModelProvider scmModelProvider && scmModelProvider.JsonPatchProperty != null)
             {
-                patchIsRemovedCondition = new IndexerExpression(collection, indexVar)
+                var childIsRemoved = new IndexerExpression(collection, indexVar)
                     .Property(scmModelProvider.JsonPatchProperty.Name)
                     .As<JsonPatch>()
                     .IsRemoved(LiteralU8("$"));
-            }
-            else
-            {
-                patchIsRemovedCondition = patchSnippet.IsRemoved(
-                    Utf8Snippets.GetBytes(
-                        new FormattableStringExpression(jsonPathTemplate + $"[{{{parentIndices.Count}}}]", allIndices)
-                    .As<string>()));
+                if (!type.IsValueType)
+                {
+                    childIsRemoved = new IndexerExpression(collection, indexVar).NotEqual(Null).And(childIsRemoved);
+                }
+                childIsRemovedCondition = childIsRemoved;
             }
 
             string lengthProperty = isReadOnlySpan || type.IsArray
                 ? "Length"
                 : "Count";
+
+            // The collection is known to have no relevant patch at or below this level, so skip building any
+            // path-dependent patch checks entirely instead of materializing a dead patched branch.
+            if (suppressPatchLogic)
+            {
+                var noPatchForStatement = new ForStatement(
+                    indexDeclaration.Assign(Literal(0)),
+                    indexVar.LessThan(collection.Property(lengthProperty)),
+                    indexVar.Increment());
+                if (childIsRemovedCondition != null)
+                {
+                    noPatchForStatement.Add(new IfStatement(childIsRemovedCondition) { Continue });
+                }
+                noPatchForStatement.Add(CreateElementSerializationWithPatch(
+                    new IndexerExpression(collection, indexVar),
+                    type,
+                    patchSnippet,
+                    serializationFormat,
+                    serializedName,
+                    allIndices,
+                    parentHasPatch,
+                    suppressPatchLogic: true,
+                    inputType: GetCollectionItemInputType(inputType)));
+
+                return new MethodBodyStatement[]
+                {
+                    _utf8JsonWriterSnippet.WriteStartArray(),
+                    noPatchForStatement,
+                    _utf8JsonWriterSnippet.WriteEndArray()
+                };
+            }
+
+            var jsonPathTemplate = BuildJsonPathForElement(serializedName, parentIndices);
+            // The prefix overload includes indexed descendants, unlike an exact-path Contains check.
+            // Nested collections under the same serialized property can reuse the parent guard.
+            MethodBodyStatement? hasPatchDeclaration = null;
+            ValueExpression hasPatch;
+            if (parentHasPatch == null)
+            {
+                hasPatchDeclaration = Declare(
+                    "hasPatch",
+                    typeof(bool),
+                    patchSnippet.Contains(LiteralU8("$"), LiteralU8(serializedName)),
+                    out var localHasPatch);
+                hasPatch = localHasPatch;
+            }
+            else
+            {
+                hasPatch = parentHasPatch;
+            }
+
+            var patchIsRemovedCondition = hasPatch.As<bool>().And(patchSnippet.IsRemoved(
+                Utf8Snippets.GetBytes(
+                    new FormattableStringExpression(jsonPathTemplate + $"[{{{parentIndices.Count}}}]", allIndices)
+                .As<string>())));
+
+            if (childIsRemovedCondition != null)
+            {
+                patchIsRemovedCondition = patchIsRemovedCondition.Or(childIsRemovedCondition);
+            }
+
             var forStatement = new ForStatement(
                 indexDeclaration.Assign(Literal(0)),
                 indexVar.LessThan(collection.Property(lengthProperty)),
@@ -146,21 +269,33 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
                         patchSnippet,
                         serializationFormat,
                         serializedName,
-                        allIndices)
+                        allIndices,
+                        hasPatch,
+                        inputType: GetCollectionItemInputType(inputType))
                 }
             };
 
-            var writeToPatchStatement = parentIndices.Count == 0
+            MethodBodyStatement writeToPatchStatement = parentIndices.Count == 0
                 ? patchSnippet.WriteTo(_utf8JsonWriterSnippet, LiteralU8(jsonPathTemplate)).Terminate()
                 : patchSnippet.WriteTo(_utf8JsonWriterSnippet, Utf8Snippets.GetBytes(new FormattableStringExpression(jsonPathTemplate, parentIndices).As<string>())).Terminate();
-
-            return new[]
+            if (parentIndices.Count > 0)
             {
-                _utf8JsonWriterSnippet.WriteStartArray(),
-                forStatement,
-                writeToPatchStatement,
-                _utf8JsonWriterSnippet.WriteEndArray()
+                writeToPatchStatement = new IfStatement(hasPatch.As<bool>()) { writeToPatchStatement };
+            }
+
+            var listStatements = new List<MethodBodyStatement>
+            {
+                _utf8JsonWriterSnippet.WriteStartArray()
             };
+            if (hasPatchDeclaration != null)
+            {
+                listStatements.Add(hasPatchDeclaration);
+            }
+
+            listStatements.Add(forStatement);
+            listStatements.Add(writeToPatchStatement);
+            listStatements.Add(_utf8JsonWriterSnippet.WriteEndArray());
+            return listStatements.ToArray();
         }
 
         private MethodBodyStatement CreateElementSerializationWithPatch(
@@ -169,7 +304,10 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
             ScopedApi<JsonPatch> patchSnippet,
             SerializationFormat serializationFormat,
             string serializedName,
-            List<ValueExpression> currentIndices)
+            List<ValueExpression> currentIndices,
+            ValueExpression? parentHasPatch = null,
+            bool suppressPatchLogic = false,
+            InputType? inputType = null)
         {
             var nestedSerialization = elementType switch
             {
@@ -180,13 +318,19 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
                     patchSnippet,
                     serializationFormat,
                     serializedName,
-                    currentIndices),
+                    currentIndices,
+                    parentHasPatch,
+                    suppressPatchLogic,
+                    inputType),
                 { IsDictionary: true } => CreateDictionarySerializationWithPatch(
                     new DictionaryExpression(elementType, element),
                     serializationFormat,
                     patchSnippet,
                     serializedName,
-                    currentIndices),
+                    currentIndices,
+                    parentHasPatch,
+                    suppressPatchLogic,
+                    inputType),
                 _ => null
             };
 
@@ -201,11 +345,44 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
                     : nestedSerialization;
             }
 
+            if (DiscriminatedUnionSerialization.RequiresEnvelope(inputType, elementType))
+            {
+                return DiscriminatedUnionSerialization.SerializeValue(
+                    inputType!, elementType, element, _utf8JsonWriterSnippet, _mrwOptionsParameterSnippet);
+            }
+
             return CreateNullCheckAndSerializationStatement(
                 elementType,
                 element,
                 serializationFormat,
                 serializedName);
+        }
+
+        private static InputType? GetCollectionItemInputType(InputType? inputType) => inputType switch
+        {
+            InputNullableType nullable => GetCollectionItemInputType(nullable.Type),
+            InputArrayType array => array.ValueType,
+            InputDictionaryType dictionary => dictionary.ValueType,
+            _ => null
+        };
+
+        private MethodBodyStatement CreateEnvelopeSerializationStatement(
+            InputType inputType, CSharpType type, ValueExpression value, string serializedName)
+        {
+            if (_jsonPatchProperty is not null)
+            {
+                if (type.IsList)
+                {
+                    return CreateListSerializationWithPatch(value, type.ElementType, false,
+                        _jsonPatchProperty.As<JsonPatch>(), SerializationFormat.Default, serializedName, inputType: inputType);
+                }
+                if (type.IsDictionary)
+                {
+                    return CreateDictionarySerializationWithPatch(new DictionaryExpression(type, value),
+                        SerializationFormat.Default, _jsonPatchProperty.As<JsonPatch>(), serializedName, inputType: inputType);
+                }
+            }
+            return DiscriminatedUnionSerialization.SerializeValue(inputType, type, value, _utf8JsonWriterSnippet, _mrwOptionsParameterSnippet);
         }
 
         private IfElseStatement CreateConditionalPatchSerializationStatement(
@@ -214,13 +391,14 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
             MethodBodyStatement writePropertySerializationStatement,
             MethodBodyStatement? elseStatementBody)
         {
-            string jsonPath = $"$.{serializedName}";
+            string jsonPath = BuildJsonPathForElement(serializedName, []);
             var ifPatchIsNotRemoved = new IfStatement(Not(_jsonPatchProperty!.As<JsonPatch>().IsRemoved(LiteralU8(jsonPath))))
             {
                 _utf8JsonWriterSnippet.WritePropertyName(serializedName),
-                _utf8JsonWriterSnippet.WriteRawValue(
-                    JsonPatchSnippets.GetJson(_jsonPatchProperty!.As<JsonPatch>(),
-                    LiteralU8(jsonPath)))
+                JsonPatchSnippets.WriteTo(
+                    _jsonPatchProperty!.As<JsonPatch>(),
+                    _utf8JsonWriterSnippet,
+                    LiteralU8(jsonPath)).Terminate()
             };
             var ifPatchContainsJson = new IfStatement(_jsonPatchProperty!.As<JsonPatch>().Contains(LiteralU8(jsonPath)))
             {
@@ -334,35 +512,41 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
             {
                 var patchProperty = ((MemberExpression)property).Property("Patch").As<JsonPatch>();
                 var jsonSerializedName = GetJsonSerializedName(property.WireInfo!);
-                statements.Add(
-                    new IfStatement(localVariable.Invoke("StartsWith", LiteralU8(jsonSerializedName)))
+                var ifStatement = new IfStatement(localVariable.Invoke("StartsWith", LiteralU8(jsonSerializedName)));
+                if (!property.Type.IsValueType)
+                {
+                    ifStatement.Add(new IfStatement(((ValueExpression)property).Equal(Null))
                     {
-                        propagateGet
-                            ? Return(patchProperty.TryGetEncodedValue(
+                        Return(False)
+                    });
+                }
+                ifStatement.Add(
+                    propagateGet
+                        ? Return(patchProperty.TryGetEncodedValue(
+                            IndexerExpression.FromCollection(
+                                Spread(LiteralU8("$")),
+                                Spread(ReadOnlySpanSnippets.Slice(
+                                    localVariable,
+                                    LiteralU8(jsonSerializedName).Property("Length")))),
+                            valueParameter))
+                        : new MethodBodyStatement[]
+                        {
+                            patchProperty.Set(
                                 IndexerExpression.FromCollection(
                                     Spread(LiteralU8("$")),
                                     Spread(ReadOnlySpanSnippets.Slice(
                                         localVariable,
                                         LiteralU8(jsonSerializedName).Property("Length")))),
-                                valueParameter))
-                            : new MethodBodyStatement[]
-                            {
-                                    patchProperty.Set(
-                                    IndexerExpression.FromCollection(
-                                        Spread(LiteralU8("$")),
-                                        Spread(ReadOnlySpanSnippets.Slice(
-                                            localVariable,
-                                            LiteralU8(jsonSerializedName).Property("Length")))),
-                                    valueParameter),
-                                Return(True)
-                            }
-                    });
+                                valueParameter),
+                            Return(True)
+                        });
+                statements.Add(ExperimentalApiHelpers.Suppress(ifStatement, ExperimentalApiHelpers.GetMemberSuppressions(property)));
             }
 
             foreach (var property in allDynamicCollectionProperties)
             {
                 var indexableProperty = new IndexableExpression(property);
-                statements.Add(
+                statements.Add(ExperimentalApiHelpers.Suppress(
                     new IfStatement(
                         localVariable.Invoke("StartsWith", LiteralU8(GetJsonSerializedName(property.WireInfo!))))
                     {
@@ -371,7 +555,7 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
                             propagateGet,
                             valueParameter,
                             localVariable)
-                    });
+                    }, ExperimentalApiHelpers.GetMemberSuppressions(property)));
             }
 
             if (statements.Count > 0)
@@ -405,6 +589,13 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
             while (currentType.IsCollection)
             {
                 bool hasNestedCollection = currentType.ElementType.IsCollection;
+                if (!currentType.IsValueType)
+                {
+                    statements.Add(new IfStatement(accessorChain.Last().Equal(Null))
+                    {
+                        Return(False)
+                    });
+                }
 
                 if (currentType.IsList || currentType.IsArray)
                 {
@@ -418,16 +609,18 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
                         statements.Add(new IfStatement(ReadOnlySpanSnippets.IsEmpty(currentSlice))
                         {
                             Return(new InvokeMethodExpression(null, tryResolveMethodName,
-                                [new VariableExpression(valueVar.Type, valueVar.Declaration, IsOut: true)]))
+                                [new ArgumentExpression(valueVar, IsOut: true)]))
                         });
                     }
 
+                    var collection = accessorChain.Last();
+                    string lengthPropertyName = currentType.IsArray ? "Length" : "Count";
                     statements.Add(new IfStatement(Not(currentSlice.Invoke(
                         "TryGetIndex",
                         [
                             new DeclarationExpression(typeof(int), "index", out var indexVariable, isOut: true),
                             new DeclarationExpression(typeof(int), "bytesConsumed", out var bytesConsumedVariable, isOut: true)
-                        ]).As<bool>()))
+                        ]).As<bool>()).Or(indexVariable.GreaterThanOrEqual(collection.Property(lengthPropertyName))))
                     {
                         Return(False)
                     });
@@ -476,6 +669,13 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
             }
 
             var finalAccessor = accessorChain.Last();
+            if (!currentType.IsValueType)
+            {
+                statements.Add(new IfStatement(finalAccessor.Equal(Null))
+                {
+                    Return(False)
+                });
+            }
             var patchProperty = finalAccessor.Property("Patch").As<JsonPatch>();
 
             statements.Add(propagateGet
@@ -505,7 +705,10 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
         private static bool IsDirectDynamicListProperty(PropertyProvider property)
         {
             if (!property.Type.IsList && !property.Type.IsArray)
+            {
                 return false;
+            }
+
             return ScmCodeModelGenerator.Instance.TypeFactory.CSharpTypeMap.TryGetValue(
                 property.Type.ElementType,
                 out var provider) &&
@@ -529,11 +732,9 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
                 [valueParameter]);
 
             var dataDeclStatement = Declare("data", typeof(BinaryData),
-                Static(typeof(ModelReaderWriter)).Invoke(nameof(ModelReaderWriter.Write), [
+                ModelReaderWriterSnippets.Write(
                     new InvokeMethodExpression(null, $"Active{property.Name}", []),
-                    ModelReaderWriterOptionsSnippets.JsonFormatProperty,
-                    ModelReaderWriterContextSnippets.Default
-                ]),
+                    ModelReaderWriterOptionsSnippets.JsonFormatProperty),
                 out var dataVar);
 
             var tempPatchDeclStatement = Declare("tempPatch", typeof(JsonPatch), New.Instance(typeof(JsonPatch)), out var tempPatchVar);
@@ -551,7 +752,8 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
                 signature,
                 bodyStatements,
                 _model,
-                suppressions: [ScmModelProvider.JsonPatchSuppression]);
+                suppressions: ExperimentalApiHelpers.MergeSuppressions(
+                    [ScmModelProvider.JsonPatchSuppression], ExperimentalApiHelpers.GetMemberSuppressions(property)));
         }
 
         /// <summary>
@@ -574,23 +776,40 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
             string lengthPropertyName = property.Type.IsArray ? "Length" : "Count";
 
             var indexDeclaration = Declare<int>("i", out var indexVar);
+            var item = propertyExpr[indexVar];
+            var isActive = Not(item.Property("Patch").As<JsonPatch>().IsRemoved(LiteralU8("$")));
+            if (!elementType.IsValueType)
+            {
+                isActive = item.Equal(Null).Or(isActive);
+            }
+            var serializedName = GetJsonSerializedName(property.WireInfo!);
+            var hasPatchDeclaration = Declare(
+                "hasPatch",
+                typeof(bool),
+                _jsonPatchProperty!.As<JsonPatch>().Contains(LiteralU8("$"), LiteralU8(serializedName)),
+                out var hasPatch);
+            var itemPath = Utf8Snippets.GetBytes(new FormattableStringExpression(
+                BuildJsonPathForElement(serializedName, [indexVar]),
+                [indexVar]).As<string>());
+            isActive = Not(hasPatch).Or(Not(_jsonPatchProperty!.As<JsonPatch>().IsRemoved(itemPath))).And(isActive);
             var forStatement = new ForStatement(
                 indexDeclaration.Assign(Literal(0)),
                 indexVar.LessThan(((ValueExpression)property).Property(lengthPropertyName)),
                 indexVar.Increment())
             {
-                new IfStatement(Not(propertyExpr[indexVar].Property("Patch").As<JsonPatch>().IsRemoved(LiteralU8("$"))))
+                new IfStatement(isActive)
                 {
-                    YieldReturn(propertyExpr[indexVar])
+                    YieldReturn(item)
                 }
             };
 
             var bodyStatements = new MethodBodyStatement[]
             {
-                new IfStatement(Not(OptionalSnippets.IsCollectionDefined((ValueExpression)property)))
+                new IfStatement(Not(OptionalSnippets.IsCollectionDefined(property, property.Type)))
                 {
                     YieldBreak()
                 },
+                hasPatchDeclaration,
                 forStatement
             };
 
@@ -598,7 +817,8 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
                 signature,
                 bodyStatements,
                 _model,
-                suppressions: [ScmModelProvider.JsonPatchSuppression]);
+                suppressions: ExperimentalApiHelpers.MergeSuppressions(
+                    [ScmModelProvider.JsonPatchSuppression], ExperimentalApiHelpers.GetMemberSuppressions(property)));
         }
 
         /// <summary>
@@ -624,11 +844,6 @@ namespace Microsoft.TypeSpec.Generator.ClientModel.Providers
         private static string BuildJsonPathForElement(string propertySerializedName, List<ValueExpression> indices)
         {
             var count = indices.Count;
-            if (count == 0)
-            {
-                return $"$.{propertySerializedName}";
-            }
-
             var result = $"$.{propertySerializedName}";
             for (int i = 0; i < count; i++)
             {

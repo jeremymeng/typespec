@@ -12,6 +12,24 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
 {
     public static class InputFactory
     {
+        public static T Experimental<T>(T type, string? diagnosticId, params string[] dependsOn) where T : InputType
+        {
+            type.Experimental = new InputExperimentalDetails(diagnosticId, dependsOn);
+            return type;
+        }
+
+        public static InputModelProperty Experimental(InputModelProperty property, string? diagnosticId, params string[] dependsOn)
+        {
+            property.Experimental = new InputExperimentalDetails(diagnosticId, dependsOn);
+            return property;
+        }
+
+        public static InputClient Experimental(InputClient client, string? diagnosticId, params string[] dependsOn)
+        {
+            client.Experimental = new InputExperimentalDetails(diagnosticId, dependsOn);
+            return client;
+        }
+
         public static class EnumMember
         {
             public static InputEnumTypeValue Int32(string name, int value, InputEnumType enumType, bool isExactName = false)
@@ -75,9 +93,10 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
         {
             public static InputSerializationOptions Options(
                 InputJsonSerializationOptions? json = null,
-                InputXmlSerializationOptions? xml = null)
+                InputXmlSerializationOptions? xml = null,
+                InputMultipartOptions? multipart = null)
             {
-                return new InputSerializationOptions(json, xml);
+                return new InputSerializationOptions(json, xml, multipart);
             }
 
             public static InputJsonSerializationOptions Json(string name)
@@ -100,6 +119,35 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
             {
                 return new InputXmlNamespaceOptions(ns, prefix);
             }
+
+            public static InputMultipartOptions Multipart(
+                string name,
+                bool isFilePart = true,
+                bool isMulti = false,
+                IReadOnlyList<string>? defaultContentTypes = null,
+                InputModelProperty? filename = null,
+                InputModelProperty? contentType = null)
+            {
+                return new InputMultipartOptions(
+                    name,
+                    isFilePart,
+                    isMulti,
+                    defaultContentTypes ?? ["application/octet-stream"],
+                    filename,
+                    contentType);
+            }
+        }
+
+        /// <summary>
+        /// Creates an <see cref="InputPrimitiveType"/> representing a file (HttpPart-like) input,
+        /// which the ClientModel type factory maps to <c>System.ClientModel.FileBinaryContent</c>.
+        /// </summary>
+        public static InputPrimitiveType FileType()
+        {
+            return new InputPrimitiveType(InputPrimitiveTypeKind.Bytes, "bytes", "TypeSpec.bytes")
+            {
+                IsFileType = true
+            };
         }
 
         public static InputHeaderParameter ContentTypeParameter(string contentType)
@@ -137,7 +185,9 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
             bool isExtensible = false,
             string clientNamespace = "Sample.Models",
             InputExternalTypeMetadata? external = null,
-            bool isExactName = false)
+            bool isExactName = false,
+            IReadOnlyList<string>? apiVersions = null,
+            string? deprecation = null)
         {
             var enumValues = new List<InputEnumTypeValue>();
             var enumType = Enum(
@@ -149,7 +199,8 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
                 isExtensible: isExtensible,
                 clientNamespace: clientNamespace,
                 external: external,
-                isExactName: isExactName);
+                isExactName: isExactName,
+                deprecation: deprecation);
 
             foreach (var (valueName, value) in values)
             {
@@ -280,20 +331,23 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
             bool isExtensible = false,
             string clientNamespace = "Sample.Models",
             InputExternalTypeMetadata? external = null,
-            bool isExactName = false)
+            bool isExactName = false,
+            IReadOnlyList<string>? apiVersions = null,
+            string? deprecation = null)
         {
             var enumType = new InputEnumType(
                 name,
                 clientNamespace,
                 name,
                 access,
-                null,
+                deprecation,
                 "",
                 $"{name} description",
                 usage,
                 underlyingType,
                 values,
-                isExtensible)
+                isExtensible,
+                apiVersions ?? [])
             {
                 IsExactName = isExactName,
             };
@@ -319,7 +373,9 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
             string? doc = null,
             InputSerializationOptions? serializationOptions = null,
             ArrayKnownEncoding? encode = null,
-            bool isExactName = false)
+            bool isExactName = false,
+            IReadOnlyList<string>? apiVersions = null,
+            string? deprecation = null)
         {
             serializationOptions ??= new InputSerializationOptions();
             return new InputModelProperty(
@@ -336,7 +392,9 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
                 isDiscriminator: isDiscriminator,
                 serializedName: serializedName ?? wireName ?? name.ToVariableName(),
                 serializationOptions: serializationOptions,
-                encode: encode)
+                encode: encode,
+                apiVersions: apiVersions ?? [],
+                deprecation: deprecation)
             {
                 IsExactName = isExactName,
             };
@@ -559,7 +617,9 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
             bool isDynamicModel = false,
             InputExternalTypeMetadata? external = null,
             InputSerializationOptions? serializationOptions = null,
-            bool isExactName = false)
+            bool isExactName = false,
+            IReadOnlyList<string>? apiVersions = null,
+            string? deprecation = null)
         {
             IEnumerable<InputModelProperty> propertiesList = properties ?? [Property("StringProperty", InputPrimitiveType.String)];
 
@@ -568,7 +628,7 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
                 @namespace,
                 name,
                 access,
-                null,
+                deprecation,
                 "",
                 $"{name} description",
                 usage,
@@ -584,7 +644,8 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
                 additionalProperties,
                 modelAsStruct,
                 serializationOptions ?? new(),
-                isDynamicModel)
+                isDynamicModel,
+                apiVersions ?? [])
             {
                 IsExactName = isExactName,
             };
@@ -621,9 +682,11 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
             return dictionary;
         }
 
-        public static InputType Union(IList<InputType> types, string name = "union", InputExternalTypeMetadata? external = null)
+        public static InputType Union(IList<InputType> types, string name = "union", InputExternalTypeMetadata? external = null,
+            InputModelType? baseModel = null, string? discriminatorPropertyName = null, string? envelopePropertyName = null,
+            IReadOnlyDictionary<string, InputModelType>? discriminatedSubtypes = null)
         {
-            var union = new InputUnionType(name, [.. types]);
+            var union = new InputUnionType(name, [.. types], baseModel, discriminatorPropertyName, envelopePropertyName, discriminatedSubtypes);
             if (external != null)
             {
                 union.External = external;
@@ -648,7 +711,7 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
                 null,
                 operation,
                 parameters ?? [],
-                response ?? ServiceMethodResponse(null, null),
+                response ?? ServiceMethodResponse(operation.Responses.FirstOrDefault(r => !r.IsErrorResponse)?.BodyType, null),
                 exception,
                 false,
                 true,
@@ -701,14 +764,16 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
             string httpMethod = "GET",
             bool generateConvenienceMethod = true,
             string? ns = null,
-            bool isExactName = false)
+            bool isExactName = false,
+            bool generateProtocolMethod = true,
+            bool bufferResponse = true,
+            string? deprecated = null)
         {
             var operation = new InputOperation(
                 name,
-                null,
                 "",
                 $"{name} description",
-                null,
+                deprecated,
                 access,
                 parameters is null ? [] : [.. parameters],
                 responses is null ? [OperationResponse()] : [.. responses],
@@ -717,8 +782,8 @@ namespace Microsoft.TypeSpec.Generator.Tests.Common
                 path,
                 null,
                 requestMediaTypes is null ? null : [.. requestMediaTypes],
-                false,
-                true,
+                bufferResponse,
+                generateProtocolMethod,
                 generateConvenienceMethod,
                 name,
                 ns);

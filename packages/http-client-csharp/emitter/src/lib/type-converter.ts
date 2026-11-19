@@ -1,10 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
-import {
+import type {
   DecoratorInfo,
-  getAccessOverride,
-  isHttpMetadata,
   SdkArrayType,
   SdkBuiltInType,
   SdkConstantType,
@@ -18,11 +16,24 @@ import {
   SdkModelType,
   SdkType,
   SdkUnionType,
+} from "@azure-tools/typespec-client-generator-core";
+import {
+  getAccessOverride,
+  isHttpMetadata,
   UsageFlags,
 } from "@azure-tools/typespec-client-generator-core";
-import { createDiagnosticCollector, Diagnostic, Model, NoTarget } from "@typespec/compiler";
-import { CSharpEmitterContext } from "../sdk-context.js";
+import type { Diagnostic, Model } from "@typespec/compiler";
 import {
+  compilerAssert,
+  createDiagnosticCollector,
+  getDeprecated,
+  NoTarget,
+} from "@typespec/compiler";
+import { isEvents } from "@typespec/events";
+import { unsafe_getEventDefinitions } from "@typespec/events/experimental";
+import { _httpFileCrossLanguageDefinitionId } from "../constants.js";
+import type { CSharpEmitterContext } from "../sdk-context.js";
+import type {
   InputArrayType,
   InputDateTimeType,
   InputDictionaryType,
@@ -39,6 +50,7 @@ import {
   InputType,
   InputUnionType,
 } from "../type/input-type.js";
+import { getExperimentalDetails } from "./experimental.js";
 import { createDiagnostic } from "./lib.js";
 import { isReadOnly } from "./utils.js";
 
@@ -185,6 +197,24 @@ export function fromSdkType<T extends SdkType>(
       break;
   }
 
+  // Enum values already carry metadata validated when their declaring enum was converted.
+  if (sdkType.kind !== "enumvalue") {
+    // External declarations are not emitted, but their known diagnostics apply at generated reference sites.
+    retVar.experimental = diagnostics.pipe(
+      getExperimentalDetails(
+        sdkContext,
+        sdkType.__raw,
+        retVar.external !== undefined ||
+          (retVar.kind === "model" && !retVar.isFileType) ||
+          retVar.kind === "enum",
+      ),
+    );
+  }
+  if (sdkType.__raw?.kind === "Union" && retVar.kind !== "enum") {
+    for (const variant of sdkType.__raw.variants.values()) {
+      diagnostics.pipe(getExperimentalDetails(sdkContext, variant, false));
+    }
+  }
   sdkContext.__typeCache.updateSdkTypeReferences(sdkType, retVar);
   // we have to cast to any because TypeScript's type narrowing does not automatically infer the return type for conditional types
   return diagnostics.wrap(retVar as any);
@@ -204,6 +234,7 @@ function fromSdkModelType(
   const inputModelType: InputModelType = {
     kind: "model",
     name: modelType.name,
+    apiVersions: modelType.apiVersions,
     namespace: modelType.namespace,
     crossLanguageDefinitionId: modelType.crossLanguageDefinitionId,
     access: getAccessOverride(sdkContext, modelType.__raw as Model),
@@ -216,6 +247,8 @@ function fromSdkModelType(
     external: fromSdkExternalTypeInfo(modelType),
     serializationOptions: modelType.serializationOptions,
     isExactName: modelType.isExactName,
+    isFileType:
+      modelType.crossLanguageDefinitionId === _httpFileCrossLanguageDefinitionId ? true : undefined,
   } as InputModelType;
 
   sdkContext.__typeCache.updateSdkTypeReferences(modelType, inputModelType);
@@ -263,8 +296,7 @@ function fromSdkModelProperty(
   const diagnostics = createDiagnosticCollector();
   // TODO -- this returns undefined because some properties we do not support yet.
   let property = sdkContext.__typeCache.properties.get(sdkProperty) as
-    | InputModelProperty
-    | undefined;
+    InputModelProperty | undefined;
   if (property) {
     return diagnostics.wrap(property);
   }
@@ -276,9 +308,15 @@ function fromSdkModelProperty(
   property = {
     kind: sdkProperty.kind,
     name: sdkProperty.name,
+    originalName:
+      sdkProperty.__raw?.name !== sdkProperty.name ? sdkProperty.__raw?.name : undefined,
+    apiVersions: sdkProperty.apiVersions,
     serializedName: serializedName,
     summary: sdkProperty.summary,
     doc: sdkProperty.doc,
+    deprecation: sdkProperty.__raw
+      ? getDeprecated(sdkContext.program, sdkProperty.__raw)
+      : undefined,
     type: diagnostics.pipe(
       fromSdkType(sdkContext, sdkProperty.type, sdkProperty, sdkModel.namespace),
     ),
@@ -293,7 +331,26 @@ function fromSdkModelProperty(
     isHttpMetadata: isHttpMetadata(sdkContext, sdkProperty),
     encode: sdkProperty.encode,
     isExactName: sdkProperty.isExactName,
+    experimental: diagnostics.pipe(getExperimentalDetails(sdkContext, sdkProperty.__raw)),
   } as InputModelProperty;
+
+  if (sdkProperty.serializationOptions?.multipart?.isFilePart === true) {
+    // Mark the part type as a file type. We must NOT mutate the type in place: `fromSdkType`
+    // caches and shares a single instance per SDK type (see `__typeCache.types`), so a `model`
+    // or `bytes` type used both as a multipart file part and elsewhere as a non-file model/body
+    // would have `isFileType` leaked onto the shared instance. Clone before setting the flag so
+    // only this property's type carries it.
+    if (property.type.kind === "model" || property.type.kind === "bytes") {
+      property.type = { ...property.type, isFileType: true };
+    } else if (property.type.kind === "array") {
+      if (property.type.valueType.kind === "model" || property.type.valueType.kind === "bytes") {
+        property.type = {
+          ...property.type,
+          valueType: { ...property.type.valueType, isFileType: true },
+        };
+      }
+    }
+  }
 
   if (property) {
     sdkContext.__typeCache.updateSdkPropertyReferences(sdkProperty, property);
@@ -323,6 +380,7 @@ function createEnumType(
   const inputEnumType: InputEnumType = {
     kind: "enum",
     name: sdkType.name,
+    apiVersions: sdkType.kind === "enum" ? sdkType.apiVersions : [],
     crossLanguageDefinitionId: sdkType.kind === "enum" ? sdkType.crossLanguageDefinitionId : "",
     valueType:
       sdkType.kind === "enum"
@@ -422,20 +480,129 @@ function fromUnionType(
 ): [InputUnionType, readonly Diagnostic[]] {
   const diagnostics = createDiagnosticCollector();
   const variantTypes: InputType[] = [];
+  const inputUnion: InputUnionType = {
+    kind: "union",
+    name: union.name,
+    variantTypes,
+    namespace: union.namespace,
+    decorators: union.decorators,
+    external: fromSdkExternalTypeInfo(union),
+    isExactName: union.isExactName,
+  };
+  sdkContext.__typeCache.updateSdkTypeReferences(union, inputUnion);
+
   for (const value of union.variantTypes) {
     const variantType = diagnostics.pipe(fromSdkType(sdkContext, value));
     variantTypes.push(variantType);
   }
 
-  return diagnostics.wrap({
-    kind: "union",
-    name: union.name,
-    variantTypes: variantTypes,
-    namespace: union.namespace,
-    decorators: union.decorators,
-    external: fromSdkExternalTypeInfo(union),
-    isExactName: union.isExactName,
-  });
+  const envelope = getDiscriminatedUnionEnvelope(sdkContext, union);
+  if (envelope) {
+    inputUnion.baseModel = diagnostics.pipe(fromSdkType(sdkContext, envelope.base));
+    inputUnion.discriminatorPropertyName = envelope.options.discriminatorPropertyName;
+    inputUnion.envelopePropertyName = envelope.options.envelopePropertyName;
+    const subtypes: Record<string, InputModelType> = Object.create(null);
+    for (const [tag, variant] of envelope.variants) {
+      subtypes[tag] = diagnostics.pipe(fromSdkType(sdkContext, variant));
+    }
+    inputUnion.discriminatedSubtypes = subtypes;
+  }
+
+  const events = getEventsUnionVariants(sdkContext, union);
+  if (events) {
+    inputUnion.baseModel = diagnostics.pipe(fromSdkType(sdkContext, events.base));
+    const subtypes: Record<string, InputModelType> = Object.create(null);
+    for (const [eventType, variant] of events.variants) {
+      subtypes[eventType] = diagnostics.pipe(fromSdkType(sdkContext, variant));
+    }
+    inputUnion.discriminatedSubtypes = subtypes;
+  }
+
+  return diagnostics.wrap(inputUnion);
+}
+
+/** SSE events without an `event:` field default to the "message" event type. */
+const DefaultSseEventType = "message";
+
+/**
+ * Maps each event type of an `@events` union to its variant when the union explicitly extends a
+ * named model that every variant nominally inherits, and each event's JSON payload is the variant itself.
+ */
+function getEventsUnionVariants(sdkContext: CSharpEmitterContext, union: SdkUnionType) {
+  const base = union.baseType;
+  const raw = union.__raw;
+  if (
+    base?.kind !== "model" ||
+    !base.name ||
+    raw?.kind !== "Union" ||
+    !isEvents(sdkContext.program, raw)
+  ) {
+    return undefined;
+  }
+
+  const [definitions, diagnostics] = unsafe_getEventDefinitions(sdkContext.program, raw);
+  if (diagnostics.length > 0 || definitions.length !== union.variantTypes.length) {
+    return undefined;
+  }
+
+  const variants = new Map<string, SdkModelType>();
+  for (const definition of definitions) {
+    const eventType = definition.eventType ?? DefaultSseEventType;
+    const variant = union.variantTypes.find(
+      (type): type is SdkModelType => type.kind === "model" && type.__raw === definition.type,
+    );
+    if (
+      !variant ||
+      variants.has(eventType) ||
+      definition.isEventEnvelope ||
+      !isJsonContentType(definition.contentType) ||
+      !inheritsFrom(variant, base)
+    ) {
+      return undefined;
+    }
+    variants.set(eventType, variant);
+  }
+  return { base, variants };
+}
+
+function isJsonContentType(contentType: string | undefined): boolean {
+  if (contentType === undefined) return false;
+  const mediaType = contentType.split(";", 1)[0].trim().toLowerCase();
+  return mediaType === "application/json" || mediaType.endsWith("+json");
+}
+
+function inheritsFrom(model: SdkModelType, base: SdkModelType): boolean {
+  for (let ancestor = model.baseModel; ancestor; ancestor = ancestor.baseModel) {
+    if (ancestor === base) return true;
+  }
+  return false;
+}
+
+function getDiscriminatedUnionEnvelope(sdkContext: CSharpEmitterContext, union: SdkUnionType) {
+  const base = union.baseType;
+  const options = union.discriminatedOptions;
+  if (
+    options?.envelope !== "object" ||
+    base?.kind !== "model" ||
+    !base.name ||
+    union.variants.size === 0 ||
+    (union.__raw?.kind === "Union" && isEvents(sdkContext.program, union.__raw)) ||
+    new Set(union.variants.values()).size !== union.variants.size
+  ) {
+    return undefined;
+  }
+
+  const variants = new Map<string, SdkModelType>();
+  for (const [tag, variant] of union.variants) {
+    if (typeof tag !== "string" || variant.kind !== "model") return undefined;
+    let ancestor = variant.baseModel;
+    while (ancestor && ancestor !== base) {
+      ancestor = ancestor.baseModel;
+    }
+    if (!ancestor) return undefined;
+    variants.set(tag, variant);
+  }
+  return { base, options, variants };
 }
 
 function fromSdkConstantType(
@@ -465,9 +632,10 @@ function fromSdkEnumValueType(
   enumValueType: SdkEnumValueType,
 ): [InputEnumValueType, readonly Diagnostic[]] {
   const diagnostics = createDiagnosticCollector();
-  return diagnostics.wrap(
-    diagnostics.pipe(createEnumValueType(sdkContext, enumValueType, enumValueType.enumType)),
-  );
+  const enumType = diagnostics.pipe(fromSdkType(sdkContext, enumValueType.enumType));
+  const value = enumType.values.find((value) => value.name === enumValueType.name);
+  compilerAssert(value !== undefined, "Enum value must belong to its declaring enum.");
+  return diagnostics.wrap(value);
 }
 
 function createEnumValueType(
@@ -494,6 +662,7 @@ function createEnumValueType(
     doc: sdkType.doc,
     decorators: sdkType.decorators,
     isExactName: sdkType.isExactName,
+    experimental: diagnostics.pipe(getExperimentalDetails(sdkContext, sdkType.__raw)),
   });
 }
 

@@ -50,6 +50,11 @@ public class ImplementationDetails {
         PAGED("paged"),
 
         /**
+         * Synthetic server-sent event envelope model.
+         */
+        SSE("sse"),
+
+        /**
          * External model.
          * <p>
          * Codegen should not generate the class. Javadoc or test/sample generation will still need to process the
@@ -142,6 +147,9 @@ public class ImplementationDetails {
                 case PAGED:
                     return PAGED;
 
+                case SSE:
+                    return SSE;
+
                 case INTERNAL:
                     return INTERNAL;
 
@@ -163,8 +171,6 @@ public class ImplementationDetails {
     private final boolean implementationOnly;
 
     private final Set<Usage> usages;
-
-    private final String comment;
 
     /**
      * Usually on a method, that it is only required in implementation class (FooClientImpl), but not in public class
@@ -231,29 +237,18 @@ public class ImplementationDetails {
     }
 
     /**
-     * Get the API comment.
-     *
-     * @return API comment.
-     */
-    public String getComment() {
-        return comment;
-    }
-
-    /**
      * Creates an instance of ImplementationDetails class.
      *
      * @param implementationOnly whether only required in implementation class.
      * @param usages usage of the model or method.
-     * @param comment API comment.
      */
-    protected ImplementationDetails(boolean implementationOnly, Set<Usage> usages, String comment) {
+    protected ImplementationDetails(boolean implementationOnly, Set<Usage> usages) {
         this.implementationOnly = implementationOnly;
         this.usages = usages;
-        this.comment = comment;
     }
 
     public Builder newBuilder() {
-        return new Builder().implementationOnly(implementationOnly).usages(usages).comment(comment);
+        return new Builder().implementationOnly(implementationOnly).usages(usages);
     }
 
     /**
@@ -262,7 +257,6 @@ public class ImplementationDetails {
     public static final class Builder {
         private boolean implementationOnly = false;
         private Set<Usage> usages = new LinkedHashSet<>();
-        private String comment;
 
         /**
          * Creates an instance of Builder class.
@@ -293,23 +287,12 @@ public class ImplementationDetails {
         }
 
         /**
-         * Sets API comment.
-         *
-         * @param comment API comment.
-         * @return the Builder itself.
-         */
-        public Builder comment(String comment) {
-            this.comment = comment;
-            return this;
-        }
-
-        /**
          * Builds an instance of ImplementationDetails class.
          *
          * @return the ImplementationDetails instance.
          */
         public ImplementationDetails build() {
-            return new ImplementationDetails(implementationOnly, CollectionUtil.toImmutableSet(usages), comment);
+            return new ImplementationDetails(implementationOnly, CollectionUtil.toImmutableSet(usages));
         }
     }
 }
