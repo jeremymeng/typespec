@@ -21,6 +21,19 @@ export interface BindResult {
 
 export declare function check(source: string, decorators?: object | undefined | null): CheckResultJs
 
+/** Load, parse and check the program rooted at `entry_path`. */
+export declare function checkProgram(entryPath: string, readFile: (arg: string) => string | null, resolveModule: (arg0: string, arg1: string) => ModuleResolutionJs, decorators?: object | undefined | null): CheckProgramResultJs
+
+export interface CheckProgramResultJs {
+  types: Array<SerializedType>
+  symbolToType: Array<SymbolToType>
+  nodeToType: Array<NodeToType>
+  diagnostics: Array<ProgramDiagnosticInfo>
+  decoratorState: Array<DecoratorStateEntry>
+  /** Loaded files in load order (TypeSpec and JS imports). */
+  sourceFiles: Array<ProgramSourceFileInfo>
+}
+
 export declare function checkRelation(source: string, sourceTypeName: string, targetTypeName: string): RelationCheckResult
 
 export interface CheckResultJs {
@@ -50,6 +63,19 @@ export interface DiagnosticInfo {
 
 export declare function hello(): string
 
+/** Result of the JS `resolveModule(specifier, baseDir)` callback. */
+export interface ModuleResolutionJs {
+  /** Final file to load (directory/package entrypoints already resolved). */
+  resolvedPath?: string
+  /** Resolved through a package manifest (TS `type: "module"`): the file is a library. */
+  library?: boolean
+  /** `"not-found"` or `"invalid"` when resolution failed. */
+  error?: string
+  message?: string
+  /** `package.json` the error should be reported on. */
+  manifestPath?: string
+}
+
 export interface NodeToType {
   nodeId: number
   typeId: number
@@ -60,6 +86,26 @@ export declare function parse(source: string, options?: ParseOptions | undefined
 export interface ParseOptions {
   comments?: boolean
   docs?: boolean
+}
+
+export interface ProgramDiagnosticInfo {
+  severity: string
+  code: string
+  message: string
+  /**
+   * Absolute path of the file the diagnostic is reported in; absent for
+   * diagnostics without a target.
+   */
+  file?: string
+  /** Position local to `file`. */
+  pos: number
+  end: number
+}
+
+export interface ProgramSourceFileInfo {
+  path: string
+  /** `"typespec"`, `"js"` or `"external"`. */
+  kind: string
 }
 
 export interface RelationCheckResult {

@@ -1,8 +1,11 @@
 #![doc = "Shared source abstractions for the TypeSpec Rust port."]
 
 pub mod numeric;
+pub mod path;
+pub mod program;
 
 pub use numeric::{bigint_to_napi_words, InvalidNumericError, Numeric};
+pub use program::{ProgramSourceFile, ProgramSources, SourceFileId, SourceFileKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
@@ -14,6 +17,18 @@ pub struct Position {
 pub struct Span {
     pub pos: u32,
     pub end: u32,
+}
+
+impl Span {
+    /// Sentinel for diagnostics that have no source location (TS `NoTarget`).
+    pub const NO_TARGET: Span = Span {
+        pos: u32::MAX,
+        end: u32::MAX,
+    };
+
+    pub fn is_no_target(self) -> bool {
+        self == Self::NO_TARGET
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +60,11 @@ impl SourceFile {
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Length of the text in UTF-16 code units (the unit used by positions).
+    pub fn len_utf16(&self) -> u32 {
+        self.text.encode_utf16().count() as u32
     }
 
     pub fn line_starts(&self) -> &[u32] {

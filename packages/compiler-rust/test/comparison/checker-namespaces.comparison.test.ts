@@ -96,7 +96,6 @@ describe("checker namespaces comparison: Rust vs TS", () => {
     [`namespace A.B { model Foo {} }`, ["A", "B"]],
     [`namespace A.B.C { model Foo {} }`, ["A", "B", "C"]],
     [`namespace A { namespace B { namespace C { model Foo {} } } }`, ["A", "B", "C"]],
-    [`namespace A; namespace B; model Foo {}`, ["A", "B"]],
   ] as const;
 
   it.each(nestedCases)("creates nested namespace chain %#", (source, names) => {
@@ -113,9 +112,25 @@ describe("checker namespaces comparison: Rust vs TS", () => {
     expect(namespace(result, "A").modelNames).toEqual(["X", "Y"]);
   });
 
-  it("merges block and semicolon namespace declarations", () => {
-    const result = expectNoErrors(`namespace A { model X {} } namespace A; model Y {}`);
-    expect(namespace(result, "A").modelNames).toEqual(["X", "Y"]);
+  it("merges semicolon and block namespace declarations", () => {
+    const result = expectNoErrors(`namespace A; model X {} namespace B { model Y {} }`);
+    expect(namespace(result, "A").modelNames).toEqual(["X"]);
+    expect(namespace(result, "B").namespaceId).toBe(namespace(result, "A").id);
+  });
+
+  // TS rejects these orderings in the parser; the namespaces are still bound.
+  const orderingCases = [
+    [`namespace A { model X {} } namespace A; model Y {}`, ["blockless-namespace-first"]],
+    [`namespace A { namespace B; model X {} }`, ["blockless-namespace-first"]],
+    [`namespace A; namespace B; model Foo {}`, ["multiple-blockless-namespace"]],
+    [
+      `namespace A; namespace B; namespace C; model X {}`,
+      ["multiple-blockless-namespace", "multiple-blockless-namespace"],
+    ],
+  ] as const;
+
+  it.each(orderingCases)("reports namespace ordering error %#", (source, codes) => {
+    expect(errors(rust(source)).map((x) => x.code)).toEqual(codes);
   });
 
   it("records namespace decorators", () => {
@@ -154,7 +169,6 @@ describe("checker namespaces comparison: Rust vs TS", () => {
     `namespace A { model X {} }`,
     `namespace A.B; model X {}`,
     `namespace A.B { model X {} }`,
-    `namespace A { namespace B; model X {} }`,
     `namespace A { namespace B { model X {} } }`,
     `namespace A { op one(): void; op two(): void; }`,
     `namespace A { interface One {} interface Two {} }`,
@@ -164,7 +178,6 @@ describe("checker namespaces comparison: Rust vs TS", () => {
     `namespace A { alias One = string; alias Two = int32; }`,
     `namespace A.B.C.D { model X {} }`,
     `namespace A { namespace B { namespace C { namespace D { model X {} } } } }`,
-    `namespace A; namespace B; namespace C; model X {}`,
     `namespace A { @doc("b") namespace B {} }`,
   ] as const;
 

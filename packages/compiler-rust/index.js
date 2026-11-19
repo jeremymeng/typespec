@@ -773,9 +773,10 @@ if (
   }
 }
 
-const { bind, check, checkRelation, hello, parse, scan } = nativeBinding
+const { bind, check, checkProgram, checkRelation, hello, parse, scan } = nativeBinding
 export { bind }
 export { check }
+export { checkProgram }
 export { checkRelation }
 export { hello }
 export { parse }

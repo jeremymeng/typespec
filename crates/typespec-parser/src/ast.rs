@@ -74,6 +74,26 @@ impl AstArena {
     pub fn nodes(&self) -> &[Node] {
         &self.nodes
     }
+
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    /// Shift `pos`/`end` of every node allocated at or after `from` by `offset`.
+    /// Used to move a freshly parsed file into the program position space.
+    pub fn shift_positions(&mut self, from: usize, offset: u32) {
+        if offset == 0 {
+            return;
+        }
+        for node in &mut self.nodes[from..] {
+            node.pos += offset;
+            node.end += offset;
+        }
+    }
 }
 
 impl Default for AstArena {

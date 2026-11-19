@@ -319,8 +319,11 @@ describe("binder comparison: Rust vs TS patterns", () => {
   describe("using and augment decorator handling", () => {
     it("records using scope ids", () => {
       const result = rust("namespace A { model Foo {} }\nusing A;\nalias Bar = Foo;");
-      const global = result.scopes[result.globalScopeId];
-      expect(global.usingScopeIds.length).toBe(1);
+      // File-level usings live on the per-file scope, not the global scope (TS script locals).
+      const fileScopes = result.scopes.filter((x) => x.kind === "File");
+      expect(fileScopes).toHaveLength(1);
+      expect(fileScopes[0].usingScopeIds.length).toBe(1);
+      expect(result.scopes[result.globalScopeId].usingScopeIds).toEqual([]);
     });
 
     it("reports unused using", () => {

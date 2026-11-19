@@ -4,6 +4,7 @@ pub mod binder;
 pub mod checker;
 pub mod decorator;
 pub mod parser;
+pub mod program;
 pub mod scanner;
 
 #[napi]

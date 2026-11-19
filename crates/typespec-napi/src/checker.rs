@@ -7,7 +7,7 @@ use typespec_checker::{
     type_relation::{get_effective_model_type, type_name, TypeRelationChecker},
     CheckResult, DecoratorValue, EnumMemberValue, Type, TypeId,
 };
-use typespec_parser::parse;
+use typespec_parser::{parse, ParseResult};
 use typespec_source::{bigint_to_napi_words, Diagnostic, DiagnosticSeverity, Numeric, SourceFile};
 
 use crate::decorator::NapiDecoratorRunner;
@@ -119,18 +119,27 @@ pub struct RelationCheckResult {
 pub fn check(env: Env, source: String, decorators: Option<Object>) -> CheckResultJs {
     let source = SourceFile::new(source);
     let parse_result = parse(&source);
-    let mut table = bind_parse_result(&parse_result);
-    let resolution = resolve_names(&parse_result, &mut table);
+    check_parsed(&env, &parse_result, decorators)
+}
+
+/// Bind, resolve and check an already parsed (single- or multi-file) program.
+pub(crate) fn check_parsed<'env>(
+    env: &'env Env,
+    parse_result: &ParseResult,
+    decorators: Option<Object<'env>>,
+) -> CheckResultJs {
+    let mut table = bind_parse_result(parse_result);
+    let resolution = resolve_names(parse_result, &mut table);
     let result = if decorators.is_some() {
-        match NapiDecoratorRunner::new(&env, decorators) {
+        match NapiDecoratorRunner::new(env, decorators) {
             Ok(mut runner) => check_with_decorator_runner(
-                &parse_result,
+                parse_result,
                 &table,
                 &resolution.resolutions,
                 &mut runner,
             ),
             Err(error) => {
-                let mut result = check_parse_result(&parse_result, &table, &resolution.resolutions);
+                let mut result = check_parse_result(parse_result, &table, &resolution.resolutions);
                 result.diagnostics.push(Diagnostic {
                     severity: DiagnosticSeverity::Error,
                     code: "decorator-registry",
@@ -141,7 +150,7 @@ pub fn check(env: Env, source: String, decorators: Option<Object>) -> CheckResul
             }
         }
     } else {
-        check_parse_result(&parse_result, &table, &resolution.resolutions)
+        check_parse_result(parse_result, &table, &resolution.resolutions)
     };
     serialize_check_result(result, resolution.diagnostics)
 }
