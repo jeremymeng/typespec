@@ -446,12 +446,7 @@ interface EmitterTemplateParameter extends EmitterBase {
 }
 
 type EmitterNamedType =
-  | EmitterModel
-  | EmitterScalar
-  | EmitterEnum
-  | EmitterUnion
-  | EmitterInterface
-  | EmitterAlias;
+  EmitterModel | EmitterScalar | EmitterEnum | EmitterUnion | EmitterInterface | EmitterAlias;
 
 type EmitterType =
   | EmitterNamespace
