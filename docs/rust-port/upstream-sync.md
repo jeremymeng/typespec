@@ -16,6 +16,7 @@ Branch: `jeremymeng/rust-port-upstream-sync` (merged from `jeremymeng/rust-port-
 | `64f7850fb` Union `extends` clause (#11771)                | Parser `UnionStatement.extends`; binder/name-resolver; checker `UnionType.base_type`, `union-extends-disabled`, `extend-union`, `circular-base-type` (including union-expression self references), and variant assignability (`unassignable`) against the base type; napi + adapter `baseType`.                                                                                                                                                 |
 | `8e16f8cff` Declarations as expressions (#11019)           | `Model/Scalar/Union/EnumDeclarationExpression` syntax kinds and AST nodes; parsing in primary expressions and expression lists; binding/resolution in node scope; checker `expression` flag on Model/Scalar/Enum (not registered in namespaces), `declaration-expression-disabled`, `templated-declaration-in-expression`; napi + adapter `expression`. Union declaration expressions are no longer flattened into enclosing union expressions. |
 | `FunctionTypeExpression` syntax kind renumbering           | `SyntaxKind` numbering matches TS (`FunctionTypeExpression = 72`, declaration expressions `73–76`).                                                                                                                                                                                                                                                                                                                                             |
+| `0bd0c1742` Recursive type assignability stack overflow    | Type relation guards source-union (cycle resolves as related) and target-union (cycle resolves as unrelated) pairs in the in-progress relation set, matching the existing model guard.                                                                                                                                                                                                                                                          |
 
 Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.comparison.test.ts`, and
 `checker-models.comparison.test.ts`.
@@ -45,7 +46,6 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
 - `57f06f3db` `$provideTypeInfo` / `program.getTypeInfo` — M12.
 - `325c16580` resolve `using` declared before the file namespace from the global namespace — M9
   (requires multi-file sources).
-- `0bd0c1742` stack overflow when checking assignability of recursive types.
 - `e453a4752` enum member navigation in linter rules.
 - `16caf10f0` enter template scope before resolving operation parameter defaults.
 - `ad69727db` ICE fix for interpolating a function call in a template declaration.
