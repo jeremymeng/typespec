@@ -920,6 +920,8 @@ mod tests {
             .unwrap()
     }
 
+    // Variants are named `recur` rather than `self`: the Rust parser rejects reserved keywords as
+    // union variant names (see docs/rust-port/upstream-sync.md, Known behavioral differences).
     #[test]
     fn self_referencing_union_source_terminates_and_is_vacuously_assignable() {
         let result = check_source("union Loop { recur: Loop } model Target { name: string }");

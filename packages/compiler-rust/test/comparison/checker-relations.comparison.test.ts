@@ -297,6 +297,8 @@ describe("checker relations comparison: Rust", () => {
     },
   );
 
+  // Union variants are named `recur` instead of upstream's `self`: the Rust parser rejects reserved
+  // keywords as union variant names (see docs/rust-port/upstream-sync.md, Known behavioral differences).
   describe("recursive types", () => {
     const recursiveAssignableCases = [
       [
@@ -397,6 +399,8 @@ describe("checker relations comparison: Rust", () => {
         model Constrained<T extends TargetA> {}
         alias Result = Constrained<SourceA>;
       `) as CheckResult;
+      // Only errors: Rust always reports the `unused-template-parameter` warning, which is a
+      // linter rule in TS (see docs/rust-port/upstream-sync.md, Known behavioral differences).
       expect(result.diagnostics.filter((x) => x.severity === "error")).toEqual([]);
     });
   });

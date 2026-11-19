@@ -31,6 +31,43 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   Revisit with M10/M13 when library loading and `tspconfig.yaml` exist.
 - **Template instantiation of unions with `extends`.** Variants are validated against the base type on
   the template declaration only; TS also validates instantiated variants.
+- **Reserved keywords and modifiers as union variant names (parser).**
+  - _Symptom:_ Rust reports `reserved-identifier` for union variants named with a reserved keyword
+    (`self`, `this`, `super`, `with`, …) and `reserved-identifier` + `token-expected` for modifiers
+    (`extern`, `internal`, `auto`); TS accepts both. Without a `:` (`union U { self }`), TS reports
+    only `reserved-identifier`, while Rust also reports `invalid-ref` (keywords) or `token-expected`
+    (modifiers). Model properties, enum members, operation parameters and model expression
+    properties already match TS; only union variants differ.
+  - _Repro:_ `union U { self: string }`, `union U { auto: string }`.
+  - _Root cause:_ TS `parseUnionVariant` (`packages/compiler/src/core/parser.ts:805`) calls
+    `parseIdOrValueForVariant` (`parser.ts:780`), which parses a reserved keyword or modifier token
+    with `parseIdentifier({ allowReservedIdentifier: true })` (`parser.ts:785`) and only reports
+    `reserved-identifier` when it is not followed by `:`. Rust `parse_union_variant`
+    (`crates/typespec-parser/src/lib.rs:715`) calls `parse_expression()` directly, so the keyword
+    reaches `parse_identifier` (`lib.rs:2114`) with `allow_reserved_identifier = false`.
+  - _Fix:_ port `parseIdOrValueForVariant` into the Rust parser (keyword/modifier → identifier wrapped
+    in a `TypeReference`, error only when no `:` follows) and add parser comparison cases. Owner: a
+    parser-parity (M3) follow-up.
+- **`unused-template-parameter` is always reported (linter gating).**
+  - _Symptom:_ Rust emits a `unused-template-parameter` warning for every unused template parameter;
+    TS emits nothing by default.
+  - _Repro:_ `model TargetA {} model Constrained<T extends TargetA> {}` (also `model M<T> {}`). `T`
+    is genuinely unused: a constraint is not a usage in either implementation.
+  - _Root cause:_ not a usage-tracking difference — usage marking matches TS for models, scalars,
+    aliases, operations, unions, interfaces, defaults and self references (TS marks usage at
+    `packages/compiler/src/core/checker.ts:1744` and `checker.ts:4146`; Rust at
+    `crates/typespec-checker/src/checker.rs:1726`). In TS the check is a built-in linter rule
+    (`packages/compiler/src/core/linter-rules/unused-template-parameter.rule.ts`, registered by
+    `createBuiltInLinter` in `packages/compiler/src/core/linter.ts:587`) that only runs when enabled
+    through the linter rule set (`packages/compiler/src/core/program.ts:452-522`); when enabled, TS
+    reports the same parameters with code `@typespec/compiler/unused-template-parameter`. Rust
+    reports it unconditionally from the checker (`check` → `report_unused_template_parameters`,
+    `crates/typespec-checker/src/checker.rs:150`, `checker.rs:1730`) with the unqualified code
+    `unused-template-parameter`, and iterates a `HashMap` so the report order is not stable.
+  - _Fix:_ stop reporting from the checker; expose the usage map (like
+    `getTemplateParameterUsageMap`) and run the rule in a linter stage gated by the linter rule set,
+    reporting `@typespec/compiler/unused-template-parameter` in source order. Owner: M13 (linter
+    configuration / `tsp compile` integration).
 
 ### Deferred (outside current scope or to be picked up by a later milestone)
 
