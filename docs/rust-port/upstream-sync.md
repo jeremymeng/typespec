@@ -21,6 +21,7 @@ Branch: `jeremymeng/rust-port-upstream-sync` (merged from `jeremymeng/rust-port-
 | `9c9055062` Decorators on concrete types from templates    | Concrete declarations (including enums and members reached via `Target.member`) are checked once outside any template context, so their decorators run exactly once regardless of whether they are first referenced from a template.                                                                                                                                                                                                            |
 | `0bd0c1742` Recursive type assignability stack overflow    | Type relation guards source-union (cycle resolves as related) and target-union (cycle resolves as unrelated) pairs in the in-progress relation set, matching the existing model guard.                                                                                                                                                                                                                                                          |
 | `49aab186c` No property/record spreads in array models     | `no-array-properties` for properties and property-introducing spreads in array models (own or inherited indexer); such spreads are reported once and skipped. `model X is T[]` is accepted as in TS (array expressions are anonymous in the port). Record spreads are not applicable: the port has no `Record<T>` (std library, M10).                                                                                                           |
+| `325c16580` `using` before the file namespace (M9)         | Per-file `File` scopes hold file-level usings; a `using` declared before the file's blockless namespace resolves from the global namespace (covered by `multi-file.comparison.test.ts` and `crates/typespec-checker/tests/multi_file.rs`).                                                                                                                                                                                                      |
 
 Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.comparison.test.ts`, and
 `checker-models.comparison.test.ts`.
@@ -73,6 +74,17 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
     reporting `@typespec/compiler/unused-template-parameter` in source order. Owner: M13 (linter
     configuration / `tsp compile` integration).
 
+- **`unused-using` is not linter-gated (M9).** TS reports `@typespec/compiler/unused-using` from a
+  built-in linter rule that is disabled by default and skipped once any error is reported. Rust reports
+  `unused-using` from the name resolver unconditionally (unqualified code, also when errors exist). Files
+  loaded through a package (library location) are skipped like TS. Owner: M13 (linter stage).
+- **Usings inside block namespaces (M9).** Rust stores `namespace A { using B; }` on the merged namespace
+  scope, so such a using is visible in other `namespace A { }` blocks (including in other files); TS keeps
+  it per namespace statement. File-level usings are per file and match TS.
+- **Module resolution gaps (M9).** The JS host port of `module-resolver.ts` does not support `#imports`
+  subpath imports, realpath/symlink canonicalization, or `tspconfig.yaml` entrypoints; imported `.js`
+  files are recorded in the source list but not executed (decorator registration is M10/M11).
+
 ### Deferred (outside current scope or to be picked up by a later milestone)
 
 - `4f8e31935` auto-decorator semantics (`auto-decorator-disabled`, `declarationKind`, modifier
@@ -85,8 +97,6 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
 - `5a18007e6` honor `@encodedName` on enum members — M11.
 - `108ef0689` `Sym.node` / `getSymNode` typing (TS-only typing fix).
 - `57f06f3db` `$provideTypeInfo` / `program.getTypeInfo` — M12.
-- `325c16580` resolve `using` declared before the file namespace from the global namespace — M9
-  (requires multi-file sources).
 - `e453a4752` enum member navigation in linter rules.
 - `ad69727db` ICE fix for interpolating a function call in a template declaration — blocked on
   `extern fn` / function calls / string template values / `Reflection` (M10–M12); the Rust checker

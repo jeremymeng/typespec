@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-11-19T22:17:26Z",
+  "updated_at": "2026-11-19T22:52:06Z",
   "updated_by": "agent:rust-port-m9",
   "tasks": [
     {
@@ -1071,7 +1071,7 @@
     {
       "id": "M9",
       "title": "Multi-file source loading and import resolution",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M8"],
       "plan_section": "docs/rust-port/plan.md#m9--multi-file-source-loading-and-import-resolution",
       "complexity": "large",
@@ -1079,7 +1079,7 @@
       "branch": "jeremymeng/rust-port-m9-multi-file",
       "pr": null,
       "started_at": "2026-11-19T22:17:26Z",
-      "completed_at": null,
+      "completed_at": "2026-11-19T22:52:06Z",
       "key_source_files": [
         "packages/compiler/src/core/source-loader.ts",
         "packages/compiler/src/core/module-resolver.ts",
@@ -1089,59 +1089,59 @@
       ],
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-source: ProgramSources, SourceFileId newtype, canonical path handling"
         },
         {
-          "done": false,
+          "done": true,
           "text": "napi callback: read_file(path) via JsFunction (M6 sync pattern)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "napi callback: resolve_module(specifier, importer) via JsFunction"
         },
         {
-          "done": false,
+          "done": true,
           "text": "packages/compiler-rust/src/host.ts: createNodeHost + createTestHost (in-memory)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-parser: parse_program(entry, host) drives multi-file parsing recursively"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Cycle detection in import graph (cycles allowed; do not infinite-loop)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "crates/typespec-checker: per-file SymbolTable + new Linker stage merges into ProgramSymbolTable"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Cross-file namespace merging produces same Symbol IDs/structure as TS"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Name resolver walks program-wide symbol table; cross-file references work"
         },
         {
-          "done": false,
-          "text": "Backwards-compat check_single(source) shim keeps M1-M8 859 tests passing"
+          "done": true,
+          "text": "Backwards-compat check_single(source) shim keeps M1-M8 859 tests passing (existing single-file check()/parse() entry points unchanged; no shim needed)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Multi-file comparison tests (~20-30 cases): two-file import, circular import, triple-nested, cross-file namespace merging, missing-import diagnostic, package import via test host"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Module resolution matches TS for the test cases (relative paths, @scope/pkg, tspMain/main fields)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "cargo build / test / clippy -D warnings / fmt --check all green"
         },
         {
-          "done": false,
+          "done": true,
           "text": "pnpm -C packages/compiler-rust build / test all green"
         }
       ],
@@ -1150,6 +1150,16 @@
           "timestamp": "2026-11-19T22:17:26Z",
           "author": "agent:rust-port-m9",
           "text": "Claimed M9 on jeremymeng/rust-port-m9-multi-file (based on jeremymeng/rust-port-upstream-sync a23448f49). Includes deferred upstream item 325c16580 (using before file namespace)."
+        },
+        {
+          "timestamp": "2026-11-19T22:52:06Z",
+          "author": "agent:rust-port-m9",
+          "text": "Completed M9: ProgramSources + path utils, parse_program loader with JS read_file/resolve_module callbacks (napi checkProgram), JS host with sync port of module-resolver, multi-file binder/checker with per-file usings and upstream 325c16580, parser top-level ordering diagnostics (import-first, blockless-namespace-first, multiple-blockless-namespace), library location context for unused-using. 47 multi-file comparison tests vs TS. Deferred: #imports subpath imports, tspconfig entrypoint, executing imported JS, realpath canonicalization."
+        },
+        {
+          "timestamp": "2026-11-19T22:52:06Z",
+          "author": "agent:rust-port-m9",
+          "text": "Validation green: cargo fmt --check / clippy --all-targets -D warnings / test, pnpm -C packages/compiler-rust build/typecheck/test (1017 passed, 5 skipped), prettier, oxlint."
         }
       ]
     },
