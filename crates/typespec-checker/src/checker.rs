@@ -664,6 +664,16 @@ impl<'p> Checker<'p> {
     ) {
         let target_type = self.type_for_node(target);
         let target_type = self.get_non_alias_type(target_type);
+        self.spread_enum_members(target_type, target, enum_id, enum_type);
+    }
+
+    fn spread_enum_members(
+        &mut self,
+        target_type: TypeId,
+        target: NodeId,
+        enum_id: TypeId,
+        enum_type: &mut EnumType,
+    ) {
         let Type::Enum(source_enum) = self.type_arena.get(target_type).clone() else {
             if !matches!(
                 self.type_arena.get(target_type),
@@ -2276,8 +2286,61 @@ impl<'p> Checker<'p> {
                 self.type_arena.replace(union_id, Type::Union(cloned));
                 union_id
             }
+            Type::Enum(enum_type) if enum_type.expression && !subst.is_empty() => {
+                self.instantiate_enum(enum_type, subst)
+            }
             _ => type_id,
         }
+    }
+
+    /// Mirrors TS re-checking an enum declaration expression under a template mapper: each
+    /// instance gets its own enum and spread members are resolved against the template arguments.
+    fn instantiate_enum(&mut self, source: EnumType, subst: &HashMap<TypeId, TypeId>) -> TypeId {
+        let member_nodes = match source.node.map(|node| self.node(node).data.clone()) {
+            Some(NodeData::EnumDeclarationExpression { members, .. }) => members,
+            _ => Vec::new(),
+        };
+        let source_node = source.node;
+        let enum_id = self.type_arena.reserve();
+        let mut enum_type = EnumType {
+            members: IndexMap::new(),
+            ..source
+        };
+        for member in member_nodes {
+            match self.node(member).data.clone() {
+                NodeData::EnumMember { .. } => {
+                    let Some(declared) = self.type_cache.get(&member).copied() else {
+                        continue;
+                    };
+                    let Some(declared) = self.enum_member_type(declared).cloned() else {
+                        continue;
+                    };
+                    if enum_type.members.contains_key(&declared.name) {
+                        self.report(
+                            "enum-member-duplicate",
+                            &format!("Enum already has a member named {}", declared.name),
+                            source_node.unwrap_or(member),
+                        );
+                        continue;
+                    }
+                    let name = declared.name.clone();
+                    let cloned = self.type_arena.add(Type::EnumMember(EnumMemberType {
+                        r#enum: enum_id,
+                        ..declared
+                    }));
+                    enum_type.members.insert(name, cloned);
+                }
+                NodeData::EnumSpreadMember { target } => {
+                    let target_type = self.type_for_node(target);
+                    let target_type = self.substitute_type(target_type, subst);
+                    let target_type = self.get_non_alias_type(target_type);
+                    self.spread_enum_members(target_type, target, enum_id, &mut enum_type);
+                }
+                _ => {}
+            }
+        }
+        self.type_arena.replace(enum_id, Type::Enum(enum_type));
+        enum_id
     }
 
     fn check_model_extends(
@@ -3763,6 +3826,37 @@ mod tests {
             "union U<T> extends string { a: T } model M<X> { u: U<X> } alias X = U<\"a\">;"
         )
         .is_empty());
+    }
+
+    #[test]
+    fn instantiates_enum_declaration_expression_per_template_instance() {
+        let result = check_source(
+            "model M<T> { x: enum E { a, ...T } } enum A { x } enum B { y } model X is M<A>; model Y is M<B>;",
+        );
+        let enum_of = |name: &str| {
+            let model = find_named_model(&result, name);
+            let Type::Model(model) = result.type_arena.get(model) else {
+                panic!("expected model");
+            };
+            let Type::ModelProperty(prop) = result.type_arena.get(model.properties["x"]) else {
+                panic!("expected property");
+            };
+            prop.property_type
+        };
+        let (x, y) = (enum_of("X"), enum_of("Y"));
+        assert_ne!(x, y);
+        for (enum_id, expected) in [(x, ["a", "x"]), (y, ["a", "y"])] {
+            let Type::Enum(enum_type) = result.type_arena.get(enum_id) else {
+                panic!("expected enum");
+            };
+            assert_eq!(enum_type.members.keys().collect::<Vec<_>>(), expected);
+            for member in enum_type.members.values() {
+                let Type::EnumMember(member) = result.type_arena.get(*member) else {
+                    panic!("expected enum member");
+                };
+                assert_eq!(member.r#enum, enum_id);
+            }
+        }
     }
 
     #[test]
