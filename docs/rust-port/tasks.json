@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-06-08T19:57:42.244Z",
+  "updated_at": "2026-11-19T21:14:00.000Z",
   "updated_by": "jeremymeng",
   "tasks": [
     {
@@ -1060,6 +1060,11 @@
           "timestamp": "2026-06-08T18:27:44Z",
           "author": "agent:rust-port-m8",
           "text": "Validation green: cargo build/test/clippy/fmt, pnpm -C packages/compiler-rust build/typecheck/test, and docs prettier check."
+        },
+        {
+          "timestamp": "2026-11-19T21:14:00Z",
+          "author": "agent:rust-port-upstream-sync",
+          "text": "Merged upstream/main (b317c506c) on jeremymeng/rust-port-upstream-sync and ported in-scope compiler changes: auto keyword/modifier syntax, typeref as identifier, union extends, declaration expressions. Deferred items are tracked in docs/rust-port/upstream-sync.md."
         }
       ]
     },
