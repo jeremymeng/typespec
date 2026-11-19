@@ -42,6 +42,10 @@ pub struct Checker<'p> {
     reported_operation_cycles: HashSet<SymbolId>,
     template_instantiations: InstantiationMap,
     template_parameter_usage: HashMap<NodeId, bool>,
+    /// Template mapper each instantiated type (and its cloned members) was created with, used to
+    /// resolve decorator arguments and to skip decorators on instances still inside a template
+    /// declaration.
+    instance_contexts: HashMap<TypeId, HashMap<TypeId, TypeId>>,
     decorator_state: DecoratorState,
 }
 
@@ -141,6 +145,7 @@ impl<'p> Checker<'p> {
             operation_stack: Vec::new(),
             reported_operation_cycles: HashSet::new(),
             template_instantiations: InstantiationMap::default(),
+            instance_contexts: HashMap::new(),
             template_parameter_usage: HashMap::new(),
             decorator_state: HashMap::new(),
         }
@@ -1951,6 +1956,7 @@ impl<'p> Checker<'p> {
         let type_id = self.type_arena.reserve();
         self.template_instantiations
             .insert(symbol, template_args.clone(), type_id);
+        self.record_instance_context(template_decl, type_id, &subst);
 
         let ty = self.type_arena.get(template_decl).clone();
         let instantiated = match ty {
@@ -2055,6 +2061,9 @@ impl<'p> Checker<'p> {
             template_parameters: Vec::new(),
             is_template_declaration: false,
         };
+        if source_id != model_id {
+            self.record_instance_context(source_id, model_id, subst);
+        }
         for (name, prop_id) in source.properties {
             let Some(prop) = self.model_property_type(prop_id).cloned() else {
                 continue;
@@ -2074,6 +2083,7 @@ impl<'p> Checker<'p> {
                 source_property: prop.source_property.or(Some(prop_id)),
                 decorators: prop.decorators,
             }));
+            self.record_instance_context(prop_id, cloned, subst);
             model.properties.insert(name, cloned);
         }
         if let Some(base_model) = model.base_model {
@@ -2160,6 +2170,7 @@ impl<'p> Checker<'p> {
                 variant_type,
                 decorators: variant.decorators,
             }));
+            self.record_instance_context(variant_id, cloned, subst);
             union.variants.insert(name, cloned);
         }
         union
@@ -2210,9 +2221,48 @@ impl<'p> Checker<'p> {
                 template_parameters: Vec::new(),
                 is_template_declaration: false,
             }));
+            self.record_instance_context(operation_id, cloned, subst);
             interface.operations.insert(name, cloned);
         }
         interface
+    }
+
+    /// Records the template mapper `target` was instantiated with, composed with the mapper of
+    /// `source` when it was itself produced by an instantiation (e.g. a property spread from
+    /// `Foo<U>` into a template that is later instantiated).
+    fn record_instance_context(
+        &mut self,
+        source: TypeId,
+        target: TypeId,
+        subst: &HashMap<TypeId, TypeId>,
+    ) {
+        let mut context = subst.clone();
+        if let Some(inner) = self.instance_context(source) {
+            for (param, arg) in inner {
+                if let std::collections::hash_map::Entry::Vacant(entry) = context.entry(param) {
+                    entry.insert(self.substitute_type(arg, subst));
+                }
+            }
+        }
+        self.instance_contexts.insert(target, context);
+    }
+
+    /// The template mapper a type was instantiated with, following copied properties and
+    /// operations (`model is`, spreads, `op is`) back to the instance they were copied from.
+    fn instance_context(&self, type_id: TypeId) -> Option<HashMap<TypeId, TypeId>> {
+        let mut current = type_id;
+        let mut visited = HashSet::new();
+        while visited.insert(current) {
+            if let Some(context) = self.instance_contexts.get(&current) {
+                return Some(context.clone());
+            }
+            current = match self.type_arena.get(current) {
+                Type::ModelProperty(prop) => prop.source_property?,
+                Type::Operation(operation) => operation.source_operation?,
+                _ => return None,
+            };
+        }
+        None
     }
 
     /// Whether `type_id` references a template parameter, i.e. a template instance built from it
@@ -2282,12 +2332,13 @@ impl<'p> Checker<'p> {
             }
             Type::Union(union) if union.expression => {
                 let union_id = self.type_arena.reserve();
+                self.record_instance_context(type_id, union_id, subst);
                 let cloned = self.instantiate_union(union_id, union, Vec::new(), subst);
                 self.type_arena.replace(union_id, Type::Union(cloned));
                 union_id
             }
             Type::Enum(enum_type) if enum_type.expression && !subst.is_empty() => {
-                self.instantiate_enum(enum_type, subst)
+                self.instantiate_enum(type_id, enum_type, subst)
             }
             _ => type_id,
         }
@@ -2295,13 +2346,19 @@ impl<'p> Checker<'p> {
 
     /// Mirrors TS re-checking an enum declaration expression under a template mapper: each
     /// instance gets its own enum and spread members are resolved against the template arguments.
-    fn instantiate_enum(&mut self, source: EnumType, subst: &HashMap<TypeId, TypeId>) -> TypeId {
+    fn instantiate_enum(
+        &mut self,
+        source_id: TypeId,
+        source: EnumType,
+        subst: &HashMap<TypeId, TypeId>,
+    ) -> TypeId {
         let member_nodes = match source.node.map(|node| self.node(node).data.clone()) {
             Some(NodeData::EnumDeclarationExpression { members, .. }) => members,
             _ => Vec::new(),
         };
         let source_node = source.node;
         let enum_id = self.type_arena.reserve();
+        self.record_instance_context(source_id, enum_id, subst);
         let mut enum_type = EnumType {
             members: IndexMap::new(),
             ..source
@@ -2309,10 +2366,10 @@ impl<'p> Checker<'p> {
         for member in member_nodes {
             match self.node(member).data.clone() {
                 NodeData::EnumMember { .. } => {
-                    let Some(declared) = self.type_cache.get(&member).copied() else {
+                    let Some(declared_id) = self.type_cache.get(&member).copied() else {
                         continue;
                     };
-                    let Some(declared) = self.enum_member_type(declared).cloned() else {
+                    let Some(declared) = self.enum_member_type(declared_id).cloned() else {
                         continue;
                     };
                     if enum_type.members.contains_key(&declared.name) {
@@ -2328,6 +2385,7 @@ impl<'p> Checker<'p> {
                         r#enum: enum_id,
                         ..declared
                     }));
+                    self.record_instance_context(declared_id, cloned, subst);
                     enum_type.members.insert(name, cloned);
                 }
                 NodeData::EnumSpreadMember { target } => {
@@ -2668,10 +2726,15 @@ impl<'p> Checker<'p> {
     }
 
     fn apply_decorators(&mut self, runner: &mut dyn DecoratorRunner) {
-        let type_ids = (0..self.type_arena.types().len())
-            .map(|id| TypeId::new(id as u32))
-            .collect::<Vec<_>>();
-        for type_id in type_ids {
+        let template_declaration_nodes = self.template_declaration_nodes();
+        let mut index = 0;
+        // Decorator argument substitution can instantiate new types; decorate those too.
+        while index < self.type_arena.types().len() {
+            let type_id = TypeId::new(index as u32);
+            index += 1;
+            let Some(context) = self.decorator_context(type_id, &template_declaration_nodes) else {
+                continue;
+            };
             let mut applications = Vec::new();
             if let Some(doc) = self.doc_comment_for_type(type_id) {
                 let node = self.type_node(type_id).unwrap_or(self.parse_result.root);
@@ -2681,15 +2744,115 @@ impl<'p> Checker<'p> {
                     args: vec![DecoratorArgument::String(doc)],
                 });
             }
-            applications.extend(
-                self.decorators_for_type(type_id)
-                    .into_iter()
-                    .map(|decorator| self.decorator_application(decorator)),
-            );
+            for decorator in self.decorators_for_type(type_id) {
+                let application = self.decorator_application(decorator, context.as_ref());
+                applications.push(application);
+            }
             applications.extend(self.augment_decorator_applications_for_type(type_id));
             for application in applications {
                 runner.call_decorator(self, type_id, &application);
             }
+        }
+    }
+
+    /// Mirrors TS `skipDecorators` for types checked in a template declaration: returns `None`
+    /// when decorators must not run on `type_id`, otherwise the template mapper (if any) used to
+    /// resolve its decorator arguments.
+    fn decorator_context(
+        &self,
+        type_id: TypeId,
+        template_declaration_nodes: &HashSet<NodeId>,
+    ) -> Option<Option<HashMap<TypeId, TypeId>>> {
+        let context = self.instance_context(type_id);
+        if let Some(context) = &context {
+            if context
+                .values()
+                .any(|arg| self.contains_template_parameter(*arg))
+            {
+                return None;
+            }
+        }
+        if let Some(container) = self.member_container(type_id) {
+            self.decorator_context(container, template_declaration_nodes)?;
+        }
+        if context.is_none()
+            && self
+                .type_node(type_id)
+                .is_some_and(|node| template_declaration_nodes.contains(&node))
+        {
+            return None;
+        }
+        Some(context)
+    }
+
+    fn member_container(&self, type_id: TypeId) -> Option<TypeId> {
+        match self.type_arena.get(type_id) {
+            Type::ModelProperty(prop) => Some(prop.model),
+            Type::UnionVariant(variant) => Some(variant.union),
+            Type::EnumMember(member) => Some(member.r#enum),
+            Type::Operation(operation) => operation.interface,
+            _ => None,
+        }
+    }
+
+    /// Nodes lexically inside a templated declaration (including the declaration itself).
+    fn template_declaration_nodes(&self) -> HashSet<NodeId> {
+        let mut result = HashSet::new();
+        let mut stack = vec![(self.parse_result.root, false)];
+        while let Some((node_id, inside)) = stack.pop() {
+            let inside = inside || Self::is_templated_declaration(&self.node(node_id).data);
+            if inside {
+                result.insert(node_id);
+            }
+            stack.extend(
+                self.node(node_id)
+                    .children()
+                    .into_iter()
+                    .map(|child| (child, inside)),
+            );
+        }
+        result
+    }
+
+    fn is_templated_declaration(data: &NodeData) -> bool {
+        match data {
+            NodeData::ModelStatement {
+                template_parameters,
+                ..
+            }
+            | NodeData::ScalarStatement {
+                template_parameters,
+                ..
+            }
+            | NodeData::InterfaceStatement {
+                template_parameters,
+                ..
+            }
+            | NodeData::UnionStatement {
+                template_parameters,
+                ..
+            }
+            | NodeData::OperationStatement {
+                template_parameters,
+                ..
+            }
+            | NodeData::AliasStatement {
+                template_parameters,
+                ..
+            }
+            | NodeData::ModelDeclarationExpression {
+                template_parameters,
+                ..
+            }
+            | NodeData::ScalarDeclarationExpression {
+                template_parameters,
+                ..
+            }
+            | NodeData::UnionDeclarationExpression {
+                template_parameters,
+                ..
+            } => !template_parameters.is_empty(),
+            _ => false,
         }
     }
 
@@ -2709,12 +2872,16 @@ impl<'p> Checker<'p> {
         }
     }
 
-    fn decorator_application(&mut self, decorator: DecoratorRef) -> DecoratorApplication {
+    fn decorator_application(
+        &mut self,
+        decorator: DecoratorRef,
+        context: Option<&HashMap<TypeId, TypeId>>,
+    ) -> DecoratorApplication {
         let args = decorator
             .args
             .iter()
             .copied()
-            .map(|arg| self.decorator_argument(arg))
+            .map(|arg| self.decorator_argument(arg, context))
             .collect();
         DecoratorApplication {
             node: decorator.node,
@@ -2741,23 +2908,33 @@ impl<'p> Checker<'p> {
             if self.type_for_node(target_type) != target_type_id {
                 continue;
             }
-            result.push(self.decorator_application(DecoratorRef {
-                node: augment_node,
-                name: Self::normalize_decorator_name(&self.decorator_name(target)),
-                args: arguments,
-            }));
+            result.push(self.decorator_application(
+                DecoratorRef {
+                    node: augment_node,
+                    name: Self::normalize_decorator_name(&self.decorator_name(target)),
+                    args: arguments,
+                },
+                None,
+            ));
         }
         result
     }
 
-    fn decorator_argument(&mut self, node_id: NodeId) -> DecoratorArgument {
+    fn decorator_argument(
+        &mut self,
+        node_id: NodeId,
+        context: Option<&HashMap<TypeId, TypeId>>,
+    ) -> DecoratorArgument {
         match self.node(node_id).data.clone() {
             NodeData::StringLiteral { value } => DecoratorArgument::String(value),
             NodeData::NumericLiteral { value, .. } => DecoratorArgument::Number(value),
             NodeData::BooleanLiteral { value } => DecoratorArgument::Boolean(value),
             NodeData::Identifier { sv } if sv == "null" => DecoratorArgument::None,
             _ => {
-                let type_id = self.type_for_node(node_id);
+                let mut type_id = self.type_for_node(node_id);
+                if let Some(context) = context {
+                    type_id = self.substitute_type(type_id, context);
+                }
                 match self.type_arena.get(type_id).clone() {
                     Type::StringLiteral(value) => DecoratorArgument::String(value.value),
                     Type::NumericLiteral(value) => DecoratorArgument::Number(value.value.as_f64()),
@@ -3826,6 +4003,58 @@ mod tests {
             "union U<T> extends string { a: T } model M<X> { u: U<X> } alias X = U<\"a\">;"
         )
         .is_empty());
+    }
+
+    struct TrackRunner(Vec<String>);
+
+    impl DecoratorRunner for TrackRunner {
+        fn is_enabled(&self) -> bool {
+            true
+        }
+
+        fn call_decorator(
+            &mut self,
+            context: &mut dyn DecoratorContext,
+            target: TypeId,
+            application: &DecoratorApplication,
+        ) {
+            if application.name != "@track" {
+                return;
+            }
+            let arg = match application.args.first() {
+                Some(DecoratorArgument::TypeRef(arg)) => context.get_type_kind(*arg),
+                _ => "-".to_string(),
+            };
+            self.0
+                .push(format!("{} <- {arg}", context.get_type_kind(target)));
+        }
+    }
+
+    fn track_calls(source: &str) -> Vec<String> {
+        let mut runner = TrackRunner(Vec::new());
+        let source = format!("extern dec track(target: unknown, arg?: unknown);\n{source}");
+        check_source_with_runner(&source, &mut runner);
+        runner.0.sort();
+        runner.0
+    }
+
+    #[test]
+    fn skips_decorators_in_template_declarations_and_resolves_instance_arguments() {
+        assert!(track_calls("@track(T) model Foo<T> {} model Bar<U> { foo: Foo<U> }").is_empty());
+        assert!(track_calls("alias Foo<T> = { @track(T) prop: string; };").is_empty());
+        assert_eq!(
+            track_calls(
+                "model Foo<T> { @track(T) prop: string } model Bar<U> { ...Foo<U> } enum A { a } model X { bar: Bar<A> }"
+            ),
+            vec!["ModelProperty <- Enum"]
+        );
+        // Upstream 16caf10f0: template parameter defaults are checked inside the declaration.
+        assert_eq!(
+            track_calls(
+                "@track(R) model Tags<R extends {}> {} op patch<R extends {}, P extends {} = Tags<R>>(body: P): void; model Foo {} op fooPatch is patch<Foo>;"
+            ),
+            vec!["Model <- Model"]
+        );
     }
 
     #[test]

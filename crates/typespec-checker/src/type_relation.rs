@@ -154,6 +154,15 @@ impl<'a> TypeRelationChecker<'a> {
             return Ok(());
         }
 
+        // Matches TS: a template parameter is assignable wherever its constraint is.
+        if let Type::TemplateParameter(param) = self.arena.get(source) {
+            if let Some(constraint) = param.constraint {
+                return self
+                    .assignable_internal(constraint, target, target_span, ctx)
+                    .map_err(|_| vec![self.unassignable(source, target, target_span)]);
+            }
+        }
+
         if matches!(self.arena.get(source), Type::Error)
             || matches!(self.arena.get(target), Type::Error | Type::Unknown)
         {

@@ -17,6 +17,7 @@ Branch: `jeremymeng/rust-port-upstream-sync` (merged from `jeremymeng/rust-port-
 | `8e16f8cff` Declarations as expressions (#11019)           | `Model/Scalar/Union/EnumDeclarationExpression` syntax kinds and AST nodes; parsing in primary expressions and expression lists; binding/resolution in node scope; checker `expression` flag on Model/Scalar/Enum (not registered in namespaces), `declaration-expression-disabled`, `templated-declaration-in-expression`; napi + adapter `expression`. Union declaration expressions are no longer flattened into enclosing union expressions. |
 | `FunctionTypeExpression` syntax kind renumbering           | `SyntaxKind` numbering matches TS (`FunctionTypeExpression = 72`, declaration expressions `73–76`).                                                                                                                                                                                                                                                                                                                                             |
 | `8e16f8cff` Re-checking enums under a template mapper      | Enum declaration expressions are re-created for each template instance (members owned by the instance enum); spread members resolve against the template arguments and `spread-enum` / `enum-member-duplicate` are reported per instance like TS.                                                                                                                                                                                               |
+| `16caf10f0` Template scope for op parameter defaults       | Decorators are skipped on types checked in template declarations (incl. template parameter default instances and instances whose arguments reference template parameters); decorator arguments on instances resolve through the template mapper; a template parameter is assignable wherever its constraint is.                                                                                                                                 |
 
 Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.comparison.test.ts`, and
 `checker-models.comparison.test.ts`.
@@ -28,6 +29,9 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   port has no feature configuration yet, so it always reports `union-extends-disabled` and
   `declaration-expression-disabled` — matching TS with features disabled (the default for user code).
   Revisit with M10/M13 when library loading and `tspconfig.yaml` exist.
+- **Spread sources in template instances.** Instantiating `model Bar<U> { ...Foo<U> }` substitutes the
+  copied properties directly instead of re-instantiating `Foo<A>`, so decorators run on `Bar<A>`'s
+  properties (with resolved arguments) but `Foo<A>` is only created when referenced elsewhere.
 
 ### Deferred (outside current scope or to be picked up by a later milestone)
 
@@ -45,7 +49,6 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   (requires multi-file sources).
 - `0bd0c1742` stack overflow when checking assignability of recursive types.
 - `e453a4752` enum member navigation in linter rules.
-- `16caf10f0` enter template scope before resolving operation parameter defaults.
 - `ad69727db` ICE fix for interpolating a function call in a template declaration.
 - `85ff8283c` `@encode(string)` on boolean — M11.
 - `7aa17edfd` short diagnostic / linter rule names; `283ddec0c` unused suppressions; `463b08d58`
