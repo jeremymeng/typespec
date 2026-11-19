@@ -4063,6 +4063,18 @@ mod tests {
     }
 
     #[test]
+    fn interpolated_function_call_in_template_declaration_does_not_panic() {
+        // Upstream ad69727db: the Rust port does not support `extern fn`, function calls or string
+        // template values yet (M10-M12); checking must still complete without panicking.
+        let mut runner = RecordingRunner;
+        let result = check_source_with_runner(
+            "extern fn fn(type: unknown): valueof string;\n@doc(\"${fn(T)}\") model Crud<T extends Reflection.Model> {}\nmodel Foo {}\nalias X = Crud<Foo>;",
+            &mut runner,
+        );
+        assert!(!result.diagnostics.is_empty());
+    }
+
+    #[test]
     fn instantiates_enum_declaration_expression_per_template_instance() {
         let result = check_source(
             "model M<T> { x: enum E { a, ...T } } enum A { x } enum B { y } model X is M<A>; model Y is M<B>;",

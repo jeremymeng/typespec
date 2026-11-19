@@ -49,7 +49,9 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   (requires multi-file sources).
 - `0bd0c1742` stack overflow when checking assignability of recursive types.
 - `e453a4752` enum member navigation in linter rules.
-- `ad69727db` ICE fix for interpolating a function call in a template declaration.
+- `ad69727db` ICE fix for interpolating a function call in a template declaration — blocked on
+  `extern fn` / function calls / string template values / `Reflection` (M10–M12); the Rust checker
+  does not panic on the upstream repro (covered by a unit test).
 - `85ff8283c` `@encode(string)` on boolean — M11.
 - `7aa17edfd` short diagnostic / linter rule names; `283ddec0c` unused suppressions; `463b08d58`
   duplicate `#suppress` warnings — diagnostics infrastructure, M13.
