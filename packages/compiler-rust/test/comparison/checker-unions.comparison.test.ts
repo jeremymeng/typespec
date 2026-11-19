@@ -304,6 +304,33 @@ describe("checker unions comparison: Rust vs TS", () => {
       ["unknown base", `union U extends unknown { a: string }`],
       ["unresolved base", `union U extends Missing { a: string }`],
       ["int32 base", `union U extends int32 { a: 1, b: "x" }`],
+      ["uninstantiated template", `union U<T> extends string { a: T, b: 1 }`],
+      ["template instance", `union U<T> extends string { a: T } alias X = U<int32>;`],
+      [
+        "multiple template instances",
+        `union U<T> extends string { a: T } alias X = U<int32>; alias Y = U<int32>; alias Z = U<boolean>;`,
+      ],
+      [
+        "template instance with concrete invalid variant",
+        `union U<T> extends string { a: T, b: 1 } alias X = U<"a">;`,
+      ],
+      ["templated base instance", `union U<T> extends T { a: string } alias X = U<int32>;`],
+      [
+        "templated base instance with model expression",
+        `union U<T> extends T { a: string } alias X = U<{ a: string }>;`,
+      ],
+      [
+        "templated base instance with invalid kind",
+        `union U<T> extends T { a: string } alias X = U<"x">;`,
+      ],
+      [
+        "templated union expression base instance",
+        `union U<T> extends T | int32 { a: string } alias X = U<boolean>;`,
+      ],
+      [
+        "template instance inside template declaration",
+        `union U<T> extends string { a: T } model M<X> { u: U<X> } alias Z = M<int32>;`,
+      ],
     ])(
       "reports diagnostics like TS: %s",
       async (_name, source) => {

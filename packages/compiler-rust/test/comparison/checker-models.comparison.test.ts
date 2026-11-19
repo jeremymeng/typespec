@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { Enum } from "../../../compiler/src/core/types.js";
 import { Tester } from "../../../compiler/test/tester.js";
 import { check } from "../../index.js";
 
@@ -10,6 +11,8 @@ interface RustType {
   symbolId?: number;
   propertyIds: number[];
   propertyNames: string[];
+  memberIds: number[];
+  memberNames: string[];
   baseTypeId?: number;
   sourceModelId?: number;
   indexerTypeId?: number;
@@ -304,6 +307,7 @@ describe("checker models/scalars comparison: Rust vs TS", () => {
       "templated-declaration-in-expression",
       "duplicate-property",
       "enum-member-duplicate",
+      "spread-enum",
       "union-duplicate",
     ];
 
@@ -317,6 +321,22 @@ describe("checker models/scalars comparison: Rust vs TS", () => {
       ["templated union", `alias A = union U<T, K> { a: T };`],
       ["nested", `model Foo { x: model { y: enum { a }; }; }`],
       ["template argument", `model W<T> { v: T; } alias A = W<model { a: string }>;`],
+      [
+        "templated enum spread",
+        `model M<T> { x: enum E { a, ...T } } enum A { x } enum B { y } model X is M<A>; model Y is M<B>;`,
+      ],
+      [
+        "templated enum spread of non-enum and duplicate",
+        `model M<T> { x: enum E { x, ...T } } enum A { x } model X is M<A>; model Y is M<string>; model Z is M<int32>;`,
+      ],
+      [
+        "templated enum duplicate member",
+        `model M<T> { x: enum E { a, a }; t: T } model X is M<string>; model Y is M<int32>;`,
+      ],
+      [
+        "templated enum spread inside template",
+        `model M<T> { x: enum E { ...T } } model N<U> { m: M<U> } enum A { x } model X is N<A>;`,
+      ],
     ])(
       "reports diagnostics like TS: %s",
       async (_name, source) => {
@@ -324,6 +344,27 @@ describe("checker models/scalars comparison: Rust vs TS", () => {
       },
       10000,
     );
+
+    it("re-checks enum declaration expressions for each template instance like TS", async () => {
+      const source = `model M<T> { x: enum E { a, ...T } } enum A { x } enum B { y } model X is M<A>; model Y is M<B>;`;
+      const result = rust(source);
+      const enumOf = (name: string) =>
+        typeById(result, property(result, model(result, name), "x").propertyTypeId!);
+      const [rustX, rustY] = [enumOf("X"), enumOf("Y")];
+
+      const [ts] = await Tester.compileAndDiagnose(source);
+      const tsEnumOf = (name: string) =>
+        ts.program.getGlobalNamespaceType().models.get(name)!.properties.get("x")!.type as Enum;
+      const [tsX, tsY] = [tsEnumOf("X"), tsEnumOf("Y")];
+
+      expect(rustX.kind).toBe(tsX.kind);
+      expect(rustX.memberNames).toEqual([...tsX.members.keys()]);
+      expect(rustY.memberNames).toEqual([...tsY.members.keys()]);
+      expect(rustX.id === rustY.id).toBe(tsX === tsY);
+      for (const memberId of rustY.memberIds) {
+        expect(typeById(result, memberId).baseTypeId).toBe(rustY.id);
+      }
+    });
 
     it.each([
       ["model", `model Foo { x: model Bar { a: string }; }`, "Model", "Bar"],

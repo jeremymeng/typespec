@@ -13,9 +13,12 @@ Branch: `jeremymeng/rust-port-upstream-sync` (merged from `jeremymeng/rust-port-
 | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `4f8e31935` Auto decorators (#10197) — syntax only         | Scanner `auto` keyword (`Token::AutoKeyword`, shifts later keyword ids) and `auto` modifier parsing; `SyntaxKind::AutoKeyword`.                                                                                                                                                                                                                                                                                                                 |
 | `8574d5453` Experimental typeref values (#12461) — scanner | `typeref` is no longer a reserved keyword and parses as an identifier.                                                                                                                                                                                                                                                                                                                                                                          |
-| `64f7850fb` Union `extends` clause (#11771)                | Parser `UnionStatement.extends`; binder/name-resolver; checker `UnionType.base_type`, `union-extends-disabled`, `extend-union`, `circular-base-type` (including union-expression self references), and variant assignability (`unassignable`) against the base type; napi + adapter `baseType`.                                                                                                                                                 |
+| `64f7850fb` Union `extends` clause (#11771)                | Parser `UnionStatement.extends`; binder/name-resolver; checker `UnionType.base_type`, `union-extends-disabled`, `extend-union`, `circular-base-type` (including union-expression self references), and variant assignability (`unassignable`) against the base type, re-validated per template instantiation (including templated bases); napi + adapter `baseType`.                                                                            |
 | `8e16f8cff` Declarations as expressions (#11019)           | `Model/Scalar/Union/EnumDeclarationExpression` syntax kinds and AST nodes; parsing in primary expressions and expression lists; binding/resolution in node scope; checker `expression` flag on Model/Scalar/Enum (not registered in namespaces), `declaration-expression-disabled`, `templated-declaration-in-expression`; napi + adapter `expression`. Union declaration expressions are no longer flattened into enclosing union expressions. |
 | `FunctionTypeExpression` syntax kind renumbering           | `SyntaxKind` numbering matches TS (`FunctionTypeExpression = 72`, declaration expressions `73–76`).                                                                                                                                                                                                                                                                                                                                             |
+| `8e16f8cff` Re-checking enums under a template mapper      | Enum declaration expressions are re-created for each template instance (members owned by the instance enum); spread members resolve against the template arguments and `spread-enum` / `enum-member-duplicate` are reported per instance like TS.                                                                                                                                                                                               |
+| `16caf10f0` Template scope for op parameter defaults       | Decorators are skipped on types checked in template declarations (incl. template parameter default instances and instances whose arguments reference template parameters); decorator arguments on instances resolve through the template mapper; a template parameter is assignable wherever its constraint is.                                                                                                                                 |
+| `9c9055062` Decorators on concrete types from templates    | Concrete declarations (including enums and members reached via `Target.member`) are checked once outside any template context, so their decorators run exactly once regardless of whether they are first referenced from a template.                                                                                                                                                                                                            |
 
 Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.comparison.test.ts`, and
 `checker-models.comparison.test.ts`.
@@ -27,8 +30,9 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   port has no feature configuration yet, so it always reports `union-extends-disabled` and
   `declaration-expression-disabled` — matching TS with features disabled (the default for user code).
   Revisit with M10/M13 when library loading and `tspconfig.yaml` exist.
-- **Template instantiation of unions with `extends`.** Variants are validated against the base type on
-  the template declaration only; TS also validates instantiated variants.
+- **Spread sources in template instances.** Instantiating `model Bar<U> { ...Foo<U> }` substitutes the
+  copied properties directly instead of re-instantiating `Foo<A>`, so decorators run on `Bar<A>`'s
+  properties (with resolved arguments) but `Foo<A>` is only created when referenced elsewhere.
 
 ### Deferred (outside current scope or to be picked up by a later milestone)
 
@@ -37,8 +41,6 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
 - `8574d5453` typeref values (`TypeRefValue`, `getTypeRefType`, value kind) — M11/M12.
 - `49aab186c` disallow property/record spreads in array model declarations (`no-array-properties`).
 - `isDeclarationExpressionSym` handling for augment-decorator targets — M11.
-- Re-checking enums under a template mapper.
-- `9c9055062` preserve decorators on concrete types referenced from templates.
 - `a06a62d03` suppress deprecated-type warnings inside deprecated operations.
 - `5a18007e6` honor `@encodedName` on enum members — M11.
 - `108ef0689` `Sym.node` / `getSymNode` typing (TS-only typing fix).
@@ -47,8 +49,9 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   (requires multi-file sources).
 - `0bd0c1742` stack overflow when checking assignability of recursive types.
 - `e453a4752` enum member navigation in linter rules.
-- `16caf10f0` enter template scope before resolving operation parameter defaults.
-- `ad69727db` ICE fix for interpolating a function call in a template declaration.
+- `ad69727db` ICE fix for interpolating a function call in a template declaration — blocked on
+  `extern fn` / function calls / string template values / `Reflection` (M10–M12); the Rust checker
+  does not panic on the upstream repro (covered by a unit test).
 - `85ff8283c` `@encode(string)` on boolean — M11.
 - `7aa17edfd` short diagnostic / linter rule names; `283ddec0c` unused suppressions; `463b08d58`
   duplicate `#suppress` warnings — diagnostics infrastructure, M13.
