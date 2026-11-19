@@ -4055,6 +4055,11 @@ mod tests {
             ),
             vec!["Model <- Model"]
         );
+        // Upstream 9c9055062: concrete declarations first reached from a template are decorated.
+        assert_eq!(
+            track_calls("model Box<T> { item: Target.member; value: T } @track enum Target { member } model S is Box<string>;"),
+            vec!["Enum <- -"]
+        );
     }
 
     #[test]

@@ -152,4 +152,45 @@ describe("decorators in templates comparison: Rust vs TS", () => {
       ["Model:TagsUpdateModel <- Model:FooResource"],
     );
   });
+
+  // Port of upstream 9c9055062.
+  describe.each([
+    ["model", ": string;"],
+    ["union", ": string"],
+    ["enum", ""],
+  ] as const)("decorators on concrete %s references", (kind, memberType) => {
+    it.each(["Target", "Target.member"])(
+      "runs decorators when first referenced as %s in a template",
+      async (reference) => {
+        const source = `
+          model Box<T> {
+            item: ${reference};
+            value: T;
+          }
+
+          @track
+          ${kind} Target {
+            member${memberType}
+          }
+
+          model StringBox is Box<string>;
+          model NumberBox is Box<int32>;
+        `;
+        const tsKind = kind[0].toUpperCase() + kind.slice(1);
+        await expectTrackCallsLikeTs(source, [`${tsKind}:Target <- -`]);
+
+        if (reference === "Target") {
+          const { result } = rustTrackCalls(source);
+          const named = (k: string, name: string) =>
+            result.types.find((x) => x.kind === k && x.name === name)!;
+          const target = named(tsKind, "Target");
+          for (const box of ["StringBox", "NumberBox"]) {
+            const model = named("Model", box);
+            const item = result.types[model.propertyIds[model.propertyNames.indexOf("item")]];
+            expect(item.propertyTypeId).toBe(target.id);
+          }
+        }
+      },
+    );
+  });
 });
