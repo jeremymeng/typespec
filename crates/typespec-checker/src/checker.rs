@@ -2083,10 +2083,40 @@ impl<'p> Checker<'p> {
         template_args: Vec<TypeId>,
         subst: &HashMap<TypeId, TypeId>,
     ) -> UnionType {
+        // Mirrors TS re-checking the union under a mapper: the base type is resolved against the
+        // template arguments and the variants are validated against it, unless the instance is
+        // still inside a template declaration (its arguments reference template parameters).
+        let in_template_declaration = subst
+            .values()
+            .any(|arg| self.contains_template_parameter(*arg));
+        let extends = source
+            .node
+            .and_then(|node| match self.node(node).data.clone() {
+                NodeData::UnionStatement { extends, .. }
+                | NodeData::UnionDeclarationExpression { extends, .. } => extends,
+                _ => None,
+            });
+        let base_type = match (source.base_type, extends) {
+            (Some(base), _) => Some(self.substitute_type(base, subst)),
+            (None, Some(extends)) if !subst.is_empty() => {
+                let declared = self.type_for_node(extends);
+                let declared = self.get_non_alias_type(declared);
+                if matches!(self.type_arena.get(declared), Type::TemplateParameter(_)) {
+                    let base = self.substitute_type(declared, subst);
+                    let base = self.get_non_alias_type(base);
+                    if matches!(self.type_arena.get(base), Type::Error) {
+                        None
+                    } else {
+                        self.validate_union_base_type_kind(base, extends)
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
         let mut union = UnionType {
-            base_type: source
-                .base_type
-                .map(|base| self.substitute_type(base, subst)),
+            base_type,
             name: source.name,
             node: source.node,
             symbol: source.symbol,
@@ -2104,6 +2134,15 @@ impl<'p> Checker<'p> {
                 continue;
             };
             let variant_type = self.substitute_type(variant.variant_type, subst);
+            if let (Some(base_type), false, Some(variant_node)) =
+                (union.base_type, in_template_declaration, variant.node)
+            {
+                let value_node = match self.node(variant_node).data {
+                    NodeData::UnionVariant { value, .. } => value,
+                    _ => variant_node,
+                };
+                self.check_union_variant_against_base_type(variant_type, base_type, value_node);
+            }
             let cloned = self.type_arena.add(Type::UnionVariant(UnionVariantType {
                 name: name.clone(),
                 node: variant.node,
@@ -2164,6 +2203,49 @@ impl<'p> Checker<'p> {
             interface.operations.insert(name, cloned);
         }
         interface
+    }
+
+    /// Whether `type_id` references a template parameter, i.e. a template instance built from it
+    /// is still part of a template declaration (TS `hasObservedTemplateParameters`).
+    fn contains_template_parameter(&self, type_id: TypeId) -> bool {
+        let mut visited = HashSet::new();
+        self.contains_template_parameter_inner(type_id, &mut visited)
+    }
+
+    fn contains_template_parameter_inner(
+        &self,
+        type_id: TypeId,
+        visited: &mut HashSet<TypeId>,
+    ) -> bool {
+        if !visited.insert(type_id) {
+            return false;
+        }
+        if self
+            .template_arguments(type_id)
+            .into_iter()
+            .any(|arg| self.contains_template_parameter_inner(arg, visited))
+        {
+            return true;
+        }
+        match self.type_arena.get(type_id) {
+            Type::TemplateParameter(_) => true,
+            Type::Model(model) if model.name.is_empty() => {
+                model
+                    .indexer
+                    .is_some_and(|indexer| self.contains_template_parameter_inner(indexer, visited))
+                    || model.properties.values().any(|prop| {
+                        self.model_property_type(*prop).is_some_and(|prop| {
+                            self.contains_template_parameter_inner(prop.property_type, visited)
+                        })
+                    })
+            }
+            Type::Union(union) if union.expression => union.variants.values().any(|variant| {
+                self.union_variant_type(*variant).is_some_and(|variant| {
+                    self.contains_template_parameter_inner(variant.variant_type, visited)
+                })
+            }),
+            _ => false,
+        }
     }
 
     fn substitute_type(&mut self, type_id: TypeId, subst: &HashMap<TypeId, TypeId>) -> TypeId {
@@ -2343,6 +2425,14 @@ impl<'p> Checker<'p> {
             );
             return None;
         }
+        self.validate_union_base_type_kind(base_type, extends)
+    }
+
+    fn validate_union_base_type_kind(
+        &mut self,
+        base_type: TypeId,
+        extends: NodeId,
+    ) -> Option<TypeId> {
         match self.type_arena.get(base_type) {
             Type::TemplateParameter(_) => None,
             Type::Model(model)
@@ -3648,6 +3738,31 @@ mod tests {
             .iter()
             .any(|d| d.code == "invalid-template-args"
                 && d.message == "Template argument 'T' is required and not specified."));
+    }
+
+    #[test]
+    fn validates_union_template_instance_variants_against_base_type() {
+        let unassignable = |source: &str| {
+            check_source(source)
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.code == "unassignable")
+                .map(|d| d.message)
+                .collect::<Vec<_>>()
+        };
+        assert!(unassignable("union U<T> extends string { a: T }").is_empty());
+        assert_eq!(
+            unassignable("union U<T> extends string { a: T } alias X = U<int32>;"),
+            vec!["Type 'int32' is not assignable to type 'string'"]
+        );
+        assert_eq!(
+            unassignable("union U<T> extends T { a: string } alias X = U<int32>;"),
+            vec!["Type 'string' is not assignable to type 'int32'"]
+        );
+        assert!(unassignable(
+            "union U<T> extends string { a: T } model M<X> { u: U<X> } alias X = U<\"a\">;"
+        )
+        .is_empty());
     }
 
     #[test]
