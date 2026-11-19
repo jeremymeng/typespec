@@ -4,7 +4,7 @@ import type { Namespace as TsNamespace } from "../../../compiler/src/core/types.
 import { mockFile, resolveVirtualPath } from "../../../compiler/src/testing/fs.js";
 import { Tester } from "../../../compiler/test/tester.js";
 import type { CheckProgramResultJs } from "../../index.js";
-import { checkProgram, createVirtualProgramHost } from "../../src/host.js";
+import { checkProgram, createVirtualProgramHost, getCompilerRoot } from "../../src/host.js";
 
 interface NormalizedDiagnostic {
   code: string;
@@ -135,7 +135,11 @@ function compileRust(files: Files): TsOutcome {
         ...(d.file !== undefined ? { file: relative(d.file), pos: d.pos, end: d.end } : {}),
       })),
     ),
-    sourceFiles: result.sourceFiles.map((x) => relative(x.path)!).sort(),
+    // The standard library is loaded from the real `@typespec/compiler` package.
+    sourceFiles: result.sourceFiles
+      .map((x) => relative(x.path)!)
+      .filter((x) => !x.startsWith(getCompilerRoot() + "/"))
+      .sort(),
     namespaces,
   };
 }
@@ -442,9 +446,10 @@ describe("multi-file program comparison: Rust vs TS", () => {
     });
     const result = checkProgram(resolveVirtualPath("proj"), host);
     expect(result.diagnostics).toEqual([]);
-    expect(result.sourceFiles.map((x) => relative(x.path))).toEqual([
-      "proj/main.tsp",
-      "proj/b.tsp",
-    ]);
+    expect(
+      result.sourceFiles
+        .map((x) => relative(x.path)!)
+        .filter((x) => !x.startsWith(getCompilerRoot() + "/")),
+    ).toEqual(["proj/main.tsp", "proj/b.tsp"]);
   });
 });

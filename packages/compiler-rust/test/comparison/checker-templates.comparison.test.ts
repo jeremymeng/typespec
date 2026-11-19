@@ -401,7 +401,8 @@ describe("checker templates comparison: Rust vs TS", () => {
 
   it("reports constraint violations", () => {
     const result = rust(`model Foo<T extends string> { value: T; } model X { y: Foo<boolean>; }`);
-    expect(errors(result).map((x) => x.code)).toContain("unassignable");
+    // TS reports explicit template arguments violating their constraint as invalid-argument.
+    expect(errors(result).map((x) => x.code)).toContain("invalid-argument");
   });
 
   it("reports default constraint violations", () => {

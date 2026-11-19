@@ -843,6 +843,10 @@ importers:
         version: 9.3.2
 
   packages/compiler-rust:
+    dependencies:
+      '@typespec/compiler':
+        specifier: workspace:^
+        version: link:../compiler
     devDependencies:
       '@napi-rs/cli':
         specifier: ^3.7.0

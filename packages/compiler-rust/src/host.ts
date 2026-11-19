@@ -8,6 +8,7 @@
 // `main.tsp`/`index.mjs`/`index.js` directory index files).
 
 import { readFileSync, realpathSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { checkProgram as checkProgramNative, type CheckProgramResultJs } from "../index.js";
 import { getDirectoryPath, joinPaths, normalizePath, resolvePath } from "./path-utils.js";
 
@@ -485,16 +486,66 @@ export function createVirtualProgramHost(
   });
 }
 
+export interface CheckProgramOptions {
+  /**
+   * Load the TypeSpec standard library (`@typespec/compiler` `lib/intrinsics.tsp` and
+   * `lib/std/main.tsp`) before the entry file, like the TS compiler (M10). Defaults to `true`.
+   * When `false` the Rust checker uses its built-in intrinsic stubs (TS `nostdlib`-like).
+   */
+  stdlib?: boolean;
+}
+
+let compilerRoot: string | undefined;
+
+/** Root directory of the `@typespec/compiler` package providing the standard library. */
+export function getCompilerRoot(): string {
+  compilerRoot ??= getDirectoryPath(
+    normalizePath(createRequire(import.meta.url).resolve("@typespec/compiler/package.json")),
+  );
+  return compilerRoot;
+}
+
+/** Standard library entrypoints in TS load order (`loadIntrinsicTypes`, then `loadStandardLibrary`). */
+export function getStdlibPaths(): string[] {
+  const root = getCompilerRoot();
+  return [joinPaths(root, "lib/intrinsics.tsp"), joinPaths(root, "lib/std/main.tsp")];
+}
+
+/**
+ * Serve the compiler package (standard library files and the JS files they import) from the
+ * real file system, so virtual hosts can load the standard library too.
+ */
+function withStdlib(host: ProgramHost): ProgramHost {
+  const root = getCompilerRoot();
+  const nodeHost = createNodeProgramHost();
+  const inCompiler = (path: string) => {
+    const normalized = resolvePath(path);
+    return normalized === root || normalized.startsWith(root + "/");
+  };
+  return {
+    readFile: (path) => (inCompiler(path) ? nodeHost.readFile(path) : host.readFile(path)),
+    resolveModule: (specifier, baseDir) =>
+      inCompiler(baseDir)
+        ? nodeHost.resolveModule(specifier, baseDir)
+        : host.resolveModule(specifier, baseDir),
+    resolveEntrypoint: (path) => host.resolveEntrypoint(path),
+  };
+}
+
 /** Load, parse and check the program rooted at `entryPath` with the Rust checker. */
 export function checkProgram(
   entryPath: string,
   host: ProgramHost = createNodeProgramHost(),
   decorators?: object,
+  options: CheckProgramOptions = {},
 ): CheckProgramResultJs {
+  const stdlib = options.stdlib ?? true;
+  const programHost = stdlib ? withStdlib(host) : host;
   return checkProgramNative(
-    host.resolveEntrypoint(entryPath),
-    (path) => host.readFile(path) ?? null,
-    (specifier, baseDir) => host.resolveModule(specifier, baseDir),
+    programHost.resolveEntrypoint(entryPath),
+    (path) => programHost.readFile(path) ?? null,
+    (specifier, baseDir) => programHost.resolveModule(specifier, baseDir),
     decorators,
+    { stdlib: stdlib ? getStdlibPaths() : undefined },
   );
 }

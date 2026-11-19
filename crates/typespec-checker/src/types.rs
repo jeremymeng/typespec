@@ -182,6 +182,10 @@ pub struct SymbolTable {
     pub using_resolution_scopes: HashMap<NodeId, ScopeId>,
     pub augment_decorators: Vec<NodeId>,
     pub duplicate_symbols_reported: HashSet<SymbolId>,
+    /// Member scope of the `TypeSpec` namespace when the standard library is
+    /// loaded. Like TS, every file implicitly uses it; it does not take part in
+    /// `duplicate-using`/`unused-using`.
+    pub implicit_using: Option<ScopeId>,
 }
 
 impl SymbolTable {
@@ -208,6 +212,7 @@ impl SymbolTable {
             using_resolution_scopes: HashMap::new(),
             augment_decorators: Vec::new(),
             duplicate_symbols_reported: HashSet::new(),
+            implicit_using: None,
         }
     }
 
@@ -423,6 +428,28 @@ pub struct ScalarType {
     pub is_template_declaration: bool,
 }
 
+/// TS `ModelIndexer`: set by the `@indexer(key, value)` decorator on
+/// `TypeSpec.Array` (integer key) and `TypeSpec.Record` (string key), and on
+/// anonymous array-expression models when the standard library is not loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelIndexer {
+    pub key: TypeId,
+    pub value: TypeId,
+}
+
+/// Declaration of an intrinsic scalar (`scalar string;` in
+/// `lib/intrinsics.tsp`) when the standard library is loaded. Intrinsic
+/// scalars keep their unit [`Type`] variant; this records the declaration
+/// information TS keeps on the `Scalar` type.
+#[derive(Debug, Clone)]
+pub struct IntrinsicDeclaration {
+    pub node: NodeId,
+    pub symbol: SymbolId,
+    pub namespace: Option<TypeId>,
+    pub base_scalar: Option<TypeId>,
+    pub decorators: Vec<DecoratorRef>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelType {
     pub name: String,
@@ -431,7 +458,7 @@ pub struct ModelType {
     pub properties: IndexMap<String, TypeId>,
     pub base_model: Option<TypeId>,
     pub source_model: Option<TypeId>,
-    pub indexer: Option<TypeId>,
+    pub indexer: Option<ModelIndexer>,
     pub decorators: Vec<DecoratorRef>,
     pub namespace: Option<TypeId>,
     pub derived_models: Vec<TypeId>,

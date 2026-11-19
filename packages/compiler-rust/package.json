@@ -28,6 +28,9 @@
       "x86_64-unknown-linux-gnu"
     ]
   },
+  "dependencies": {
+    "@typespec/compiler": "workspace:^"
+  },
   "devDependencies": {
     "@napi-rs/cli": "^3.7.0",
     "vitest": "catalog:"

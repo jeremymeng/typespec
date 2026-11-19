@@ -140,12 +140,27 @@ pub fn parse_program_with_options(
     host: &mut dyn SourceHost,
     options: ParseOptions,
 ) -> ProgramParseResult {
+    parse_program_with_stdlib(entry_path, host, options, &[])
+}
+
+/// Load and parse a program, first loading the standard library files in
+/// `stdlib` (in order) in the compiler location context, like TS
+/// `loadIntrinsicTypes` + `loadStandardLibrary` (`lib/intrinsics.tsp`, then
+/// `lib/std/main.tsp`). An empty `stdlib` loads only the project.
+pub fn parse_program_with_stdlib(
+    entry_path: &str,
+    host: &mut dyn SourceHost,
+    options: ParseOptions,
+    stdlib: &[String],
+) -> ProgramParseResult {
     let mut loader = SourceLoader {
         host,
         options,
         arena: AstArena::new(),
         scripts: Vec::new(),
         library_scripts: Vec::new(),
+        compiler_scripts: Vec::new(),
+        loading_compiler: false,
         script_files: HashMap::new(),
         diagnostics: Vec::new(),
         comments: Vec::new(),
@@ -153,12 +168,24 @@ pub fn parse_program_with_options(
         import_graph: ImportGraph::default(),
         seen: HashSet::new(),
     };
+    loader.loading_compiler = true;
+    for path in stdlib {
+        let path = resolve_path(path, &[]);
+        loader.import_file(&path, Span::NO_TARGET, None, ImportKind::Import, true);
+    }
+    loader.loading_compiler = false;
     let entry = resolve_path(entry_path, &[]);
     loader.import_file(&entry, Span::NO_TARGET, None, ImportKind::Entrypoint, false);
+    let mut entry_root = None;
     if let Some(entry) = loader.sources.get_by_path(&entry).map(|file| file.id) {
         loader.sources.set_entry(entry);
+        entry_root = loader
+            .script_files
+            .iter()
+            .find(|(_, file)| **file == entry)
+            .map(|(root, _)| *root);
     }
-    loader.finish()
+    loader.finish(entry_root)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -173,6 +200,10 @@ struct SourceLoader<'h> {
     arena: AstArena,
     scripts: Vec<NodeId>,
     library_scripts: Vec<NodeId>,
+    compiler_scripts: Vec<NodeId>,
+    /// Set while loading the standard library: every file reached from it is
+    /// in the compiler location context.
+    loading_compiler: bool,
     script_files: HashMap<NodeId, SourceFileId>,
     diagnostics: Vec<Diagnostic>,
     comments: Vec<NodeId>,
@@ -182,9 +213,9 @@ struct SourceLoader<'h> {
 }
 
 impl SourceLoader<'_> {
-    fn finish(mut self) -> ProgramParseResult {
-        let root = match self.scripts.first() {
-            Some(root) => *root,
+    fn finish(mut self, entry_root: Option<NodeId>) -> ProgramParseResult {
+        let root = match entry_root.or_else(|| self.scripts.first().copied()) {
+            Some(root) => root,
             None => {
                 // No file could be loaded; provide an empty (unlisted) script so
                 // `ParseResult::root` stays valid.
@@ -202,6 +233,7 @@ impl SourceLoader<'_> {
                 root,
                 scripts: self.scripts,
                 library_scripts: self.library_scripts,
+                compiler_scripts: self.compiler_scripts,
                 diagnostics: self.diagnostics,
                 comments: self.comments,
             },
@@ -301,6 +333,9 @@ impl SourceLoader<'_> {
         self.scripts.push(root);
         if library {
             self.library_scripts.push(root);
+        }
+        if self.loading_compiler {
+            self.compiler_scripts.push(root);
         }
         self.script_files.insert(root, id);
         self.load_script_imports(id, root, library);
@@ -607,6 +642,42 @@ mod tests {
             "Couldn't resolve import \"./missing.tsp\""
         );
         assert_eq!(diagnostic.target, Span { pos: 11, end: 34 });
+    }
+
+    #[test]
+    fn loads_stdlib_first_in_compiler_context() {
+        let mut host = InMemorySourceHost::new(&[
+            ("/main.tsp", "import \"./a.tsp\";"),
+            ("/a.tsp", ""),
+            ("/lib/intrinsics.tsp", "import \"./prototypes.tsp\";"),
+            ("/lib/prototypes.tsp", ""),
+            ("/lib/std/main.tsp", ""),
+        ]);
+        let result = parse_program_with_stdlib(
+            "/main.tsp",
+            &mut host,
+            ParseOptions::default(),
+            &[
+                "/lib/intrinsics.tsp".to_string(),
+                "/lib/std/main.tsp".to_string(),
+            ],
+        );
+        assert_eq!(
+            paths(&result),
+            [
+                "/lib/intrinsics.tsp",
+                "/lib/prototypes.tsp",
+                "/lib/std/main.tsp",
+                "/main.tsp",
+                "/a.tsp"
+            ]
+        );
+        let parse = &result.parse_result;
+        assert_eq!(parse.compiler_scripts, parse.scripts[..3]);
+        assert_eq!(parse.library_scripts, parse.scripts[..3]);
+        assert_eq!(parse.root, parse.scripts[3]);
+        let entry = result.sources.entry().unwrap();
+        assert_eq!(result.sources.get(entry).path, "/main.tsp");
     }
 
     #[test]

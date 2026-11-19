@@ -170,7 +170,13 @@ pub fn register_intrinsics(
         ("unknown", unknown),
         ("null", null),
     ] {
-        if let Some(symbol) = symbol_table.scopes[symbol_table.global_scope.index()]
+        // With the standard library loaded, the intrinsic scalars are declared in
+        // the `TypeSpec` namespace (`lib/intrinsics.tsp`, `lib/std/types.tsp`);
+        // otherwise they are pre-bound global stubs.
+        let scope = symbol_table
+            .implicit_using
+            .unwrap_or(symbol_table.global_scope);
+        if let Some(symbol) = symbol_table.scopes[scope.index()]
             .symbols
             .get(name)
             .copied()

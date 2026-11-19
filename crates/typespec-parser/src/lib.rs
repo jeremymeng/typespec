@@ -17,8 +17,8 @@ use typespec_scanner::{Scanner, TokenFlags};
 use typespec_source::{Diagnostic, DiagnosticSeverity, SourceFile, Span};
 
 pub use program::{
-    parse_program, parse_program_with_options, ImportGraph, InMemorySourceHost,
-    ModuleResolutionError, ProgramParseResult, ResolvedModule, SourceHost,
+    parse_program, parse_program_with_options, parse_program_with_stdlib, ImportGraph,
+    InMemorySourceHost, ModuleResolutionError, ProgramParseResult, ResolvedModule, SourceHost,
 };
 
 #[derive(Debug)]
@@ -33,6 +33,9 @@ pub struct ParseResult {
     /// reached through a package import. Project-only checks such as
     /// `unused-using` skip them.
     pub library_scripts: Vec<NodeId>,
+    /// Scripts of the TypeSpec standard library (TS location context
+    /// `"compiler"`). They are also listed in `library_scripts`.
+    pub compiler_scripts: Vec<NodeId>,
     pub diagnostics: Vec<Diagnostic>,
     pub comments: Vec<NodeId>,
 }
@@ -258,6 +261,7 @@ impl<'src> Parser<'src> {
             root,
             scripts: vec![root],
             library_scripts: Vec::new(),
+            compiler_scripts: Vec::new(),
             diagnostics,
             comments: self.comments,
         }
