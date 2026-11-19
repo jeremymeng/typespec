@@ -387,9 +387,13 @@ impl<'p> Checker<'p> {
         }
 
         self.type_arena.replace(type_id, Type::Model(model.clone()));
+        let is_array_model = self.find_indexer(&model).is_some();
         for property in properties {
             if let NodeData::ModelProperty { id, .. } = self.node(property).data {
                 let prop_id = self.check_model_property(property, type_id);
+                if is_array_model {
+                    self.report_no_array_properties(property);
+                }
                 let name = self.identifier_name(id);
                 if model.properties.contains_key(&name) {
                     self.report_duplicate_property(&model.name, &name, property);
@@ -397,6 +401,10 @@ impl<'p> Checker<'p> {
                     model.properties.insert(name, prop_id);
                 }
             } else if let NodeData::ModelSpreadProperty { target } = self.node(property).data {
+                if is_array_model && self.spread_introduces_properties(target) {
+                    self.report_no_array_properties(property);
+                    continue;
+                }
                 self.check_spread_property(target, type_id, &mut model);
             }
         }
@@ -2464,7 +2472,9 @@ impl<'p> Checker<'p> {
             );
             return None;
         };
-        if model.name.is_empty() {
+        // Array expressions are anonymous models with an indexer in the Rust port, but TS resolves
+        // them to the named `Array<T>` model, so they are valid `is` targets.
+        if model.name.is_empty() && model.indexer.is_none() {
             self.report(
                 "is-model",
                 "Model `is` cannot specify a model expression.",
@@ -2675,6 +2685,39 @@ impl<'p> Checker<'p> {
             }));
             model.properties.insert(name, cloned);
         }
+    }
+
+    /// Finds the indexer that applies to a model, either its own or inherited from a base model.
+    /// Indexers are only created by array expressions, so any indexer makes this an array model.
+    fn find_indexer(&self, model: &ModelType) -> Option<TypeId> {
+        let mut indexer = model.indexer;
+        let mut base = model.base_model;
+        let mut seen = HashSet::new();
+        while indexer.is_none() {
+            let base_id = base?;
+            if !seen.insert(base_id) {
+                return None;
+            }
+            let base_model = self.model_type(base_id)?;
+            indexer = base_model.indexer;
+            base = base_model.base_model;
+        }
+        indexer
+    }
+
+    fn spread_introduces_properties(&mut self, target: NodeId) -> bool {
+        let source = self.type_for_node(target);
+        let source = self.get_non_alias_type(source);
+        matches!(self.type_arena.get(source), Type::Model(_))
+            && !self.walk_model_properties_inherited(source).is_empty()
+    }
+
+    fn report_no_array_properties(&mut self, node: NodeId) {
+        self.report(
+            "no-array-properties",
+            "Array models cannot have any properties.",
+            node,
+        );
     }
 
     fn check_spread_property(&mut self, target: NodeId, model_id: TypeId, model: &mut ModelType) {
@@ -3823,6 +3866,36 @@ mod tests {
             panic!("expected model");
         };
         assert!(model.properties.contains_key("x"));
+    }
+
+    #[test]
+    fn reports_spread_properties_in_array_models_once_and_skips_them() {
+        let result = check_source(
+            "model S { name: string; } model B is string[]; model A extends B { ...S; ...S; }",
+        );
+        let count = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "no-array-properties")
+            .count();
+        assert_eq!(count, 2);
+        assert!(!result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "duplicate-property"));
+        let Type::Model(model) = result.type_arena.get(find_named_model(&result, "A")) else {
+            panic!("expected model");
+        };
+        assert!(model.properties.is_empty());
+    }
+
+    #[test]
+    fn allows_empty_spreads_in_array_models() {
+        let result = check_source("model S {} model A is string[] { ...S; }");
+        assert!(!result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "no-array-properties"));
     }
 
     #[test]

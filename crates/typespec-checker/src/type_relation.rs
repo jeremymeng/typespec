@@ -23,6 +23,8 @@ pub struct TypeRelationChecker<'a> {
     arena: &'a TypeArena,
 }
 
+/// Relation pairs currently being checked. Revisiting a pair means the types are recursive; each
+/// relation kind resolves the cycle instead of recursing forever.
 struct RelationContext {
     visiting: HashSet<(TypeId, TypeId)>,
 }
@@ -186,16 +188,35 @@ impl<'a> TypeRelationChecker<'a> {
 
         match (self.arena.get(source), self.arena.get(target)) {
             (Type::Union(source_union), _) => {
+                // A union can reach itself (`union Foo { self: Foo }`). Coming back to the same
+                // pair resolves optimistically: a purely cyclic union has no values, so like
+                // `never` it is vacuously assignable.
+                if !ctx.visiting.insert((source, target)) {
+                    return Ok(());
+                }
+                let mut result = Ok(());
                 for variant in source_union.variants.values() {
                     let Some(variant_type) = self.union_variant_target(*variant) else {
                         continue;
                     };
-                    self.assignable_internal(variant_type, target, target_span, ctx)
-                        .map_err(|_| vec![self.unassignable(source, target, target_span)])?;
+                    if self
+                        .assignable_internal(variant_type, target, target_span, ctx)
+                        .is_err()
+                    {
+                        result = Err(vec![self.unassignable(source, target, target_span)]);
+                        break;
+                    }
                 }
-                Ok(())
+                ctx.visiting.remove(&(source, target));
+                result
             }
             (_, Type::Union(target_union)) => {
+                // Being assignable to a union only requires one variant to match, so coming back
+                // to the same pair brings no new information and is resolved as unrelated.
+                if !ctx.visiting.insert((source, target)) {
+                    return Err(vec![self.unassignable(source, target, target_span)]);
+                }
+                let mut related = false;
                 for variant in target_union.variants.values() {
                     let Some(variant_type) = self.union_variant_target(*variant) else {
                         continue;
@@ -204,10 +225,16 @@ impl<'a> TypeRelationChecker<'a> {
                         .assignable_internal(source, variant_type, target_span, ctx)
                         .is_ok()
                     {
-                        return Ok(());
+                        related = true;
+                        break;
                     }
                 }
-                Err(vec![self.unassignable(source, target, target_span)])
+                ctx.visiting.remove(&(source, target));
+                if related {
+                    Ok(())
+                } else {
+                    Err(vec![self.unassignable(source, target, target_span)])
+                }
             }
             (Type::Model(_), Type::Model(_)) => {
                 self.models_assignable(source, target, target_span, ctx)
@@ -887,5 +914,50 @@ mod tests {
             span,
         );
         assert!(diagnostics.iter().any(|d| d.code == "missing-property"));
+    }
+
+    fn named_union(result: &crate::checker::CheckResult, name: &str) -> TypeId {
+        result
+            .type_arena
+            .types()
+            .iter()
+            .enumerate()
+            .find_map(|(index, ty)| match ty {
+                Type::Union(union) if union.name == name => Some(TypeId::new(index as u32)),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    // Variants are named `recur` rather than `self`: the Rust parser rejects reserved keywords as
+    // union variant names (see docs/rust-port/upstream-sync.md, Known behavioral differences).
+    #[test]
+    fn self_referencing_union_source_terminates_and_is_vacuously_assignable() {
+        let result = check_source("union Loop { recur: Loop } model Target { name: string }");
+        let relation = TypeRelationChecker::new(&result.type_arena);
+        let span = Span { pos: 0, end: 0 };
+        assert!(relation
+            .is_type_assignable_to_span(
+                named_union(&result, "Loop"),
+                named(&result, "Target"),
+                span
+            )
+            .is_related());
+    }
+
+    #[test]
+    fn self_referencing_union_target_terminates_and_is_unrelated_without_match() {
+        let result = check_source("union Loop { recur: Loop } union Other { o: Loop, s: string }");
+        let relation = TypeRelationChecker::new(&result.type_arena);
+        let span = Span { pos: 0, end: 0 };
+        let diagnostics = relation.check_type_assignable_span(
+            TypeId::new(16),
+            named_union(&result, "Loop"),
+            span,
+        );
+        assert!(diagnostics.iter().any(|d| d.code == "unassignable"));
+        assert!(relation
+            .is_type_assignable_to_span(TypeId::new(16), named_union(&result, "Other"), span)
+            .is_related());
     }
 }

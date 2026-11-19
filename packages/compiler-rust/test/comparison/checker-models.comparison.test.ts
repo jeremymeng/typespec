@@ -290,6 +290,10 @@ describe("checker models/scalars comparison: Rust vs TS", () => {
       await expectDiagnosticsLikeTs(`model Foo is string;`, ["is-model"]);
     });
 
+    it("matches TS model is array expression", async () => {
+      await expectDiagnosticsLikeTs(`model Foo is string[];`, ["is-model"]);
+    });
+
     it("matches TS scalar circular extends diagnostic", async () => {
       await expectDiagnosticsLikeTs(`scalar a extends a;`, ["circular-base-type"]);
     });
@@ -298,6 +302,30 @@ describe("checker models/scalars comparison: Rust vs TS", () => {
       await expectDiagnosticsLikeTs(`model A extends B {} model B extends A {}`, [
         "circular-base-type",
       ]);
+    });
+
+    it.each([
+      ["spread in model is array", `model S { name: string } model A is string[] { ...S; }`],
+      ["property in model is array", `model A is string[] { x: string; }`],
+      [
+        "spread and property in model is array",
+        `model S { name: string } model A is string[] { ...S; y: int32; }`,
+      ],
+      [
+        "repeated spread in model is array",
+        `model S { name: string } model A is string[] { ...S; ...S; }`,
+      ],
+      ["empty spread in model is array", `model S {} model A is string[] { ...S; }`],
+      [
+        "spread in model extends array",
+        `model S { name: string } model A extends string[] { ...S; }`,
+      ],
+      [
+        "spread in model extending an array model",
+        `model S { name: string } model B is string[]; model A extends B { ...S; }`,
+      ],
+    ])("reports no-array-properties like TS: %s", async (_name, source) => {
+      await expectDiagnosticsLikeTs(source, ["no-array-properties", "duplicate-property"]);
     });
   });
 

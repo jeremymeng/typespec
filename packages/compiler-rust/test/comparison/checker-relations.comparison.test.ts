@@ -297,6 +297,114 @@ describe("checker relations comparison: Rust", () => {
     },
   );
 
+  // Union variants are named `recur` instead of upstream's `self`: the Rust parser rejects reserved
+  // keywords as union variant names (see docs/rust-port/upstream-sync.md, Known behavioral differences).
+  describe("recursive types", () => {
+    const recursiveAssignableCases = [
+      [
+        "model referencing itself",
+        `model Source { self: Source } model Target { self: Target }`,
+        "Source",
+        "Target",
+      ],
+      [
+        "mutually recursive models",
+        `model SourceA { b: SourceB } model SourceB { a: SourceA }
+         model TargetA { b: TargetB } model TargetB { a: TargetA }`,
+        "SourceA",
+        "TargetA",
+      ],
+      [
+        "union referencing itself",
+        `union Loop { recur: Loop } model Target { name: string }`,
+        "Loop",
+        "Target",
+      ],
+      [
+        "mutually recursive unions",
+        `union LoopA { toB: LoopB } union LoopB { toA: LoopA } model Target { name: string }`,
+        "LoopA",
+        "Target",
+      ],
+      [
+        "model with a recursive union property",
+        `union Loop { recur: Loop, str: string } model Source { value: Loop } model Target { value: Loop }`,
+        "Source",
+        "Target",
+      ],
+      [
+        "recursive union as the target",
+        `union Loop { recur: Loop, str: string } alias Source = string;`,
+        "Source",
+        "Loop",
+      ],
+      [
+        "mutually recursive unions on both sides",
+        `union SourceA { sb: SourceB } union SourceB { sa: SourceA, ss: string }
+         union TargetA { tb: TargetB } union TargetB { ta: TargetA, ts: string }`,
+        "SourceA",
+        "TargetA",
+      ],
+      [
+        "model with a recursive array property",
+        `model Source { items: Source[] } model Target { items: Target[] }`,
+        "Source",
+        "Target",
+      ],
+    ] as const;
+
+    it.each(recursiveAssignableCases)("assignable: %s", (_name, source, sourceName, targetName) => {
+      expectRelated(source, sourceName, targetName);
+    });
+
+    const recursiveUnassignableCases = [
+      [
+        "mutually recursive models with a mismatch deep in the cycle",
+        `model SourceA { b: SourceB } model SourceB { a: SourceA, extra: string }
+         model TargetA { b: TargetB } model TargetB { a: TargetA, extra: int32 }`,
+        "SourceA",
+        "TargetA",
+        "property-unassignable",
+      ],
+      [
+        "union referencing itself alongside an unassignable variant",
+        `union Loop { recur: Loop, other: string } model Target { name: string }`,
+        "Loop",
+        "Target",
+        "unassignable",
+      ],
+      [
+        "recursive union as the target without a matching variant",
+        `union Loop { recur: Loop } alias Source = string;`,
+        "Source",
+        "Loop",
+        "unassignable",
+      ],
+    ] as const;
+
+    it.each(recursiveUnassignableCases)(
+      "unassignable: %s",
+      (_name, source, sourceName, targetName, code) => {
+        expectUnrelated(source, sourceName, targetName, code);
+      },
+    );
+
+    it("checks mutually recursive models through a template constraint", () => {
+      const result = check(`
+        model SourceA { b: SourceB }
+        model SourceB { a: SourceA }
+        model TargetA { b: TargetB }
+        model TargetB { a: TargetA }
+
+        model Constrained<T extends TargetA> {}
+        alias Result = Constrained<SourceA>;
+      `) as CheckResult;
+      // Only errors: Rust always reports the `unused-template-parameter` warning, which is a
+      // linter rule in TS (see docs/rust-port/upstream-sync.md, Known behavioral differences).
+      expect(result.diagnostics.filter((x) => x.severity === "error")).toEqual([]);
+    });
+  });
+
   const defaultCases = [
     ["string literal default", `model X { a: string = "hi"; }`, false],
     ["numeric in int32 default", `model X { a: int32 = 42; }`, false],
