@@ -348,6 +348,7 @@ fn serialize_node(node: &typespec_parser::ast::Node) -> SerializedNode {
             modifier_flags,
             template_parameters,
             template_parameters_range,
+            extends,
             options,
         } => {
             serialized.id = Some(id.as_u32());
@@ -357,7 +358,73 @@ fn serialize_node(node: &typespec_parser::ast::Node) -> SerializedNode {
             serialized.template_parameters = some_ids(template_parameters);
             serialized.template_parameters_range_pos = Some(template_parameters_range.pos);
             serialized.template_parameters_range_end = Some(template_parameters_range.end);
+            serialized.extends_single = extends.map(|id| id.as_u32());
             serialized.options = some_ids(options);
+        }
+        NodeData::ModelDeclarationExpression {
+            id,
+            decorators,
+            template_parameters,
+            template_parameters_range,
+            extends,
+            is,
+            properties,
+            body_range,
+        } => {
+            serialized.id = id.map(|id| id.as_u32());
+            serialized.decorators = some_ids(decorators);
+            serialized.template_parameters = some_ids(template_parameters);
+            serialized.template_parameters_range_pos = Some(template_parameters_range.pos);
+            serialized.template_parameters_range_end = Some(template_parameters_range.end);
+            serialized.extends_single = extends.map(|id| id.as_u32());
+            serialized.is = is.map(|id| id.as_u32());
+            serialized.properties = some_ids(properties);
+            serialized.body_range_pos = Some(body_range.pos);
+            serialized.body_range_end = Some(body_range.end);
+        }
+        NodeData::ScalarDeclarationExpression {
+            id,
+            decorators,
+            template_parameters,
+            template_parameters_range,
+            extends,
+            members,
+            body_range,
+        } => {
+            serialized.id = id.map(|id| id.as_u32());
+            serialized.decorators = some_ids(decorators);
+            serialized.template_parameters = some_ids(template_parameters);
+            serialized.template_parameters_range_pos = Some(template_parameters_range.pos);
+            serialized.template_parameters_range_end = Some(template_parameters_range.end);
+            serialized.extends_single = extends.map(|id| id.as_u32());
+            serialized.members = some_ids(members);
+            serialized.body_range_pos = Some(body_range.pos);
+            serialized.body_range_end = Some(body_range.end);
+        }
+        NodeData::UnionDeclarationExpression {
+            id,
+            decorators,
+            template_parameters,
+            template_parameters_range,
+            extends,
+            options,
+        } => {
+            serialized.id = id.map(|id| id.as_u32());
+            serialized.decorators = some_ids(decorators);
+            serialized.template_parameters = some_ids(template_parameters);
+            serialized.template_parameters_range_pos = Some(template_parameters_range.pos);
+            serialized.template_parameters_range_end = Some(template_parameters_range.end);
+            serialized.extends_single = extends.map(|id| id.as_u32());
+            serialized.options = some_ids(options);
+        }
+        NodeData::EnumDeclarationExpression {
+            id,
+            decorators,
+            members,
+        } => {
+            serialized.id = id.map(|id| id.as_u32());
+            serialized.decorators = some_ids(decorators);
+            serialized.members = some_ids(members);
         }
         NodeData::UnionVariant {
             id,

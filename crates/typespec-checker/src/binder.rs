@@ -237,6 +237,7 @@ impl<'p> Binder<'p> {
                 id,
                 decorators,
                 template_parameters,
+                extends,
                 options,
                 modifier_flags,
                 ..
@@ -250,7 +251,82 @@ impl<'p> Binder<'p> {
                     true,
                     |binder| {
                         binder.bind_nodes(&template_parameters);
+                        binder.bind_optional(extends);
                         binder.bind_nodes(&options);
+                    },
+                );
+            }
+            NodeData::ModelDeclarationExpression {
+                decorators,
+                template_parameters,
+                extends,
+                is,
+                properties,
+                ..
+            } => {
+                self.bind_anonymous_member_container(
+                    node_id,
+                    SymbolFlags::Model,
+                    ScopeKind::Model,
+                    |binder| {
+                        binder.bind_nodes(&decorators);
+                        binder.bind_nodes(&template_parameters);
+                        binder.bind_optional(extends);
+                        binder.bind_optional(is);
+                        binder.bind_nodes(&properties);
+                    },
+                );
+            }
+            NodeData::ScalarDeclarationExpression {
+                decorators,
+                template_parameters,
+                extends,
+                members,
+                ..
+            } => {
+                self.bind_anonymous_member_container(
+                    node_id,
+                    SymbolFlags::Scalar,
+                    ScopeKind::Scalar,
+                    |binder| {
+                        binder.bind_nodes(&decorators);
+                        binder.bind_nodes(&template_parameters);
+                        binder.bind_optional(extends);
+                        binder.bind_nodes(&members);
+                    },
+                );
+            }
+            NodeData::UnionDeclarationExpression {
+                decorators,
+                template_parameters,
+                extends,
+                options,
+                ..
+            } => {
+                self.bind_anonymous_member_container(
+                    node_id,
+                    SymbolFlags::Union,
+                    ScopeKind::Union,
+                    |binder| {
+                        binder.bind_nodes(&decorators);
+                        binder.bind_nodes(&template_parameters);
+                        binder.bind_optional(extends);
+                        binder.bind_nodes(&options);
+                    },
+                );
+            }
+            NodeData::EnumDeclarationExpression {
+                decorators,
+                members,
+                ..
+            } => {
+                self.bind_anonymous_member_container(
+                    node_id,
+                    SymbolFlags::Enum,
+                    ScopeKind::Enum,
+                    |binder| {
+                        binder.bind_nodes(&decorators);
+                        binder.bind_nodes(&members);
                     },
                 );
             }

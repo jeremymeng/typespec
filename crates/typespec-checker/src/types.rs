@@ -402,6 +402,8 @@ pub struct ScalarType {
     pub base_scalar: Option<TypeId>,
     pub decorators: Vec<DecoratorRef>,
     pub namespace: Option<TypeId>,
+    /// Whether this scalar was declared in expression position.
+    pub expression: bool,
     pub template_node: Option<NodeId>,
     pub template_arguments: Vec<TypeId>,
     pub template_parameters: Vec<TypeId>,
@@ -420,6 +422,8 @@ pub struct ModelType {
     pub decorators: Vec<DecoratorRef>,
     pub namespace: Option<TypeId>,
     pub derived_models: Vec<TypeId>,
+    /// Whether this model was declared in expression position.
+    pub expression: bool,
     pub template_node: Option<NodeId>,
     pub template_arguments: Vec<TypeId>,
     pub template_parameters: Vec<TypeId>,
@@ -447,6 +451,8 @@ pub struct EnumType {
     pub members: IndexMap<String, TypeId>,
     pub decorators: Vec<DecoratorRef>,
     pub namespace: Option<TypeId>,
+    /// Whether this enum was declared in expression position.
+    pub expression: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -471,6 +477,8 @@ pub struct UnionType {
     pub symbol: Option<SymbolId>,
     pub variants: IndexMap<String, TypeId>,
     pub expression: bool,
+    /// Constraint from the union `extends` clause.
+    pub base_type: Option<TypeId>,
     pub decorators: Vec<DecoratorRef>,
     pub namespace: Option<TypeId>,
     pub template_node: Option<NodeId>,

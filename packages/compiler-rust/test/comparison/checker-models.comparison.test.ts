@@ -297,4 +297,65 @@ describe("checker models/scalars comparison: Rust vs TS", () => {
       ]);
     });
   });
+
+  describe("declaration expressions", () => {
+    const diagnosticCodes = [
+      "declaration-expression-disabled",
+      "templated-declaration-in-expression",
+      "duplicate-property",
+      "enum-member-duplicate",
+      "union-duplicate",
+    ];
+
+    it.each([
+      ["model", `model Foo { x: model { a: string }; }`],
+      ["named model", `model Base {} model Foo { x: model Bar extends Base { a: string }; }`],
+      ["scalar", `model Foo { x: scalar extends string; }`],
+      ["enum", `model Foo { x: enum { a, a }; }`],
+      ["union", `model Foo { x: union { a: string, a: int32 }; }`],
+      ["templated model", `alias A = model M<T> { a: T };`],
+      ["templated union", `alias A = union U<T, K> { a: T };`],
+      ["nested", `model Foo { x: model { y: enum { a }; }; }`],
+      ["template argument", `model W<T> { v: T; } alias A = W<model { a: string }>;`],
+    ])(
+      "reports diagnostics like TS: %s",
+      async (_name, source) => {
+        await expectDiagnosticsLikeTs(source, diagnosticCodes);
+      },
+      10000,
+    );
+
+    it.each([
+      ["model", `model Foo { x: model Bar { a: string }; }`, "Model", "Bar"],
+      ["scalar", `model Foo { x: scalar S extends string; }`, "Scalar", "S"],
+      ["enum", `model Foo { x: enum E { a }; }`, "Enum", "E"],
+      ["union", `model Foo { x: union U { a: string }; }`, "Union", "U"],
+    ])("creates %s expression type not registered in namespace", (_name, source, kind, name) => {
+      const result = rust(source) as RustCheckResult & {
+        types: (RustType & {
+          expression?: boolean;
+          modelNames: string[];
+          scalarNames: string[];
+          enumNames: string[];
+          unionNames: string[];
+        })[];
+      };
+      const foo = model(result, "Foo");
+      const propType = typeById(result, property(result, foo, "x").propertyTypeId!) as
+        (RustType & { expression?: boolean }) | undefined;
+      expect(propType?.kind).toBe(kind);
+      expect(propType?.name).toBe(name);
+      expect(propType?.expression).toBe(true);
+      const namespaces = result.types.filter((x) => x.kind === "Namespace");
+      for (const ns of namespaces) {
+        expect([
+          ...ns.modelNames,
+          ...ns.scalarNames,
+          ...ns.enumNames,
+          ...ns.unionNames,
+        ]).not.toContain(name);
+      }
+      expect(foo).toMatchObject({ expression: false });
+    });
+  });
 });

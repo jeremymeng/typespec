@@ -239,7 +239,40 @@ pub enum NodeData {
         modifier_flags: u32,
         template_parameters: Vec<NodeId>,
         template_parameters_range: Span,
+        extends: Option<NodeId>,
         options: Vec<NodeId>,
+    },
+    ModelDeclarationExpression {
+        id: Option<NodeId>,
+        decorators: Vec<NodeId>,
+        template_parameters: Vec<NodeId>,
+        template_parameters_range: Span,
+        extends: Option<NodeId>,
+        is: Option<NodeId>,
+        properties: Vec<NodeId>,
+        body_range: Span,
+    },
+    ScalarDeclarationExpression {
+        id: Option<NodeId>,
+        decorators: Vec<NodeId>,
+        template_parameters: Vec<NodeId>,
+        template_parameters_range: Span,
+        extends: Option<NodeId>,
+        members: Vec<NodeId>,
+        body_range: Span,
+    },
+    UnionDeclarationExpression {
+        id: Option<NodeId>,
+        decorators: Vec<NodeId>,
+        template_parameters: Vec<NodeId>,
+        template_parameters_range: Span,
+        extends: Option<NodeId>,
+        options: Vec<NodeId>,
+    },
+    EnumDeclarationExpression {
+        id: Option<NodeId>,
+        decorators: Vec<NodeId>,
+        members: Vec<NodeId>,
     },
     UnionVariant {
         id: Option<NodeId>,
@@ -555,6 +588,7 @@ impl NodeData {
                 decorators,
                 id,
                 template_parameters,
+                extends,
                 options,
                 ..
             } => {
@@ -562,7 +596,61 @@ impl NodeData {
                 children.extend(decorators.iter().copied());
                 children.push(*id);
                 children.extend(template_parameters.iter().copied());
+                children.extend(*extends);
                 children.extend(options.iter().copied());
+            }
+            NodeData::ModelDeclarationExpression {
+                decorators,
+                id,
+                template_parameters,
+                extends,
+                is,
+                properties,
+                ..
+            } => {
+                children.extend(decorators.iter().copied());
+                children.extend(*id);
+                children.extend(template_parameters.iter().copied());
+                children.extend(*extends);
+                children.extend(*is);
+                children.extend(properties.iter().copied());
+            }
+            NodeData::ScalarDeclarationExpression {
+                decorators,
+                id,
+                template_parameters,
+                members,
+                extends,
+                ..
+            } => {
+                children.extend(decorators.iter().copied());
+                children.extend(*id);
+                children.extend(template_parameters.iter().copied());
+                children.extend(members.iter().copied());
+                children.extend(*extends);
+            }
+            NodeData::UnionDeclarationExpression {
+                decorators,
+                id,
+                template_parameters,
+                extends,
+                options,
+                ..
+            } => {
+                children.extend(decorators.iter().copied());
+                children.extend(*id);
+                children.extend(template_parameters.iter().copied());
+                children.extend(*extends);
+                children.extend(options.iter().copied());
+            }
+            NodeData::EnumDeclarationExpression {
+                decorators,
+                id,
+                members,
+            } => {
+                children.extend(decorators.iter().copied());
+                children.extend(*id);
+                children.extend(members.iter().copied());
             }
             NodeData::UnionVariant {
                 decorators,

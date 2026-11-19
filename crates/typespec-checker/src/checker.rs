@@ -199,6 +199,14 @@ impl<'p> Checker<'p> {
             NodeData::ScalarStatement { .. } => Some(self.check_scalar(node_id)),
             NodeData::EnumStatement { .. } => Some(self.check_enum(node_id)),
             NodeData::UnionStatement { .. } => Some(self.check_union_statement(node_id)),
+            NodeData::ModelDeclarationExpression { .. } => {
+                Some(self.check_model_statement(node_id))
+            }
+            NodeData::ScalarDeclarationExpression { .. } => Some(self.check_scalar(node_id)),
+            NodeData::EnumDeclarationExpression { .. } => Some(self.check_enum(node_id)),
+            NodeData::UnionDeclarationExpression { .. } => {
+                Some(self.check_union_statement(node_id))
+            }
             NodeData::AliasStatement { .. } => Some(self.check_alias(node_id)),
             NodeData::ModelExpression { .. } => Some(self.check_model_expression(node_id)),
             NodeData::IntersectionExpression { .. } => {
@@ -291,18 +299,44 @@ impl<'p> Checker<'p> {
             return cached;
         }
 
-        let NodeData::ModelStatement {
-            id,
-            decorators,
-            template_parameters,
-            extends,
-            is,
-            properties,
-            ..
-        } = self.node(node_id).data.clone()
-        else {
-            panic!("expected model statement");
-        };
+        let (id, decorators, template_parameter_nodes, extends, is, properties, expression) =
+            match self.node(node_id).data.clone() {
+                NodeData::ModelStatement {
+                    id,
+                    decorators,
+                    template_parameters,
+                    extends,
+                    is,
+                    properties,
+                    ..
+                } => (
+                    Some(id),
+                    decorators,
+                    template_parameters,
+                    extends,
+                    is,
+                    properties,
+                    false,
+                ),
+                NodeData::ModelDeclarationExpression {
+                    id,
+                    decorators,
+                    template_parameters,
+                    extends,
+                    is,
+                    properties,
+                    ..
+                } => (
+                    id,
+                    decorators,
+                    template_parameters,
+                    extends,
+                    is,
+                    properties,
+                    true,
+                ),
+                _ => panic!("expected model statement"),
+            };
 
         let symbol = self.symbol_for_node(node_id);
         let namespace = self.namespace_for_symbol(symbol);
@@ -311,11 +345,15 @@ impl<'p> Checker<'p> {
         if let Some(symbol) = symbol {
             self.symbol_to_type.insert(symbol, type_id);
         }
-        let template_parameters = self.check_template_parameters(&template_parameters);
+        let template_parameters = self.check_template_parameters(&template_parameter_nodes);
+        if expression {
+            self.report_declaration_expression_constraints(node_id, &template_parameter_nodes);
+        }
 
         let source_model = self.check_model_is(symbol, is);
         let mut model = ModelType {
-            name: self.identifier_name(id),
+            name: self.optional_identifier_name(id),
+            expression,
             node: Some(node_id),
             symbol,
             properties: IndexMap::new(),
@@ -361,7 +399,7 @@ impl<'p> Checker<'p> {
         let base_model = model.base_model;
         let model_name = model.name.clone();
         self.type_arena.replace(type_id, Type::Model(model));
-        if let Some(namespace) = namespace {
+        if let (Some(namespace), false) = (namespace, expression) {
             self.register_namespace_member(
                 namespace,
                 model_name,
@@ -395,6 +433,7 @@ impl<'p> Checker<'p> {
         }
 
         let mut model = ModelType {
+            expression: true,
             name: String::new(),
             node: Some(node_id),
             symbol,
@@ -432,16 +471,24 @@ impl<'p> Checker<'p> {
             return cached;
         }
 
-        let NodeData::ScalarStatement {
-            id,
-            decorators,
-            template_parameters,
-            extends,
-            ..
-        } = self.node(node_id).data.clone()
-        else {
-            panic!("expected scalar statement");
-        };
+        let (id, decorators, template_parameter_nodes, extends, expression) =
+            match self.node(node_id).data.clone() {
+                NodeData::ScalarStatement {
+                    id,
+                    decorators,
+                    template_parameters,
+                    extends,
+                    ..
+                } => (Some(id), decorators, template_parameters, extends, false),
+                NodeData::ScalarDeclarationExpression {
+                    id,
+                    decorators,
+                    template_parameters,
+                    extends,
+                    ..
+                } => (id, decorators, template_parameters, extends, true),
+                _ => panic!("expected scalar statement"),
+            };
         let symbol = self.symbol_for_node(node_id);
         let namespace = self.namespace_for_symbol(symbol);
         let type_id = self.type_arena.reserve();
@@ -450,10 +497,13 @@ impl<'p> Checker<'p> {
             self.symbol_to_type.insert(symbol, type_id);
         }
 
-        let template_parameters = self.check_template_parameters(&template_parameters);
+        let template_parameters = self.check_template_parameters(&template_parameter_nodes);
+        if expression {
+            self.report_declaration_expression_constraints(node_id, &template_parameter_nodes);
+        }
         let base_scalar = extends.and_then(|extends| self.check_scalar_extends(symbol, extends));
         let decorators = self.collect_decorators(&decorators);
-        let name = self.identifier_name(id);
+        let name = self.optional_identifier_name(id);
         let register_name = name.clone();
         self.type_arena.replace(
             type_id,
@@ -464,13 +514,14 @@ impl<'p> Checker<'p> {
                 base_scalar,
                 decorators,
                 namespace,
+                expression,
                 template_node: None,
                 template_arguments: Vec::new(),
                 template_parameters: template_parameters.clone(),
                 is_template_declaration: !template_parameters.is_empty(),
             }),
         );
-        if let Some(namespace) = namespace {
+        if let (Some(namespace), false) = (namespace, expression) {
             self.register_namespace_member(
                 namespace,
                 register_name,
@@ -486,14 +537,19 @@ impl<'p> Checker<'p> {
             return cached;
         }
 
-        let NodeData::EnumStatement {
-            id,
-            decorators,
-            members,
-            ..
-        } = self.node(node_id).data.clone()
-        else {
-            panic!("expected enum statement");
+        let (id, decorators, members, expression) = match self.node(node_id).data.clone() {
+            NodeData::EnumStatement {
+                id,
+                decorators,
+                members,
+                ..
+            } => (Some(id), decorators, members, false),
+            NodeData::EnumDeclarationExpression {
+                id,
+                decorators,
+                members,
+            } => (id, decorators, members, true),
+            _ => panic!("expected enum statement"),
         };
         let symbol = self.symbol_for_node(node_id);
         let namespace = self.namespace_for_symbol(symbol);
@@ -502,14 +558,18 @@ impl<'p> Checker<'p> {
         if let Some(symbol) = symbol {
             self.symbol_to_type.insert(symbol, type_id);
         }
+        if expression {
+            self.report_declaration_expression_constraints(node_id, &[]);
+        }
 
         let mut enum_type = EnumType {
-            name: self.identifier_name(id),
+            name: self.optional_identifier_name(id),
             node: Some(node_id),
             symbol,
             members: IndexMap::new(),
             decorators: self.collect_decorators(&decorators),
             namespace,
+            expression,
         };
 
         for member in members {
@@ -536,7 +596,7 @@ impl<'p> Checker<'p> {
 
         let enum_name = enum_type.name.clone();
         self.type_arena.replace(type_id, Type::Enum(enum_type));
-        if let Some(namespace) = namespace {
+        if let (Some(namespace), false) = (namespace, expression) {
             self.register_namespace_member(
                 namespace,
                 enum_name,
@@ -646,16 +706,33 @@ impl<'p> Checker<'p> {
             return cached;
         }
 
-        let NodeData::UnionStatement {
-            id,
-            decorators,
-            template_parameters,
-            options,
-            ..
-        } = self.node(node_id).data.clone()
-        else {
-            panic!("expected union statement");
-        };
+        let (id, decorators, template_parameter_nodes, extends, options, expression) =
+            match self.node(node_id).data.clone() {
+                NodeData::UnionStatement {
+                    id,
+                    decorators,
+                    template_parameters,
+                    extends,
+                    options,
+                    ..
+                } => (
+                    Some(id),
+                    decorators,
+                    template_parameters,
+                    extends,
+                    options,
+                    false,
+                ),
+                NodeData::UnionDeclarationExpression {
+                    id,
+                    decorators,
+                    template_parameters,
+                    extends,
+                    options,
+                    ..
+                } => (id, decorators, template_parameters, extends, options, true),
+                _ => panic!("expected union statement"),
+            };
         let symbol = self.symbol_for_node(node_id);
         let namespace = self.namespace_for_symbol(symbol);
         let type_id = self.type_arena.reserve();
@@ -664,19 +741,40 @@ impl<'p> Checker<'p> {
             self.symbol_to_type.insert(symbol, type_id);
         }
 
+        if let Some(extends) = extends {
+            self.report(
+                "union-extends-disabled",
+                "Union `extends` clauses require the 'union-extends' feature to be enabled. Add 'union-extends' to the 'features' list in your tspconfig.yaml.",
+                extends,
+            );
+        }
+        let template_parameters = self.check_template_parameters(&template_parameter_nodes);
+        if expression {
+            self.report_declaration_expression_constraints(node_id, &template_parameter_nodes);
+        }
+        let is_template_declaration = !template_parameters.is_empty();
+
         let mut union_type = UnionType {
-            name: self.identifier_name(id),
+            name: self.optional_identifier_name(id),
             node: Some(node_id),
             symbol,
             variants: IndexMap::new(),
-            expression: false,
-            decorators: self.collect_decorators(&decorators),
+            expression,
+            base_type: None,
+            decorators: Vec::new(),
             namespace,
             template_node: None,
             template_arguments: Vec::new(),
-            template_parameters: self.check_template_parameters(&template_parameters),
-            is_template_declaration: !template_parameters.is_empty(),
+            template_parameters,
+            is_template_declaration,
         };
+        self.type_arena
+            .replace(type_id, Type::Union(union_type.clone()));
+        if let Some(extends) = extends {
+            union_type.base_type =
+                self.check_union_base_type(symbol, type_id, &union_type.name, extends);
+        }
+        union_type.decorators = self.collect_decorators(&decorators);
 
         for (index, variant) in options.into_iter().enumerate() {
             let variant_id = self.check_union_variant(variant, type_id, index);
@@ -684,6 +782,7 @@ impl<'p> Checker<'p> {
                 continue;
             };
             let name = variant_type.name.clone();
+            let variant_value = variant_type.variant_type;
             if union_type.variants.contains_key(&name) {
                 self.report(
                     "union-duplicate",
@@ -692,12 +791,23 @@ impl<'p> Checker<'p> {
                 );
             } else {
                 union_type.variants.insert(name, variant_id);
+                if let (Some(base_type), false) = (union_type.base_type, is_template_declaration) {
+                    let value_node = match self.node(variant).data {
+                        NodeData::UnionVariant { value, .. } => value,
+                        _ => variant,
+                    };
+                    self.check_union_variant_against_base_type(
+                        variant_value,
+                        base_type,
+                        value_node,
+                    );
+                }
             }
         }
 
         let union_name = union_type.name.clone();
         self.type_arena.replace(type_id, Type::Union(union_type));
-        if let Some(namespace) = namespace {
+        if let (Some(namespace), false) = (namespace, expression) {
             self.register_namespace_member(
                 namespace,
                 union_name,
@@ -719,6 +829,7 @@ impl<'p> Checker<'p> {
         self.cache_type(node_id, type_id);
 
         let mut union_type = UnionType {
+            base_type: None,
             name: String::new(),
             node: Some(node_id),
             symbol: self.symbol_for_node(node_id),
@@ -739,7 +850,13 @@ impl<'p> Checker<'p> {
                 continue;
             }
             let nested_expression = match self.type_arena.get(non_alias).clone() {
-                Type::Union(nested) if nested.expression => Some(nested),
+                Type::Union(nested)
+                    if nested.node.is_some_and(|node| {
+                        matches!(self.node(node).data, NodeData::UnionExpression { .. })
+                    }) =>
+                {
+                    Some(nested)
+                }
                 _ => None,
             };
             if let Some(nested) = nested_expression {
@@ -785,6 +902,7 @@ impl<'p> Checker<'p> {
         self.cache_type(node_id, type_id);
 
         let mut model = ModelType {
+            expression: true,
             name: String::new(),
             node: Some(node_id),
             symbol: self.symbol_for_node(node_id),
@@ -1279,6 +1397,10 @@ impl<'p> Checker<'p> {
             NodeData::ScalarStatement { .. } => self.check_scalar(node_id),
             NodeData::EnumStatement { .. } => self.check_enum(node_id),
             NodeData::UnionStatement { .. } => self.check_union_statement(node_id),
+            NodeData::ModelDeclarationExpression { .. } => self.check_model_statement(node_id),
+            NodeData::ScalarDeclarationExpression { .. } => self.check_scalar(node_id),
+            NodeData::EnumDeclarationExpression { .. } => self.check_enum(node_id),
+            NodeData::UnionDeclarationExpression { .. } => self.check_union_statement(node_id),
             NodeData::AliasStatement { .. } => self.check_alias(node_id),
             NodeData::OperationStatement { .. } => self.check_operation(node_id, None),
             NodeData::InterfaceStatement { .. } => self.check_interface(node_id),
@@ -1447,6 +1569,7 @@ impl<'p> Checker<'p> {
         };
         self.alias_structural_depth -= 1;
         let model = ModelType {
+            expression: false,
             name: String::new(),
             node: Some(node_id),
             symbol: self.symbol_for_node(node_id),
@@ -1829,6 +1952,7 @@ impl<'p> Checker<'p> {
                 &subst,
             )),
             Type::Scalar(scalar) => Type::Scalar(ScalarType {
+                expression: scalar.expression,
                 name: scalar.name,
                 node: scalar.node,
                 symbol: scalar.symbol,
@@ -1899,6 +2023,7 @@ impl<'p> Checker<'p> {
         subst: &HashMap<TypeId, TypeId>,
     ) -> ModelType {
         let mut model = ModelType {
+            expression: source.expression,
             name: source.name,
             node: source.node,
             symbol: source.symbol,
@@ -1959,6 +2084,9 @@ impl<'p> Checker<'p> {
         subst: &HashMap<TypeId, TypeId>,
     ) -> UnionType {
         let mut union = UnionType {
+            base_type: source
+                .base_type
+                .map(|base| self.substitute_type(base, subst)),
             name: source.name,
             node: source.node,
             symbol: source.symbol,
@@ -2142,6 +2270,138 @@ impl<'p> Checker<'p> {
             return None;
         }
         Some(source)
+    }
+
+    fn optional_identifier_name(&self, id: Option<NodeId>) -> String {
+        id.map(|id| self.identifier_name(id)).unwrap_or_default()
+    }
+
+    /// Diagnostics for declarations used in expression position. The TS checker skips
+    /// `declaration-expression-disabled` when the `declaration-expressions` compiler feature is
+    /// enabled in tspconfig; the Rust port has no feature configuration so it always reports.
+    fn report_declaration_expression_constraints(
+        &mut self,
+        node_id: NodeId,
+        template_parameters: &[NodeId],
+    ) {
+        if let Some(first) = template_parameters.first() {
+            self.report(
+                "templated-declaration-in-expression",
+                "A declaration used as an expression cannot have template parameters as it cannot be referenced or instantiated.",
+                *first,
+            );
+        }
+        self.report(
+            "declaration-expression-disabled",
+            "Declaration expressions require the 'declaration-expressions' feature to be enabled. Add 'declaration-expressions' to the 'features' list in your tspconfig.yaml.",
+            node_id,
+        );
+    }
+
+    fn check_union_base_type(
+        &mut self,
+        union_symbol: Option<SymbolId>,
+        union_id: TypeId,
+        union_name: &str,
+        extends: NodeId,
+    ) -> Option<TypeId> {
+        let target_symbol = self.resolved_symbol(extends);
+        if let Some(target_symbol) = target_symbol {
+            if Some(target_symbol) == union_symbol || self.base_stack.contains(&target_symbol) {
+                self.report_base_cycle(target_symbol, extends);
+                return None;
+            }
+        }
+
+        if let Some(union_symbol) = union_symbol {
+            self.base_stack.push(union_symbol);
+        }
+        let base_type = self.type_for_node(extends);
+        if union_symbol.is_some() {
+            self.base_stack.pop();
+        }
+        let base_type = self.get_non_alias_type(base_type);
+        let unresolved =
+            |node| matches!(self.resolutions.get(&node), Some(ResolutionResult::Unknown));
+        let is_reference = self.node(extends).kind == SyntaxKind::TypeReference;
+        if matches!(self.type_arena.get(base_type), Type::Error)
+            || (is_reference
+                && (unresolved(extends) || self.reference_target(extends).is_some_and(unresolved)))
+        {
+            return None;
+        }
+        if self.union_expression_references(base_type, union_id) {
+            let name = if union_name.is_empty() {
+                "(anonymous union)"
+            } else {
+                union_name
+            };
+            self.report(
+                "circular-base-type",
+                &format!("Type '{name}' recursively references itself as a base type."),
+                extends,
+            );
+            return None;
+        }
+        match self.type_arena.get(base_type) {
+            Type::TemplateParameter(_) => None,
+            Type::Model(model)
+                if model.node.is_some_and(|node| {
+                    matches!(self.node(node).data, NodeData::ModelExpression { .. })
+                }) =>
+            {
+                self.report(
+                    "extend-union",
+                    "Unions cannot extend model expressions.",
+                    extends,
+                );
+                None
+            }
+            Type::Model(_) | Type::Enum(_) | Type::Union(_) => Some(base_type),
+            _ if self.is_scalar_like(base_type) => Some(base_type),
+            _ => {
+                self.report(
+                    "extend-union",
+                    "Union `extends` must specify a model, scalar, enum, or union.",
+                    extends,
+                );
+                None
+            }
+        }
+    }
+
+    /// Whether `target` is reachable from `type_id` through union expressions only.
+    fn union_expression_references(&self, type_id: TypeId, target: TypeId) -> bool {
+        if type_id == target {
+            return true;
+        }
+        let Type::Union(union) = self.type_arena.get(type_id) else {
+            return false;
+        };
+        if !union.expression {
+            return false;
+        }
+        union.variants.values().any(|variant_id| {
+            self.union_variant_type(*variant_id).is_some_and(|variant| {
+                self.union_expression_references(variant.variant_type, target)
+            })
+        })
+    }
+
+    fn check_union_variant_against_base_type(
+        &mut self,
+        variant_type: TypeId,
+        base_type: TypeId,
+        target: NodeId,
+    ) {
+        if matches!(self.type_arena.get(variant_type), Type::Error) {
+            return;
+        }
+        let diagnostics = {
+            let relation = TypeRelationChecker::new(&self.type_arena);
+            relation.check_type_assignable_span(variant_type, base_type, self.node_span(target))
+        };
+        self.diagnostics.extend(diagnostics);
     }
 
     fn check_scalar_extends(
@@ -2529,6 +2789,7 @@ impl<'p> Checker<'p> {
 
     fn empty_parameter_model(&mut self, namespace: Option<TypeId>) -> TypeId {
         self.type_arena.add(Type::Model(ModelType {
+            expression: true,
             name: String::new(),
             node: None,
             symbol: None,
@@ -2555,6 +2816,7 @@ impl<'p> Checker<'p> {
         };
         let model_id = self.type_arena.reserve();
         let mut model = ModelType {
+            expression: source_model.expression,
             name: String::new(),
             node: source_model.node,
             symbol: None,

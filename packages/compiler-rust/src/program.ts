@@ -60,6 +60,7 @@ export interface Model extends BaseType {
   sourceModels: Array<{ usage: "is"; model: Model }>;
   derivedModels: Model[];
   indexer?: { key: Scalar; value: Type };
+  expression: boolean;
   templateArguments?: Type[];
   templateParameters?: TemplateParameter[];
   isTemplateDeclaration: boolean;
@@ -82,6 +83,7 @@ export interface Scalar extends BaseType {
   baseScalar?: Scalar;
   derivedScalars: Scalar[];
   constructors: Map<string, never>;
+  expression: boolean;
   templateArguments?: Type[];
   templateParameters?: TemplateParameter[];
   isTemplateDeclaration: boolean;
@@ -92,6 +94,7 @@ export interface Enum extends BaseType {
   name: string;
   namespace?: Namespace;
   members: Map<string, EnumMember>;
+  expression: boolean;
 }
 
 export interface EnumMember extends BaseType {
@@ -107,6 +110,7 @@ export interface Union extends BaseType {
   namespace?: Namespace;
   variants: Map<string, UnionVariant>;
   expression: boolean;
+  baseType?: Model | Scalar | Enum | Union;
   templateArguments?: Type[];
   templateParameters?: TemplateParameter[];
   isTemplateDeclaration: boolean;
@@ -308,6 +312,7 @@ export function createProgram(checkResult: CheckResultJs): Program {
         name: scalarName,
         derivedScalars: [],
         constructors: new Map<string, never>(),
+        expression: false,
         isTemplateDeclaration: false,
       };
     }
@@ -342,6 +347,7 @@ export function createProgram(checkResult: CheckResultJs): Program {
           properties: new Map(),
           sourceModels: [],
           derivedModels: [],
+          expression: serialized.expression ?? false,
           isTemplateDeclaration: serialized.isTemplateDeclaration,
         };
       case "ModelProperty":
@@ -359,10 +365,17 @@ export function createProgram(checkResult: CheckResultJs): Program {
           name: serialized.name,
           derivedScalars: [],
           constructors: new Map<string, never>(),
+          expression: serialized.expression ?? false,
           isTemplateDeclaration: serialized.isTemplateDeclaration,
         };
       case "Enum":
-        return { ...base, kind: "Enum", name: serialized.name, members: new Map() };
+        return {
+          ...base,
+          kind: "Enum",
+          name: serialized.name,
+          members: new Map(),
+          expression: serialized.expression ?? false,
+        };
       case "EnumMember":
         return {
           ...base,
@@ -483,6 +496,7 @@ export function createProgram(checkResult: CheckResultJs): Program {
       case "Union":
         setOptionalNamespace(type, serialized.namespaceId);
         type.variants = namedMap<UnionVariant>(serialized.memberNames, serialized.memberIds);
+        type.baseType = optionalType<Model | Scalar | Enum | Union>(serialized.baseTypeId);
         type.templateArguments = typeArray(serialized.templateArgumentIds);
         type.templateParameters = typeArray<TemplateParameter>(serialized.templateParameterIds);
         break;

@@ -213,12 +213,60 @@ impl<'p, 't> NameResolver<'p, 't> {
             NodeData::UnionStatement {
                 decorators,
                 template_parameters,
+                extends,
                 options,
                 ..
             } => self.with_node_scope(node_id, |resolver| {
                 resolver.resolve_nodes(&decorators);
                 resolver.resolve_template_parameters(&template_parameters);
+                resolver.resolve_optional_type_ref(extends);
                 resolver.resolve_nodes(&options);
+            }),
+            NodeData::ModelDeclarationExpression {
+                decorators,
+                template_parameters,
+                extends,
+                is,
+                properties,
+                ..
+            } => self.with_node_scope(node_id, |resolver| {
+                resolver.resolve_nodes(&decorators);
+                resolver.resolve_template_parameters(&template_parameters);
+                resolver.resolve_optional_type_ref(extends);
+                resolver.resolve_optional_type_ref(is);
+                resolver.resolve_nodes(&properties);
+            }),
+            NodeData::ScalarDeclarationExpression {
+                decorators,
+                template_parameters,
+                extends,
+                members,
+                ..
+            } => self.with_node_scope(node_id, |resolver| {
+                resolver.resolve_nodes(&decorators);
+                resolver.resolve_template_parameters(&template_parameters);
+                resolver.resolve_optional_type_ref(extends);
+                resolver.resolve_nodes(&members);
+            }),
+            NodeData::UnionDeclarationExpression {
+                decorators,
+                template_parameters,
+                extends,
+                options,
+                ..
+            } => self.with_node_scope(node_id, |resolver| {
+                resolver.resolve_nodes(&decorators);
+                resolver.resolve_template_parameters(&template_parameters);
+                resolver.resolve_optional_type_ref(extends);
+                resolver.resolve_nodes(&options);
+            }),
+            NodeData::EnumDeclarationExpression {
+                decorators,
+                members,
+                ..
+            } => self.with_node_scope(node_id, |resolver| {
+                resolver.resolve_nodes(&decorators);
+                resolver.resolve_nodes(&members);
             }),
             NodeData::UnionVariant {
                 value, decorators, ..
@@ -460,6 +508,13 @@ impl<'p, 't> NameResolver<'p, 't> {
             }
             NodeData::ModelExpression { properties, .. } => {
                 self.with_node_scope(node_id, |resolver| resolver.resolve_nodes(&properties));
+                ResolutionResult::Unknown
+            }
+            NodeData::ModelDeclarationExpression { .. }
+            | NodeData::ScalarDeclarationExpression { .. }
+            | NodeData::UnionDeclarationExpression { .. }
+            | NodeData::EnumDeclarationExpression { .. } => {
+                self.resolve_node(node_id);
                 ResolutionResult::Unknown
             }
             NodeData::StringLiteral { .. }

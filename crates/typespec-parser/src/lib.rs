@@ -9,7 +9,8 @@ use std::rc::Rc;
 use ast::{AstArena, NamespaceBody, Node, NodeData, NodeFlags, NodeId};
 use syntax_kind::SyntaxKind;
 use typespec_scanner::token::{
-    is_keyword, is_punctuation, is_reserved_keyword, is_statement_keyword, token_display, Token,
+    is_declaration_expression_statement_keyword, is_keyword, is_modifier, is_punctuation,
+    is_reserved_keyword, is_statement_keyword, token_display, Token,
 };
 use typespec_scanner::{Scanner, TokenFlags};
 use typespec_source::{Diagnostic, DiagnosticSeverity, SourceFile, Span};
@@ -82,6 +83,9 @@ struct ListSpec {
     tolerated_delimiter_is_valid: bool,
     invalid_annotation_target: Option<&'static str>,
     allowed_statement_keyword: Token,
+    /// When true, `model`/`enum`/`union`/`scalar` keywords start a declaration expression
+    /// element instead of signalling that the list ended with a missing close token.
+    allow_declaration_expression: bool,
 }
 
 impl ListKind {
@@ -95,6 +99,7 @@ impl ListKind {
             tolerated_delimiter_is_valid: true,
             invalid_annotation_target: None,
             allowed_statement_keyword: Token::None,
+            allow_declaration_expression: false,
         };
         let expressions = ListSpec {
             allow_empty: true,
@@ -105,6 +110,7 @@ impl ListKind {
             tolerated_delimiter_is_valid: false,
             invalid_annotation_target: Some("expression"),
             allowed_statement_keyword: Token::None,
+            allow_declaration_expression: false,
         };
         match self {
             ListKind::OperationParameters => ListSpec {
@@ -114,7 +120,10 @@ impl ListKind {
                 tolerated_delimiter: Token::Semicolon,
                 ..properties
             },
-            ListKind::DecoratorArguments | ListKind::FunctionArguments => expressions,
+            ListKind::DecoratorArguments | ListKind::FunctionArguments => ListSpec {
+                allow_declaration_expression: true,
+                ..expressions
+            },
             ListKind::ModelProperties | ListKind::EnumMembers => properties,
             ListKind::ObjectLiteralProperties => ListSpec {
                 open: Some(Token::HashBrace),
@@ -140,6 +149,7 @@ impl ListKind {
                 open: Some(Token::LessThan),
                 close: Some(Token::GreaterThan),
                 invalid_annotation_target: Some("template parameter"),
+                allow_declaration_expression: matches!(self, ListKind::TemplateArguments),
                 ..expressions
             },
             ListKind::Heritage => ListSpec {
@@ -151,6 +161,7 @@ impl ListKind {
             ListKind::Tuple => ListSpec {
                 open: Some(Token::OpenBracket),
                 close: Some(Token::CloseBracket),
+                allow_declaration_expression: true,
                 ..expressions
             },
             ListKind::ArrayLiteral => ListSpec {
@@ -293,6 +304,7 @@ impl<'src> Parser<'src> {
                 | Token::ConstKeyword
                 | Token::ExternKeyword
                 | Token::InternalKeyword
+                | Token::AutoKeyword
                 | Token::FnKeyword
                 | Token::DecKeyword => self.parse_declaration(
                     annotations.pos,
@@ -344,6 +356,7 @@ impl<'src> Parser<'src> {
                 | Token::ConstKeyword
                 | Token::ExternKeyword
                 | Token::InternalKeyword
+                | Token::AutoKeyword
                 | Token::FnKeyword
                 | Token::DecKeyword => self.parse_declaration(
                     annotations.pos,
@@ -368,7 +381,11 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_annotations(&mut self) -> Annotations {
-        let (mut pos, mut docs) = self.parse_doc_list(false);
+        self.parse_annotations_with(false)
+    }
+
+    fn parse_annotations_with(&mut self, skip_parsing_doc_nodes: bool) -> Annotations {
+        let (mut pos, mut docs) = self.parse_doc_list(skip_parsing_doc_nodes);
         let mut decorators = Vec::new();
         let mut directives = Vec::new();
         while matches!(self.token(), Token::Hash | Token::At) {
@@ -377,7 +394,7 @@ impl<'src> Parser<'src> {
             } else {
                 decorators.push(self.parse_decorator_expression());
             }
-            let (doc_pos, added_docs) = self.parse_doc_list(false);
+            let (doc_pos, added_docs) = self.parse_doc_list(skip_parsing_doc_nodes);
             if !added_docs.is_empty() {
                 if docs.is_empty() {
                     pos = doc_pos;
@@ -400,6 +417,14 @@ impl<'src> Parser<'src> {
 
         let ranges = std::mem::take(&mut self.doc_ranges);
         let pos = ranges[0].pos;
+        (pos, self.parse_doc_ranges(ranges))
+    }
+
+    /// Parse captured doc comment ranges into doc nodes without reading the pending ranges.
+    fn parse_doc_ranges(&mut self, ranges: Vec<DocRange>) -> Vec<NodeId> {
+        if ranges.is_empty() || !self.options.docs {
+            return Vec::new();
+        }
         let mut docs = Vec::with_capacity(ranges.len());
         for range in ranges {
             let doc = self.parse_doc_comment(&range);
@@ -411,7 +436,7 @@ impl<'src> Parser<'src> {
             }
             docs.push(doc);
         }
-        (pos, docs)
+        docs
     }
 
     fn parse_declaration(
@@ -464,6 +489,9 @@ impl<'src> Parser<'src> {
             Token::InternalKeyword => {
                 Some(self.parse_keyword(SyntaxKind::InternalKeyword, Token::InternalKeyword))
             }
+            Token::AutoKeyword => {
+                Some(self.parse_keyword(SyntaxKind::AutoKeyword, Token::AutoKeyword))
+            }
             _ => None,
         }
     }
@@ -474,6 +502,7 @@ impl<'src> Parser<'src> {
             match self.arena.get(*modifier).kind {
                 SyntaxKind::ExternKeyword => flags |= 1 << 1,
                 SyntaxKind::InternalKeyword => flags |= 1 << 2,
+                SyntaxKind::AutoKeyword => flags |= 1 << 3,
                 _ => {}
             }
         }
@@ -597,6 +626,8 @@ impl<'src> Parser<'src> {
         self.parse_expected(Token::UnionKeyword);
         let id = self.parse_identifier(None, false, false);
         let template = self.parse_template_parameter_list();
+        self.expect_token_is_one_of(&[Token::OpenBrace, Token::ExtendsKeyword]);
+        let extends = self.parse_optional_union_extends();
         let options = self.parse_list(ListKind::UnionVariants, |parser, pos, decorators| {
             parser.parse_union_variant(pos, decorators)
         });
@@ -614,9 +645,71 @@ impl<'src> Parser<'src> {
                 modifier_flags,
                 template_parameters: template.items,
                 template_parameters_range: template.range,
+                extends,
                 options: options.items,
             },
         )
+    }
+
+    fn parse_optional_union_extends(&mut self) -> Option<NodeId> {
+        if self.parse_optional(Token::ExtendsKeyword) {
+            Some(self.parse_expression())
+        } else {
+            None
+        }
+    }
+
+    fn parse_union_declaration_expression(&mut self, pos: u32, decorators: Vec<NodeId>) -> NodeId {
+        self.parse_expected(Token::UnionKeyword);
+        let id = self.parse_optional_declaration_expression_identifier();
+        let template = self.parse_template_parameter_list();
+        let extends = self.parse_optional_union_extends();
+        let options = self.parse_list(ListKind::UnionVariants, |parser, pos, decorators| {
+            parser.parse_union_variant(pos, decorators)
+        });
+        let (end, flags) = self.finish_node(pos);
+        self.add_node_with_flags(
+            SyntaxKind::UnionDeclarationExpression,
+            pos,
+            end,
+            flags,
+            NodeData::UnionDeclarationExpression {
+                id,
+                decorators,
+                template_parameters: template.items,
+                template_parameters_range: template.range,
+                extends,
+                options: options.items,
+            },
+        )
+    }
+
+    fn parse_optional_declaration_expression_identifier(&mut self) -> Option<NodeId> {
+        if self.token() == Token::Identifier {
+            Some(self.parse_identifier(None, false, false))
+        } else {
+            None
+        }
+    }
+
+    /// Parse a declaration in expression position (`model`/`enum`/`union`/`scalar`).
+    fn parse_declaration_expression(
+        &mut self,
+        pos: u32,
+        decorators: Vec<NodeId>,
+        docs: Vec<NodeId>,
+    ) -> NodeId {
+        let node = match self.token() {
+            Token::ModelKeyword => self.parse_model_declaration_expression(pos, decorators),
+            Token::EnumKeyword => self.parse_enum_declaration_expression(pos, decorators),
+            Token::UnionKeyword => self.parse_union_declaration_expression(pos, decorators),
+            Token::ScalarKeyword => self.parse_scalar_declaration_expression(pos, decorators),
+            _ => unreachable!("Expected a declaration expression keyword."),
+        };
+        if !docs.is_empty() {
+            self.arena.get_mut(node).docs = docs;
+        }
+        node
     }
 
     fn parse_union_variant(&mut self, pos: u32, decorators: Vec<NodeId>) -> NodeId {
@@ -761,37 +854,7 @@ impl<'src> Parser<'src> {
         self.parse_expected(Token::ModelKeyword);
         let id = self.parse_identifier(None, false, false);
         let template = self.parse_template_parameter_list();
-        self.expect_token_is_one_of(&[
-            Token::OpenBrace,
-            Token::Equals,
-            Token::ExtendsKeyword,
-            Token::IsKeyword,
-        ]);
-        let extends = if self.parse_optional(Token::ExtendsKeyword) {
-            Some(self.parse_expression())
-        } else {
-            None
-        };
-        let is = if extends.is_none() && self.parse_optional(Token::IsKeyword) {
-            Some(self.parse_expression())
-        } else {
-            None
-        };
-        let prop_detail = if is.is_some() {
-            let tok = self.expect_token_is_one_of(&[Token::Semicolon, Token::OpenBrace]);
-            if tok == Token::Semicolon {
-                self.next_token();
-                self.create_empty_list()
-            } else {
-                self.parse_list(ListKind::ModelProperties, |parser, pos, decorators| {
-                    parser.parse_model_property_or_spread(pos, decorators)
-                })
-            }
-        } else {
-            self.parse_list(ListKind::ModelProperties, |parser, pos, decorators| {
-                parser.parse_model_property_or_spread(pos, decorators)
-            })
-        };
+        let (extends, is, prop_detail) = self.parse_model_body(false);
         let modifier_flags = self.modifier_flags(&modifiers);
         let (end, flags) = self.finish_node(pos);
         self.add_node_with_flags(
@@ -812,6 +875,79 @@ impl<'src> Parser<'src> {
                 body_range: prop_detail.range,
             },
         )
+    }
+
+    fn parse_model_declaration_expression(&mut self, pos: u32, decorators: Vec<NodeId>) -> NodeId {
+        self.parse_expected(Token::ModelKeyword);
+        let id = self.parse_optional_declaration_expression_identifier();
+        let template = self.parse_template_parameter_list();
+        let (extends, is, prop_detail) = self.parse_model_body(true);
+        let (end, flags) = self.finish_node(pos);
+        self.add_node_with_flags(
+            SyntaxKind::ModelDeclarationExpression,
+            pos,
+            end,
+            flags,
+            NodeData::ModelDeclarationExpression {
+                id,
+                decorators,
+                template_parameters: template.items,
+                template_parameters_range: template.range,
+                extends,
+                is,
+                properties: prop_detail.items,
+                body_range: prop_detail.range,
+            },
+        )
+    }
+
+    fn parse_model_body(
+        &mut self,
+        in_expression_position: bool,
+    ) -> (Option<NodeId>, Option<NodeId>, ListResult) {
+        self.expect_token_is_one_of(&[
+            Token::OpenBrace,
+            Token::Equals,
+            Token::ExtendsKeyword,
+            Token::IsKeyword,
+        ]);
+        let extends = if self.parse_optional(Token::ExtendsKeyword) {
+            Some(self.parse_expression())
+        } else {
+            None
+        };
+        let is = if extends.is_none() && self.parse_optional(Token::IsKeyword) {
+            Some(self.parse_expression())
+        } else {
+            None
+        };
+        let prop_detail = if is.is_some() {
+            if in_expression_position {
+                // No `;` terminator in expression position: only parse a body when present.
+                if self.token() == Token::OpenBrace {
+                    self.parse_list(ListKind::ModelProperties, |parser, pos, decorators| {
+                        parser.parse_model_property_or_spread(pos, decorators)
+                    })
+                } else {
+                    self.create_empty_list()
+                }
+            } else {
+                let tok = self.expect_token_is_one_of(&[Token::Semicolon, Token::OpenBrace]);
+                if tok == Token::Semicolon {
+                    self.next_token();
+                    self.create_empty_list()
+                } else {
+                    self.parse_list(ListKind::ModelProperties, |parser, pos, decorators| {
+                        parser.parse_model_property_or_spread(pos, decorators)
+                    })
+                }
+            }
+        } else {
+            self.parse_list(ListKind::ModelProperties, |parser, pos, decorators| {
+                parser.parse_model_property_or_spread(pos, decorators)
+            })
+        };
+        (extends, is, prop_detail)
     }
 
     fn parse_template_parameter_list(&mut self) -> ListResult {
@@ -909,14 +1045,7 @@ impl<'src> Parser<'src> {
         } else {
             None
         };
-        let members = if self.token() == Token::Semicolon {
-            self.next_token();
-            self.create_empty_list()
-        } else {
-            self.parse_list(ListKind::ScalarMembers, |parser, pos, decorators| {
-                parser.parse_scalar_member(pos, decorators)
-            })
-        };
+        let members = self.parse_scalar_members(false);
         let modifier_flags = self.modifier_flags(&modifiers);
         let (end, flags) = self.finish_node(pos);
         self.add_node_with_flags(
@@ -936,6 +1065,49 @@ impl<'src> Parser<'src> {
                 body_range: members.range,
             },
         )
+    }
+
+    fn parse_scalar_declaration_expression(&mut self, pos: u32, decorators: Vec<NodeId>) -> NodeId {
+        self.parse_expected(Token::ScalarKeyword);
+        let id = self.parse_optional_declaration_expression_identifier();
+        let template = self.parse_template_parameter_list();
+        let extends = if self.parse_optional(Token::ExtendsKeyword) {
+            Some(self.parse_reference_expression(None))
+        } else {
+            None
+        };
+        let members = self.parse_scalar_members(true);
+        let (end, flags) = self.finish_node(pos);
+        self.add_node_with_flags(
+            SyntaxKind::ScalarDeclarationExpression,
+            pos,
+            end,
+            flags,
+            NodeData::ScalarDeclarationExpression {
+                id,
+                decorators,
+                template_parameters: template.items,
+                template_parameters_range: template.range,
+                extends,
+                members: members.items,
+                body_range: members.range,
+            },
+        )
+    }
+
+    fn parse_scalar_members(&mut self, in_expression_position: bool) -> ListResult {
+        // No `;` terminator in expression position: only parse a body when present.
+        if in_expression_position && self.token() != Token::OpenBrace {
+            return self.create_empty_list();
+        }
+        if self.token() == Token::Semicolon {
+            self.next_token();
+            self.create_empty_list()
+        } else {
+            self.parse_list(ListKind::ScalarMembers, |parser, pos, decorators| {
+                parser.parse_scalar_member(pos, decorators)
+            })
+        }
     }
 
     fn parse_scalar_member(&mut self, pos: u32, decorators: Vec<NodeId>) -> NodeId {
@@ -979,6 +1151,26 @@ impl<'src> Parser<'src> {
                 decorators,
                 modifiers,
                 modifier_flags,
+                members: members.items,
+            },
+        )
+    }
+
+    fn parse_enum_declaration_expression(&mut self, pos: u32, decorators: Vec<NodeId>) -> NodeId {
+        self.parse_expected(Token::EnumKeyword);
+        let id = self.parse_optional_declaration_expression_identifier();
+        let members = self.parse_list(ListKind::EnumMembers, |parser, pos, decorators| {
+            parser.parse_enum_member_or_spread(pos, decorators)
+        });
+        let (end, flags) = self.finish_node(pos);
+        self.add_node_with_flags(
+            SyntaxKind::EnumDeclarationExpression,
+            pos,
+            end,
+            flags,
+            NodeData::EnumDeclarationExpression {
+                id,
+                decorators,
                 members: members.items,
             },
         )
@@ -1589,10 +1781,28 @@ impl<'src> Parser<'src> {
                 Token::TrueKeyword | Token::FalseKeyword => return self.parse_boolean_literal(),
                 Token::NumericLiteral => return self.parse_numeric_literal(),
                 Token::OpenBrace => return self.parse_model_expression(),
+                Token::ModelKeyword
+                | Token::EnumKeyword
+                | Token::UnionKeyword
+                | Token::ScalarKeyword => {
+                    // A leading doc comment applies to the declaration expression like `@doc`.
+                    let (pos, docs) = self.parse_doc_list(false);
+                    return self.parse_declaration_expression(pos, Vec::new(), docs);
+                }
                 Token::OpenBracket => return self.parse_tuple_expression(),
                 Token::OpenParen => return self.parse_parenthesized_expression(),
                 Token::At => {
+                    // Capture doc comments preceding the decorators before they are parsed.
+                    let (doc_pos, docs) = self.parse_doc_list(false);
+                    let pos = if docs.is_empty() {
+                        self.token_pos()
+                    } else {
+                        doc_pos
+                    };
                     let decorators = self.parse_decorator_list();
+                    if is_declaration_expression_statement_keyword(self.token()) {
+                        return self.parse_declaration_expression(pos, decorators, docs);
+                    }
                     self.report_invalid_decorators(&decorators, "expression");
                 }
                 Token::Hash => {
@@ -2091,14 +2301,26 @@ impl<'src> Parser<'src> {
         }
         loop {
             let starting_pos = self.token_pos();
-            let annotations = self.parse_annotations();
+            // Capture pending doc comments before decorators are parsed (which clears them) so
+            // they can be attached to a decorated declaration expression element.
+            let pending_doc_ranges = if spec.allow_declaration_expression {
+                Some(self.doc_ranges.clone())
+            } else {
+                None
+            };
+            let annotations = self.parse_annotations_with(spec.invalid_annotation_target.is_some());
+            let declaration_expression_with_decorators = spec.allow_declaration_expression
+                && !annotations.decorators.is_empty()
+                && is_declaration_expression_statement_keyword(self.token());
             if let Some(target) = spec.invalid_annotation_target {
-                self.report_invalid_decorators(&annotations.decorators, target);
                 self.report_invalid_directive(&annotations.directives, target);
+                if !declaration_expression_with_decorators {
+                    self.report_invalid_decorators(&annotations.decorators, target);
+                }
             }
             if annotations.directives.is_empty()
                 && annotations.decorators.is_empty()
-                && self.at_end_of_list_with_error(spec)
+                && self.at_end_of_list_with_error(spec, true)
             {
                 if let Some(close) = spec.close {
                     if self.parse_expected(close) {
@@ -2107,7 +2329,18 @@ impl<'src> Parser<'src> {
                 }
                 break;
             }
-            let item = parse_item(self, annotations.pos, annotations.decorators);
+            let item = if declaration_expression_with_decorators {
+                let pending = pending_doc_ranges.unwrap_or_default();
+                let doc_pos = pending.first().map(|range| range.pos);
+                let decl_docs = self.parse_doc_ranges(pending);
+                let decl_pos = match doc_pos {
+                    Some(doc_pos) if !decl_docs.is_empty() => doc_pos,
+                    _ => annotations.pos,
+                };
+                self.parse_declaration_expression(decl_pos, annotations.decorators, decl_docs)
+            } else {
+                parse_item(self, annotations.pos, annotations.decorators)
+            };
             if spec.invalid_annotation_target.is_none() {
                 self.attach_annotations(item, annotations.docs, annotations.directives);
             }
@@ -2125,7 +2358,7 @@ impl<'src> Parser<'src> {
             } else if self.parse_optional(spec.close.unwrap()) {
                 result.range.end = self.previous_end_u32();
                 break;
-            } else if self.at_end_of_list_with_error(spec) {
+            } else if self.at_end_of_list_with_error(spec, false) {
                 if let Some(close) = spec.close {
                     if self.parse_expected(close) {
                         result.range.end = self.previous_end_u32();
@@ -2175,10 +2408,15 @@ impl<'src> Parser<'src> {
         false
     }
 
-    fn at_end_of_list_with_error(&self, spec: ListSpec) -> bool {
+    /// `at_element_start`: a declaration-expression keyword is a valid element start in lists
+    /// that allow declaration expressions, so it only ends the list after an element.
+    fn at_end_of_list_with_error(&self, spec: ListSpec, at_element_start: bool) -> bool {
         spec.close.is_some()
             && (is_statement_keyword(self.token()) || self.token() == Token::EndOfFile)
             && self.token() != spec.allowed_statement_keyword
+            && !(at_element_start
+                && spec.allow_declaration_expression
+                && is_declaration_expression_statement_keyword(self.token()))
     }
 
     fn parse_empty_statement(&mut self, pos: u32) -> NodeId {
@@ -2506,10 +2744,6 @@ impl<'src> Parser<'src> {
             );
         }
     }
-}
-
-fn is_modifier(token: Token) -> bool {
-    matches!(token, Token::ExternKeyword | Token::InternalKeyword)
 }
 
 fn parse_js_number(text: &str) -> f64 {

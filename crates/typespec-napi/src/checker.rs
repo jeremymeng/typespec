@@ -362,6 +362,7 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
             serialized.node_id = scalar.node.map(|id| id.as_u32());
             serialized.symbol_id = scalar.symbol.map(|id| id.as_u32());
             serialized.base_type_id = scalar.base_scalar.map(|id| id.as_u32());
+            serialized.expression = Some(scalar.expression);
             serialized.namespace_id = scalar.namespace.map(|id| id.as_u32());
             serialized.decorator_node_ids =
                 scalar.decorators.iter().map(|d| d.node.as_u32()).collect();
@@ -386,6 +387,7 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
             serialized.base_type_id = model.base_model.map(|id| id.as_u32());
             serialized.source_model_id = model.source_model.map(|id| id.as_u32());
             serialized.indexer_type_id = model.indexer.map(|id| id.as_u32());
+            serialized.expression = Some(model.expression);
             serialized.effective_type_id =
                 Some(get_effective_model_type(arena, TypeId::new(id)).as_u32());
             serialized.namespace_id = model.namespace.map(|id| id.as_u32());
@@ -422,6 +424,7 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
             serialized.member_names = en.members.keys().cloned().collect();
             serialized.member_ids = en.members.values().map(|id| id.as_u32()).collect();
             serialized.namespace_id = en.namespace.map(|id| id.as_u32());
+            serialized.expression = Some(en.expression);
             serialized.decorator_node_ids = en.decorators.iter().map(|d| d.node.as_u32()).collect();
         }
         Type::EnumMember(member) => {
@@ -453,6 +456,7 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
             serialized.member_names = union.variants.keys().cloned().collect();
             serialized.member_ids = union.variants.values().map(|id| id.as_u32()).collect();
             serialized.expression = Some(union.expression);
+            serialized.base_type_id = union.base_type.map(|id| id.as_u32());
             serialized.namespace_id = union.namespace.map(|id| id.as_u32());
             serialized.decorator_node_ids =
                 union.decorators.iter().map(|d| d.node.as_u32()).collect();

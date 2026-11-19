@@ -283,4 +283,50 @@ describe("checker unions comparison: Rust vs TS", () => {
   it("does not report duplicates for omitted variant names", () => {
     expectNoErrors(`union U { string, string }`);
   });
+
+  describe("union extends", () => {
+    const diagnosticCodes = [
+      "union-extends-disabled",
+      "extend-union",
+      "unassignable",
+      "circular-base-type",
+    ];
+
+    it.each([
+      ["assignable variants", `union U extends string { a: "a", b: "b" }`],
+      ["unassignable variant", `union U extends string { a: "a", b: 1 }`],
+      ["model expression base", `union U extends { a: string } { a: { a: "x" } }`],
+      ["operation base", `op o(): void; union U extends o { a: string }`],
+      ["self reference", `union U extends U { a: string }`],
+      ["union expression self reference", `union U extends U | string { a: string }`],
+      ["named union base", `union B { string, int32 } union U extends B { a: string }`],
+      ["templated base", `union U<T> extends T { a: T } alias X = U<string>;`],
+      ["unknown base", `union U extends unknown { a: string }`],
+      ["unresolved base", `union U extends Missing { a: string }`],
+      ["int32 base", `union U extends int32 { a: 1, b: "x" }`],
+    ])(
+      "reports diagnostics like TS: %s",
+      async (_name, source) => {
+        await expectDiagnosticsLikeTs(source, diagnosticCodes);
+      },
+      10000,
+    );
+
+    it("records the base type", () => {
+      const result = rust(`union U extends string { a: "a" }`);
+      const u = unionType(result, "U");
+      expect(typeById(result, u.baseTypeId!).kind).toBe("String");
+      expect(u.memberNames).toEqual(["a"]);
+    });
+  });
+
+  it("does not flatten union declaration expressions into union expressions", () => {
+    const result = rust(`model Foo { x: union { a: string } | int32; }`);
+    const propType = typeById(result, property(result, "x").propertyTypeId!);
+    expect(propType.memberIds).toHaveLength(2);
+    const nested = typeById(result, typeById(result, propType.memberIds[0]).variantTypeId!);
+    expect(nested.kind).toBe("Union");
+    expect(nested.expression).toBe(true);
+    expect(nested.memberNames).toEqual(["a"]);
+  });
 });

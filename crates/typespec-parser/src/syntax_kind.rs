@@ -72,7 +72,12 @@ pub enum SyntaxKind {
     CallExpression = 68,
     ScalarConstructor = 69,
     InternalKeyword = 70,
-    FunctionTypeExpression = 71,
+    AutoKeyword = 71,
+    FunctionTypeExpression = 72,
+    ModelDeclarationExpression = 73,
+    ScalarDeclarationExpression = 74,
+    UnionDeclarationExpression = 75,
+    EnumDeclarationExpression = 76,
 }
 
 impl SyntaxKind {
@@ -81,4 +86,4 @@ impl SyntaxKind {
     }
 }
 
-pub const SYNTAX_KIND_COUNT: u32 = 72;
+pub const SYNTAX_KIND_COUNT: u32 = 77;
