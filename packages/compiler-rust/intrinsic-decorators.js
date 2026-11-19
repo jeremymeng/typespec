@@ -16,6 +16,8 @@ export function createIntrinsicDecoratorRegistry() {
   });
 }
 
+export const intrinsicDecorators = createIntrinsicDecoratorRegistry();
+
 function validateCount(context, decorator, args, min, max = min) {
   let count = args.length;
   while (count > 0 && args[count - 1] === undefined) count--;
