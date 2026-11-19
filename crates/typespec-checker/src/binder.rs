@@ -6,7 +6,9 @@ use crate::types::{ScopeId, ScopeKind, SymbolFlags, SymbolId, SymbolTable};
 
 pub fn bind(parse_result: &ParseResult) -> SymbolTable {
     let mut binder = Binder::new(parse_result);
-    binder.bind_script(parse_result.root);
+    for script in &parse_result.scripts {
+        binder.bind_script(*script);
+    }
     binder.finish()
 }
 
@@ -14,6 +16,11 @@ pub struct Binder<'p> {
     parse_result: &'p ParseResult,
     table: SymbolTable,
     current_scope: ScopeId,
+    /// File scope of the script being bound.
+    current_file_scope: Option<ScopeId>,
+    /// Nesting depth of block scopes; `0` means file level (global or a
+    /// blockless namespace).
+    scope_depth: usize,
 }
 
 impl<'p> Binder<'p> {
@@ -24,6 +31,8 @@ impl<'p> Binder<'p> {
             parse_result,
             table,
             current_scope,
+            current_file_scope: None,
+            scope_depth: 0,
         };
         binder.add_intrinsics();
         binder
@@ -102,13 +111,20 @@ impl<'p> Binder<'p> {
     }
 
     fn bind_script(&mut self, node_id: NodeId) {
-        self.table
-            .node_scopes
-            .insert(node_id, self.table.global_scope);
+        let global = self.table.global_scope;
+        self.current_scope = global;
+        self.scope_depth = 0;
+        self.table.node_scopes.insert(node_id, global);
+        let file_scope = self
+            .table
+            .add_scope(Some(global), ScopeKind::File, None, None);
+        self.table.file_scopes.insert(node_id, file_scope);
+        self.current_file_scope = Some(file_scope);
         let NodeData::TypeSpecScript { statements, .. } = self.node(node_id).data.clone() else {
             return;
         };
         self.bind_statement_list(&statements);
+        self.current_scope = global;
     }
 
     fn bind_statement_list(&mut self, statements: &[NodeId]) {
@@ -467,7 +483,19 @@ impl<'p> Binder<'p> {
             }
             NodeData::UsingStatement { name } => {
                 self.table.using_statements.push(node_id);
-                self.table.scopes[self.current_scope.index()]
+                self.table
+                    .using_resolution_scopes
+                    .insert(node_id, self.current_scope);
+                // File-level usings (global or after a blockless namespace)
+                // only apply to the declaring file, like TS `file.locals`.
+                let owner = match self.current_file_scope {
+                    Some(file_scope) if self.scope_depth == 0 => file_scope,
+                    _ => self.current_scope,
+                };
+                if let Some(file_scope) = self.current_file_scope {
+                    self.table.using_files.insert(node_id, file_scope);
+                }
+                self.table.scopes[owner.index()]
                     .using_statements
                     .push(node_id);
                 self.bind_node(name);
@@ -629,7 +657,18 @@ impl<'p> Binder<'p> {
                 self.with_scope(scope, |binder| binder.bind_statement_list(&statements));
             }
             Some(NamespaceBody::Nested(nested)) => {
-                self.with_scope(scope, |binder| binder.bind_node(nested));
+                let mut blockless = None;
+                self.with_scope(scope, |binder| {
+                    binder.bind_node(nested);
+                    if binder.current_scope != scope {
+                        blockless = Some(binder.current_scope);
+                    }
+                });
+                // `namespace A.B;`: the innermost blockless namespace stays in
+                // scope for the remaining statements of the file.
+                if let Some(inner) = blockless {
+                    self.current_scope = inner;
+                }
             }
             None => {
                 self.current_scope = scope;
@@ -805,7 +844,9 @@ impl<'p> Binder<'p> {
     {
         let previous = self.current_scope;
         self.current_scope = scope;
+        self.scope_depth += 1;
         f(self);
+        self.scope_depth -= 1;
         self.current_scope = previous;
     }
 

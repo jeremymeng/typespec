@@ -101,6 +101,8 @@ impl SymbolFlags {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeKind {
     Global,
+    /// Per-file scope holding file-level usings (TS `TypeSpecScriptNode.locals`).
+    File,
     Namespace,
     Model,
     ModelExpression,
@@ -118,6 +120,7 @@ impl ScopeKind {
     pub fn as_str(self) -> &'static str {
         match self {
             ScopeKind::Global => "Global",
+            ScopeKind::File => "File",
             ScopeKind::Namespace => "Namespace",
             ScopeKind::Model => "Model",
             ScopeKind::ModelExpression => "ModelExpression",
@@ -170,6 +173,13 @@ pub struct SymbolTable {
     pub node_symbols: HashMap<NodeId, SymbolId>,
     pub node_scopes: HashMap<NodeId, ScopeId>,
     pub using_statements: Vec<NodeId>,
+    /// Script node -> its [`ScopeKind::File`] scope.
+    pub file_scopes: HashMap<NodeId, ScopeId>,
+    /// Using statement -> file scope of the script declaring it.
+    pub using_files: HashMap<NodeId, ScopeId>,
+    /// Using statement -> scope its name is resolved from. File-level usings
+    /// declared before a blockless namespace resolve from the global scope.
+    pub using_resolution_scopes: HashMap<NodeId, ScopeId>,
     pub augment_decorators: Vec<NodeId>,
     pub duplicate_symbols_reported: HashSet<SymbolId>,
 }
@@ -193,6 +203,9 @@ impl SymbolTable {
             node_symbols: HashMap::new(),
             node_scopes: HashMap::new(),
             using_statements: Vec::new(),
+            file_scopes: HashMap::new(),
+            using_files: HashMap::new(),
+            using_resolution_scopes: HashMap::new(),
             augment_decorators: Vec::new(),
             duplicate_symbols_reported: HashSet::new(),
         }

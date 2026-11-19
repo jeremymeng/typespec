@@ -83,7 +83,9 @@ pub fn check(
     resolutions: &HashMap<NodeId, ResolutionResult>,
 ) -> CheckResult {
     let mut checker = Checker::new(parse_result, symbol_table, resolutions);
-    checker.check_script(parse_result.root);
+    for script in &parse_result.scripts {
+        checker.check_script(*script);
+    }
     checker.finish()
 }
 
@@ -94,7 +96,9 @@ pub fn check_with_decorator_runner(
     runner: &mut dyn DecoratorRunner,
 ) -> CheckResult {
     let mut checker = Checker::new(parse_result, symbol_table, resolutions);
-    checker.check_script(parse_result.root);
+    for script in &parse_result.scripts {
+        checker.check_script(*script);
+    }
     if runner.is_enabled() {
         checker.apply_decorators(runner);
     }
@@ -2841,7 +2845,12 @@ impl<'p> Checker<'p> {
     /// Nodes lexically inside a templated declaration (including the declaration itself).
     fn template_declaration_nodes(&self) -> HashSet<NodeId> {
         let mut result = HashSet::new();
-        let mut stack = vec![(self.parse_result.root, false)];
+        let mut stack = self
+            .parse_result
+            .scripts
+            .iter()
+            .map(|script| (*script, false))
+            .collect::<Vec<_>>();
         while let Some((node_id, inside)) = stack.pop() {
             let inside = inside || Self::is_templated_declaration(&self.node(node_id).data);
             if inside {

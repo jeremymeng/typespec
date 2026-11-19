@@ -30,6 +30,8 @@ pub struct NameResolver<'p, 't> {
     parse_result: &'p ParseResult,
     table: &'t mut SymbolTable,
     current_scope: ScopeId,
+    /// File scope (file-level usings) of the script being resolved.
+    current_file_scope: Option<ScopeId>,
     resolutions: HashMap<NodeId, ResolutionResult>,
     diagnostics: Vec<Diagnostic>,
     used_usings: HashSet<NodeId>,
@@ -42,6 +44,7 @@ impl<'p, 't> NameResolver<'p, 't> {
             parse_result,
             table,
             current_scope,
+            current_file_scope: None,
             resolutions: HashMap::new(),
             diagnostics: Vec::new(),
             used_usings: HashSet::new(),
@@ -50,7 +53,11 @@ impl<'p, 't> NameResolver<'p, 't> {
 
     fn resolve(&mut self) {
         self.resolve_using_statements();
-        self.resolve_script(self.parse_result.root);
+        for script in &self.parse_result.scripts {
+            self.current_file_scope = self.table.file_scopes.get(script).copied();
+            self.resolve_script(*script);
+        }
+        self.current_file_scope = None;
         self.report_unused_usings();
     }
 
@@ -77,7 +84,14 @@ impl<'p, 't> NameResolver<'p, 't> {
             let NodeData::UsingStatement { name } = self.node(using).data.clone() else {
                 continue;
             };
-            let result = self.resolve_qualified_name_in_scope(name, scope, false, false);
+            self.current_file_scope = self.table.using_files.get(&using).copied();
+            let start = self
+                .table
+                .using_resolution_scopes
+                .get(&using)
+                .copied()
+                .unwrap_or(scope);
+            let result = self.resolve_qualified_name_in_scope(name, start, false, false);
             let ResolutionResult::Resolved(sym) = result else {
                 self.record_resolution(name, result);
                 continue;
@@ -141,7 +155,16 @@ impl<'p, 't> NameResolver<'p, 't> {
                         self.with_scope(scope, |resolver| resolver.resolve_nodes(&statements));
                     }
                     (Some(scope), Some(NamespaceBody::Nested(nested))) => {
-                        self.with_scope(scope, |resolver| resolver.resolve_node(nested));
+                        let mut blockless = None;
+                        self.with_scope(scope, |resolver| {
+                            resolver.resolve_node(nested);
+                            if resolver.current_scope != scope {
+                                blockless = Some(resolver.current_scope);
+                            }
+                        });
+                        if let Some(inner) = blockless {
+                            self.current_scope = inner;
+                        }
                     }
                     (Some(scope), None) => {
                         self.current_scope = scope;
@@ -553,38 +576,69 @@ impl<'p, 't> NameResolver<'p, 't> {
     }
 
     fn lookup_name(&mut self, start: ScopeId, name: &str) -> Option<ResolutionResult> {
+        let global = self.table.global_scope;
         let mut scope = Some(start);
         while let Some(scope_id) = scope {
-            if let Some(symbol) = self.table.scopes[scope_id.index()]
+            let symbol = self.table.scopes[scope_id.index()]
                 .symbols
                 .get(name)
-                .copied()
-            {
+                .copied();
+            if scope_id == global {
+                return self.lookup_global(name, symbol);
+            }
+            if let Some(symbol) = symbol {
                 return Some(ResolutionResult::Resolved(symbol));
             }
-
-            let mut using_matches = Vec::new();
-            let usings = self.table.scopes[scope_id.index()].usings.clone();
-            for using_scope in usings {
-                if let Some(symbol) = self.table.scopes[using_scope.index()]
-                    .symbols
-                    .get(name)
-                    .copied()
-                {
-                    using_matches.push(symbol);
-                    self.mark_using_used(scope_id, using_scope);
-                }
-            }
-            using_matches.sort_by_key(|id| id.as_u32());
-            using_matches.dedup();
-            if using_matches.len() == 1 {
-                return Some(ResolutionResult::Resolved(using_matches[0]));
-            } else if using_matches.len() > 1 {
-                return Some(ResolutionResult::Ambiguous(using_matches));
+            if let Some(result) = self.lookup_usings(scope_id, name) {
+                return Some(result);
             }
             scope = self.table.scopes[scope_id.index()].parent;
         }
         None
+    }
+
+    /// Global declarations and the current file's usings are checked together:
+    /// a name found in both is ambiguous (TS `resolveIdentifierInScope`).
+    fn lookup_global(
+        &mut self,
+        name: &str,
+        global_symbol: Option<SymbolId>,
+    ) -> Option<ResolutionResult> {
+        let Some(file_scope) = self.current_file_scope else {
+            return global_symbol.map(ResolutionResult::Resolved);
+        };
+        let Some(global_symbol) = global_symbol else {
+            return self.lookup_usings(file_scope, name);
+        };
+        let using_symbol = self.table.scopes[file_scope.index()]
+            .usings
+            .iter()
+            .find_map(|using| self.table.scopes[using.index()].symbols.get(name).copied());
+        Some(match using_symbol {
+            Some(using_symbol) => ResolutionResult::Ambiguous(vec![global_symbol, using_symbol]),
+            None => ResolutionResult::Resolved(global_symbol),
+        })
+    }
+    fn lookup_usings(&mut self, scope_id: ScopeId, name: &str) -> Option<ResolutionResult> {
+        let mut using_matches = Vec::new();
+        let usings = self.table.scopes[scope_id.index()].usings.clone();
+        for using_scope in usings {
+            if let Some(symbol) = self.table.scopes[using_scope.index()]
+                .symbols
+                .get(name)
+                .copied()
+            {
+                using_matches.push(symbol);
+                self.mark_using_used(scope_id, using_scope);
+            }
+        }
+        using_matches.sort_by_key(|id| id.as_u32());
+        using_matches.dedup();
+        match using_matches.len() {
+            0 => None,
+            1 => Some(ResolutionResult::Resolved(using_matches[0])),
+            _ => Some(ResolutionResult::Ambiguous(using_matches)),
+        }
     }
 
     fn lookup_member(&self, base: SymbolId, name: &str) -> ResolutionResult {
@@ -653,9 +707,24 @@ impl<'p, 't> NameResolver<'p, 't> {
     }
 
     fn report_unused_usings(&mut self) {
+        // TS only lints files in the project location context.
+        let library_file_scopes: HashSet<ScopeId> = self
+            .parse_result
+            .library_scripts
+            .iter()
+            .filter_map(|script| self.table.file_scopes.get(script).copied())
+            .collect();
         let usings = self.table.using_statements.clone();
         for using in usings {
             if self.used_usings.contains(&using) {
+                continue;
+            }
+            if self
+                .table
+                .using_files
+                .get(&using)
+                .is_some_and(|file| library_file_scopes.contains(file))
+            {
                 continue;
             }
             let NodeData::UsingStatement { name } = self.node(using).data.clone() else {
@@ -742,6 +811,10 @@ impl<'p, 't> NameResolver<'p, 't> {
             parent = parent_sym.parent_symbol;
         }
         parts.reverse();
+        // Mirrors TS `getFullyQualifiedSymbolName(sym, { useGlobalPrefixAtTopLevel: true })`.
+        if parts.len() == 1 {
+            return format!("global.{}", parts[0]);
+        }
         parts.join(".")
     }
 
