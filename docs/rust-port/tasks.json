@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-11-20T00:49:21Z",
+  "updated_at": "2026-11-20T02:17:56Z",
   "updated_by": "agent:rust-port-m11",
   "tasks": [
     {
@@ -1244,7 +1244,7 @@
     {
       "id": "M11",
       "title": "Standard decorator coverage and helper API surface",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M10"],
       "plan_section": "docs/rust-port/plan.md#m11--standard-decorator-coverage-and-helper-api-surface",
       "complexity": "large",
@@ -1252,7 +1252,7 @@
       "branch": "jeremymeng/rust-port-m11-std-decorators",
       "pr": null,
       "started_at": "2026-11-20T00:49:21Z",
-      "completed_at": null,
+      "completed_at": "2026-11-20T02:17:56Z",
       "key_source_files": [
         "packages/compiler/src/lib/intrinsic/decorators.ts",
         "packages/http/src/decorators.ts",
@@ -1261,55 +1261,55 @@
       ],
       "checklist": [
         {
-          "done": false,
-          "text": "packages/compiler-rust/src/decorator-registration.ts: registerStandardDecorators + registerLibraryDecorators"
+          "done": true,
+          "text": "packages/compiler-rust/src/decorator-registration.ts: compile(), registerLibraryDecorators, runDecorators (implementations loaded from the program's JS files instead of a hard-coded registerStandardDecorators)"
+        },
+        {
+          "done": true,
+          "text": "Real program.stateMap/stateSet on the adapter (deviation: replaces the M6 flat setProperty shim; see plan.md M11)"
+        },
+        {
+          "done": true,
+          "text": "@typespec/compiler decorators run on the Rust-checked program"
+        },
+        {
+          "done": true,
+          "text": "@typespec/http decorators run on the Rust-checked program"
         },
         {
           "done": false,
-          "text": "Adapter shim for program.stateMap(key).set(target, value) semantics over M6 flat key-value state"
+          "text": "@typespec/rest decorators (stretch; deferred to M12)"
         },
         {
-          "done": false,
-          "text": "All ~25 @typespec/compiler decorators registered via M6 bridge"
+          "done": true,
+          "text": "Compiler-side getters: the real @typespec/compiler getters work against the adapter (no re-implementation needed)"
         },
         {
-          "done": false,
-          "text": "All ~15 @typespec/http decorators registered"
+          "done": true,
+          "text": "HTTP getters: the real @typespec/http getters (getHttpOperation, getRoutePath, getAuthentication, getServers, ...) work against the adapter"
         },
         {
-          "done": false,
-          "text": "@typespec/rest decorators registered (stretch; document if deferred)"
+          "done": true,
+          "text": "Cross-validation: missing-implementation for extern declarations without a JS implementation; arity/argument/target checked in Rust"
         },
         {
-          "done": false,
-          "text": "packages/compiler-rust/src/decorator-helpers.ts expanded with all compiler-side getters (getDoc, getFormat, getPattern, getMin/MaxValue, getVisibility, getDiscriminator, etc.)"
+          "done": true,
+          "text": "74 new comparison tests (std-decorators.comparison.test.ts) + 16 Rust decorator tests"
         },
         {
-          "done": false,
-          "text": "packages/compiler-rust/src/http-helpers.ts: getRoutePath, getHttpVerb, isBody, getStatusCodes, getHttpService, etc."
+          "done": true,
+          "text": "Decorator validation diagnostics match TS (object-value and relation-flattening gaps documented in upstream-sync.md)"
         },
         {
-          "done": false,
-          "text": "Cross-validation: stdlib extern dec declarations match registered JS implementation arities"
-        },
-        {
-          "done": false,
-          "text": "~50-75 new comparison tests: spec uses @doc/@route/@get/@statusCode/etc., Rust helpers return same values as TS helpers"
-        },
-        {
-          "done": false,
-          "text": "Decorator validation diagnostics (e.g., @minValue with wrong arg type) match TS exactly"
-        },
-        {
-          "done": false,
+          "done": true,
           "text": "All previous tests still pass"
         },
         {
-          "done": false,
+          "done": true,
           "text": "cargo build / test / clippy -D warnings / fmt --check all green"
         },
         {
-          "done": false,
+          "done": true,
           "text": "pnpm -C packages/compiler-rust build / test all green"
         }
       ],
@@ -1318,6 +1318,11 @@
           "timestamp": "2026-11-20T00:49:21Z",
           "author": "agent:rust-port-m11",
           "text": "Claimed M11 on jeremymeng/rust-port-m11-std-decorators (based on jeremymeng/rust-port-upstream-sync 8bf566345)."
+        },
+        {
+          "timestamp": "2026-11-20T02:17:56Z",
+          "author": "agent:rust-port-m11",
+          "text": "Completed M11: Rust validates decorator applications (targets, type/valueof arguments, augment targets, auto decorators, missing-implementation) and returns them in TS order; JS replays the real @typespec/compiler and @typespec/http implementations over the adapter with real stateMap/stateSet, onTargetFinish/onGraphFinish, compiler validators and $onValidate. Added deprecation tracking (a06a62d03), experimental-feature for fn declarations, qualified decorator lookup, directive-argument parser recovery parity. Validation: cargo fmt/clippy -D warnings/test green; compiler-rust 1123 passed, 5 skipped. Deferred: object/array value checking, relation error flattening, tuples, typeref values, resolveTypeReference with template args (M12); feature configuration (M13); @typespec/rest/versioning (M12)."
         }
       ]
     },
