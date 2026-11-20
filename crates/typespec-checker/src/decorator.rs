@@ -87,6 +87,9 @@ pub struct CheckOptions {
     /// TS `auto-decorators` compiler feature. When disabled `auto dec`
     /// declarations report `auto-decorator-disabled`.
     pub auto_decorators: bool,
+    /// TS `function-declarations` compiler feature. When disabled `fn`
+    /// declarations in project files report the `experimental-feature` warning.
+    pub function_declarations: bool,
     /// Resolve the TS-ordered decorator applications of every non-template type
     /// into [`crate::CheckResult::decorator_applications`] so a JS host can run
     /// the real decorator implementations.

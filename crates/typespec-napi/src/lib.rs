@@ -3,6 +3,7 @@ use napi_derive::napi;
 pub mod binder;
 pub mod checker;
 pub mod decorator;
+pub mod decorator_apps;
 pub mod parser;
 pub mod program;
 pub mod scanner;

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use typespec_parser::ast::{NodeData, NodeId};
 use typespec_parser::syntax_kind::SyntaxKind;
-use typespec_source::Span;
+use typespec_source::{Diagnostic, DiagnosticSeverity, Span};
 
 use super::Checker;
 use crate::decorator::{
@@ -45,7 +45,7 @@ const ALL_MODIFIERS: u32 = modifier_flags::EXTERN | modifier_flags::INTERNAL | m
 type Mapper = HashMap<TypeId, TypeId>;
 
 impl Checker<'_> {
-    fn all_nodes(&self) -> Vec<NodeId> {
+    pub(super) fn all_nodes(&self) -> Vec<NodeId> {
         let mut result = Vec::new();
         let mut stack: Vec<NodeId> = self.parse_result.scripts.iter().rev().copied().collect();
         while let Some(node) = stack.pop() {
@@ -261,6 +261,18 @@ impl Checker<'_> {
                     node,
                 );
             }
+            // TS reports this for project files only (the stdlib's `extern fn typeref` is not).
+            if kind == ExternDeclarationKind::Function
+                && !self.options.function_declarations
+                && !self.is_library_node(node)
+            {
+                self.diagnostics.push(Diagnostic {
+                    severity: DiagnosticSeverity::Warning,
+                    code: "experimental-feature",
+                    message: "Function declarations are an experimental feature that may change in the future. Use with caution and consider providing feedback to the TypeSpec team.".to_string(),
+                    target: self.node_span(node),
+                });
+            }
             let Some(symbol) = self.symbol_for_node(node) else {
                 continue;
             };
@@ -419,11 +431,19 @@ impl Checker<'_> {
                     augmented.push(application);
                 }
             }
-            if !collect
-                || self
-                    .decorator_context(type_id, &template_declaration_nodes)
-                    .is_none()
+            if self
+                .decorator_context(type_id, &template_declaration_nodes)
+                .is_none()
             {
+                continue;
+            }
+            // TS `applyDecoratorToType`: reported each time a deprecated decorator runs.
+            for application in inline.iter().rev().chain(augmented.iter().rev()) {
+                if let Some(message) = self.decorator_deprecation(application.node) {
+                    self.report_deprecated(&message, application.node);
+                }
+            }
+            if !collect {
                 continue;
             }
             self.push_doc_comment_applications(type_id);
@@ -554,6 +574,16 @@ impl Checker<'_> {
             }
         }
         result
+    }
+
+    fn decorator_deprecation(&self, application: NodeId) -> Option<String> {
+        let (NodeData::DecoratorExpression { target, .. }
+        | NodeData::AugmentDecoratorStatement { target, .. }) = &self.node(application).data
+        else {
+            return None;
+        };
+        let declaration = self.decorator_declaration_node(self.resolved_symbol(*target)?)?;
+        self.node_deprecation_message(declaration)
     }
 
     fn decorator_declaration_node(&self, symbol: SymbolId) -> Option<NodeId> {
@@ -872,6 +902,15 @@ impl Checker<'_> {
         if matches!(self.type_arena.get(arg_type), Type::Error) {
             return None;
         }
+        if let Some(value_node) = self.value_placeholders.get(&arg_type).copied() {
+            // A template parameter mapped to an object / array value argument.
+            let value = self.value_from_node(value_node, None);
+            return Some(ResolvedDecoratorArgument {
+                node: Some(argument),
+                value: ResolvedArgumentValue::Value(value),
+                value_constraints,
+            });
+        }
         if constraint.types.is_none() {
             let message = match &self.node(argument).data {
                 NodeData::ModelExpression { .. } => Some(
@@ -998,7 +1037,10 @@ impl Checker<'_> {
             _ if self.is_value_expression(node) => DecoratorValueEntity::Unsupported,
             _ => {
                 let type_id = self.decorator_arg_type(node, mapper);
-                self.value_from_type(type_id)
+                match self.value_placeholders.get(&type_id).copied() {
+                    Some(value_node) => self.value_from_node(value_node, None),
+                    None => self.value_from_type(type_id),
+                }
             }
         }
     }

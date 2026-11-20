@@ -238,6 +238,10 @@ fn reports_invalid_modifiers() {
                 "auto-decorator-disabled",
                 "Auto decorator declarations require the 'auto-decorators' feature to be enabled. Add 'auto-decorators' to the 'features' list in your tspconfig.yaml."
             ),
+            (
+                "experimental-feature",
+                "Function declarations are an experimental feature that may change in the future. Use with caution and consider providing feedback to the TypeSpec team."
+            ),
         ]
     );
 }
@@ -401,6 +405,62 @@ fn template_declarations_are_not_collected() {
     assert_eq!(foo_count, 1);
 }
 
+#[test]
+fn reports_deprecated_references_in_non_deprecated_context() {
+    let program = check_main(
+        "#deprecated \"old\"\nmodel Old {}\nmodel Uses { a: Old; b: Old[] }\n#deprecated \"also old\"\nmodel AlsoOld { a: Old }",
+    );
+    assert_eq!(
+        main_codes(&program),
+        [
+            ("deprecated", "Deprecated: old"),
+            ("deprecated", "Deprecated: old")
+        ]
+    );
+    let old = find_model(&program, "Old");
+    assert!(program
+        .checked
+        .deprecations
+        .iter()
+        .any(|(id, message)| *id == old && message == "old"));
+}
+
+#[test]
+fn reports_invalid_and_duplicate_deprecation_directives() {
+    let program =
+        check_main("#deprecated foo\nmodel A {}\n#deprecated \"a\"\n#deprecated \"b\"\nmodel B {}");
+    assert_eq!(
+        main_codes(&program),
+        [
+            (
+                "invalid-deprecation-argument",
+                "#deprecation directive is expecting a string literal as the message but got a \"Identifier\""
+            ),
+            (
+                "duplicate-deprecation",
+                "The #deprecated directive cannot be used more than once on the same declaration."
+            ),
+        ]
+    );
+}
+
+#[test]
+fn resolves_namespace_qualified_decorator() {
+    let program = check_with(
+        &[("/main.tsp", "@TypeSpec.doc(\"hi\") model M {}")],
+        CheckOptions {
+            collect_decorator_applications: true,
+            ..CheckOptions::default()
+        },
+    );
+    assert_eq!(main_codes(&program), []);
+    let m = find_model(&program, "M");
+    assert!(program
+        .checked
+        .decorator_applications
+        .iter()
+        .any(|application| application.target == m));
+}
 fn find_model(program: &Program, name: &str) -> TypeId {
     program
         .checked
