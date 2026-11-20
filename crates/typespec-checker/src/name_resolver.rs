@@ -537,7 +537,9 @@ impl<'p, 't> NameResolver<'p, 't> {
             NodeData::ModelDeclarationExpression { .. }
             | NodeData::ScalarDeclarationExpression { .. }
             | NodeData::UnionDeclarationExpression { .. }
-            | NodeData::EnumDeclarationExpression { .. } => {
+            | NodeData::EnumDeclarationExpression { .. }
+            | NodeData::ValueOfExpression { .. }
+            | NodeData::TypeOfExpression { .. } => {
                 self.resolve_node(node_id);
                 ResolutionResult::Unknown
             }
