@@ -1,7 +1,16 @@
-import type { CheckResultJs, DecoratorStateEntry, SerializedType } from "../index.js";
+import { SyntaxKind as compilerSyntaxKind } from "@typespec/compiler/ast";
+import type {
+  CheckProgramResultJs,
+  CheckResultJs,
+  DecoratorStateEntry,
+  NodeInfoJs,
+  SerializedType,
+} from "../index.js";
+import { isTypeAssignableTo as isTypeAssignableToNative } from "../index.js";
 import {
   createDiagnosticCollector,
   type Diagnostic,
+  type DiagnosticTarget,
   type SerializedDiagnostic,
 } from "./diagnostics.js";
 
@@ -12,17 +21,79 @@ export interface Program {
   reportDiagnostics(diagnostics: readonly Diagnostic[]): void;
   hasError(): boolean;
   getGlobalNamespaceType(): Namespace;
+  /** TS `program.stateMap`: per-program decorator state keyed by state symbol (M11). */
+  stateMap(key: symbol): Map<Type, any>;
+  /** TS `program.stateSet` (M11). */
+  stateSet(key: symbol): Set<Type>;
+  readonly stateMaps: Map<symbol, Map<Type, unknown>>;
+  readonly stateSets: Map<symbol, Set<Type>>;
+  compilerOptions: Record<string, unknown>;
+  /** TS `projectRoot`; also how typekit's `$(program)` recognizes a program. */
+  projectRoot: string;
   _decoratorState: WeakMap<Type, Record<string, unknown>>;
   _typeCache: ReadonlyMap<number, Type>;
+  /** Node shims by Rust node id (M11). */
+  _nodes: ReadonlyMap<number, NodeShim>;
+  /** Synthetic type of an object / array decorator argument value (M11). */
+  _createCompositeValueType(value: CompositeValue): Type;
+  /** Runs a synthesized type's decorators on `checker.finishType` (installed by `runDecorators`). */
+  _applyDecoratorsToType?: (type: Type) => void;
+  /** TS `program.resolveTypeReference`, limited to plain dotted references (M11). */
+  resolveTypeReference(reference: string): [Type | undefined, readonly Diagnostic[]];
 }
 
+/** Subset of the TS `Checker` used by the standard decorator implementations (M11). */
 export interface Checker {
   getGlobalNamespaceType(): Namespace;
+  getStdType(name: string): Type;
+  isStdType(type: Type, name?: string): boolean;
+  /** TS `createType`, used by typekits to synthesize types after checking. */
+  createType<T extends object>(typeDef: T): T & Type;
+  /** TS `finishType`: runs the type's decorators and marks it finished. */
+  finishType<T extends Type>(type: T): T;
+  /** Returns `[related, diagnostics]` like TS; `source` may be a type or value. */
+  isTypeAssignableTo(
+    source: unknown,
+    target: Type,
+    diagnosticTarget: unknown,
+  ): [boolean, Diagnostic[]];
+  isValueOfType(source: unknown, target: Type, diagnosticTarget: unknown): [boolean, Diagnostic[]];
+  createLiteralType(value: string | number | boolean | { toString(): string }): Type;
+  /** Not tracked by the Rust checker yet (M12): always `undefined`. */
+  getValueExactType(value: unknown): Type | undefined;
+  /** Plain dotted references only; template arguments are not supported (M12). */
+  resolveTypeReference(reference: string): [Type | undefined, readonly Diagnostic[]];
+  readonly errorType: Type;
+  readonly voidType: Type;
+  readonly neverType: Type;
+  readonly nullType: Type;
+  readonly anyType: Type;
+}
+
+/** TS `Node` shim: kind (TS `SyntaxKind` value), location and parent (M11). */
+export interface NodeShim {
+  readonly kind: number | undefined;
+  readonly syntaxKind: string;
+  readonly nodeId: number;
+  readonly pos: number;
+  readonly end: number;
+  readonly file?: string;
+  parent?: NodeShim;
+}
+
+export interface DecoratorArgument {
+  value: unknown;
+  jsValue: unknown;
+  node?: NodeShim;
 }
 
 export interface DecoratorApplication {
-  decorator: string;
-  args: unknown[];
+  /** JS implementation (M11) or `#<nodeId>` placeholder when decorators did not run. */
+  decorator: string | ((...args: any[]) => unknown);
+  /** Fully qualified decorator name, e.g. `TypeSpec.@doc` (M11). */
+  decoratorName?: string;
+  args: unknown[] | DecoratorArgument[];
+  node?: NodeShim;
 }
 
 interface BaseType {
@@ -32,6 +103,7 @@ interface BaseType {
   kind: string;
   decorators: DecoratorApplication[];
   isFinished: boolean;
+  node?: NodeShim;
 }
 
 export interface Namespace extends BaseType {
@@ -186,6 +258,11 @@ export interface TemplateParameter extends BaseType {
   default?: Type;
 }
 
+/** Object / array value shapes produced by the decorator argument marshalling (M11). */
+export type CompositeValue =
+  | { valueKind: "ObjectValue"; properties: Map<string, { value: unknown }> }
+  | { valueKind: "ArrayValue"; values: unknown[] };
+
 export type Type =
   | Namespace
   | Model
@@ -240,7 +317,7 @@ const intrinsicTypes = new Map<string, Intrinsic["name"]>([
   ["Error", "ErrorType"],
 ]);
 
-export function createProgram(checkResult: CheckResultJs): Program {
+export function createProgram(checkResult: CheckResultJs | CheckProgramResultJs): Program {
   const serializedById = new Map(checkResult.types.map((type) => [type.id, type]));
   const typeCache = new Map<number, Type>();
   const globalNamespaceId = findGlobalNamespaceId(checkResult.types);
@@ -248,9 +325,77 @@ export function createProgram(checkResult: CheckResultJs): Program {
   const diagnosticCollector = createDiagnosticCollector(
     checkResult.diagnostics as readonly SerializedDiagnostic[],
   );
+  const nodeInfos: readonly NodeInfoJs[] = "nodes" in checkResult ? checkResult.nodes : [];
+  const nodes = new Map<number, NodeShim>(
+    nodeInfos.map((info) => [
+      info.nodeId,
+      {
+        kind: syntaxKindValue(info.kind),
+        syntaxKind: info.kind,
+        nodeId: info.nodeId,
+        pos: info.pos,
+        end: info.end,
+        file: info.file ?? undefined,
+      },
+    ]),
+  );
+  const relationHandle =
+    "relationHandle" in checkResult ? (checkResult.relationHandle ?? undefined) : undefined;
+  const stateMaps = new Map<symbol, Map<Type, unknown>>();
+  const stateSets = new Map<symbol, Set<Type>>();
+  const literalTypes = new Map<string, Type>();
+  const compositeValueTypes = new WeakMap<Type, CompositeValue>();
+  let compositeTypeCount = 0;
 
   const checker: Checker = {
     getGlobalNamespaceType: () => getOrCreate(globalNamespaceId) as Namespace,
+    getStdType(name) {
+      const typeSpec = (getOrCreate(globalNamespaceId) as Namespace).namespaces.get("TypeSpec");
+      const type = typeSpec?.scalars.get(name) ?? typeSpec?.models.get(name);
+      if (!type) throw new Error(`Standard type '${name}' is not loaded.`);
+      return type;
+    },
+    isStdType(type, name) {
+      if (!("namespace" in type) || type.namespace?.name !== "TypeSpec") return false;
+      const namespace = type.namespace.namespace;
+      if (namespace === undefined || namespace.name !== "" || namespace.namespace) return false;
+      return (
+        (type.kind === "Scalar" || type.kind === "Model") &&
+        (name === undefined || type.name === name)
+      );
+    },
+    isTypeAssignableTo: (source, target, diagnosticTarget) =>
+      isAssignable(source, target, diagnosticTarget),
+    isValueOfType: (source, target, diagnosticTarget) =>
+      isAssignable(source, target, diagnosticTarget),
+    createLiteralType,
+    createType(typeDef) {
+      return Object.assign(typeDef, { entityKind: "Type", isFinished: false }) as any;
+    },
+    finishType(type) {
+      if ("decorators" in type && type.decorators.length > 0) {
+        program._applyDecoratorsToType?.(type);
+      }
+      type.isFinished = true;
+      return type;
+    },
+    getValueExactType: () => undefined,
+    resolveTypeReference: (reference) => [resolveDottedReference(reference), []],
+    get errorType() {
+      return intrinsic("ErrorType");
+    },
+    get voidType() {
+      return intrinsic("void");
+    },
+    get neverType() {
+      return intrinsic("never");
+    },
+    get nullType() {
+      return intrinsic("null");
+    },
+    get anyType() {
+      return intrinsic("unknown");
+    },
   };
 
   const program: Program = {
@@ -266,8 +411,25 @@ export function createProgram(checkResult: CheckResultJs): Program {
       return diagnosticCollector.diagnostics.some((diagnostic) => diagnostic.severity === "error");
     },
     getGlobalNamespaceType: checker.getGlobalNamespaceType,
+    resolveTypeReference: checker.resolveTypeReference,
+    stateMap(key) {
+      let map = stateMaps.get(key);
+      if (!map) stateMaps.set(key, (map = new Map()));
+      return map as Map<Type, any>;
+    },
+    stateSet(key) {
+      let set = stateSets.get(key);
+      if (!set) stateSets.set(key, (set = new Set()));
+      return set;
+    },
+    stateMaps,
+    stateSets,
+    compilerOptions: {},
+    projectRoot: "/",
     _decoratorState: decoratorState,
     _typeCache: typeCache,
+    _nodes: nodes,
+    _createCompositeValueType: createCompositeValueType,
   };
 
   getOrCreate(globalNamespaceId);
@@ -276,7 +438,54 @@ export function createProgram(checkResult: CheckResultJs): Program {
   }
   populateReverseLinks();
   populateDecoratorState(checkResult.decoratorState);
+  if ("deprecations" in checkResult) {
+    // TS `markDeprecated` state (`createStateSymbol("deprecated")`), read by `getDeprecationDetails`.
+    const deprecated = program.stateMap(Symbol.for("TypeSpec.deprecated"));
+    for (const { typeId, message } of checkResult.deprecations) {
+      const type = typeCache.get(typeId);
+      if (type) deprecated.set(type, { message });
+    }
+  }
   return program;
+
+  /** TS `resolveTypeReference` for plain dotted references (no template arguments). */
+  function resolveDottedReference(reference: string): Type | undefined {
+    let current: Type | undefined = getOrCreate(globalNamespaceId);
+    for (const segment of reference.split(".")) {
+      const name = segment.trim();
+      const t: any = current;
+      switch (t?.kind) {
+        case "Namespace":
+          current = [
+            t.namespaces,
+            t.models,
+            t.scalars,
+            t.enums,
+            t.unions,
+            t.interfaces,
+            t.operations,
+          ]
+            .find((members: Map<string, Type>) => members.has(name))
+            ?.get(name);
+          break;
+        case "Enum":
+          current = t.members.get(name);
+          break;
+        case "Model":
+          current = t.properties.get(name);
+          break;
+        case "Interface":
+          current = t.operations.get(name);
+          break;
+        case "Union":
+          current = t.variants.get(name);
+          break;
+        default:
+          return undefined;
+      }
+    }
+    return current;
+  }
 
   function getOrCreate(typeId: number): Type {
     const cached = typeCache.get(typeId);
@@ -290,6 +499,8 @@ export function createProgram(checkResult: CheckResultJs): Program {
     }
 
     const shell = createShell(serialized);
+    const node = serialized.nodeId === undefined ? undefined : nodes.get(serialized.nodeId);
+    if (node) shell.node = node;
     typeCache.set(typeId, shell);
     populateType(shell, serialized);
     return shell;
@@ -565,6 +776,171 @@ export function createProgram(checkResult: CheckResultJs): Program {
     }
   }
 
+  function intrinsic(name: Intrinsic["name"]): Type {
+    for (const type of typeCache.values()) {
+      if (type.kind === "Intrinsic" && type.name === name) return type;
+    }
+    throw new Error(`Intrinsic type '${name}' is not loaded.`);
+  }
+
+  function createLiteralType(value: string | number | boolean | { toString(): string }): Type {
+    const key = `${typeof value}:${String(value)}`;
+    let type = literalTypes.get(key);
+    if (type) return type;
+    const base = {
+      id: -1 - literalTypes.size,
+      entityKind: "Type" as const,
+      serializedKind: "",
+      decorators: [],
+      isFinished: true,
+    };
+    if (typeof value === "string") {
+      type = { ...base, serializedKind: "StringLiteral", kind: "String", value };
+    } else if (typeof value === "boolean") {
+      type = { ...base, serializedKind: "BooleanLiteral", kind: "Boolean", value };
+    } else {
+      const valueAsString = String(value);
+      type = {
+        ...base,
+        serializedKind: "NumericLiteral",
+        kind: "Number",
+        value: Number(valueAsString),
+        numericValue: typeof value === "number" ? { toString: () => valueAsString } : value,
+        valueAsString,
+      };
+    }
+    literalTypes.set(key, type);
+    return type;
+  }
+
+  /** `isTypeAssignableTo` through the retained Rust type arena (`relationHandle`). */
+  function isAssignable(
+    source: unknown,
+    target: Type,
+    diagnosticTarget: unknown,
+  ): [boolean, Diagnostic[]] {
+    let sourceType = source as Type;
+    if ((source as { entityKind?: string })?.entityKind === "Value") {
+      const valueKind = (source as { valueKind: string }).valueKind;
+      if (valueKind === "ObjectValue" || valueKind === "ArrayValue") {
+        return isCompositeValueOfType(source as CompositeValue, target)
+          ? [true, []]
+          : [
+              false,
+              [
+                {
+                  code: "unassignable",
+                  severity: "error",
+                  message: `Type '${valueKind === "ObjectValue" ? "object value" : "array value"}' is not assignable to type '${(target as { name?: string }).name ?? target.kind}'`,
+                  target: diagnosticTarget as Type | DiagnosticTarget,
+                },
+              ],
+            ];
+      }
+      sourceType = (source as { type: Type }).type;
+    }
+    if (sourceType === target) return [true, []];
+    const composite = compositeValueTypes.get(sourceType);
+    if (composite) return isAssignable(composite, target, diagnosticTarget);
+    const relationSource =
+      sourceType.id >= 0 && typeCache.get(sourceType.id) === sourceType
+        ? { typeId: sourceType.id }
+        : sourceType.kind === "String"
+          ? { string: sourceType.value }
+          : sourceType.kind === "Number"
+            ? { numeric: sourceType.valueAsString }
+            : sourceType.kind === "Boolean"
+              ? { boolean: sourceType.value }
+              : undefined;
+    if (
+      relationHandle === undefined ||
+      relationSource === undefined ||
+      typeCache.get(target.id) !== target
+    ) {
+      return [false, []];
+    }
+    const result = isTypeAssignableToNative(relationHandle, relationSource, target.id);
+    if (!result) return [false, []];
+    return [
+      result.related,
+      result.diagnostics.map((diagnostic) => ({
+        code: diagnostic.code,
+        severity: "error",
+        message: diagnostic.message,
+        target: diagnosticTarget as Type | DiagnosticTarget,
+      })),
+    ];
+  }
+
+  /**
+   * TS gives object / array values an anonymous model / tuple type; the adapter uses an empty
+   * synthetic model mapped back to the value, so relating that type checks the value.
+   */
+  function createCompositeValueType(value: CompositeValue): Type {
+    const type: Model = {
+      id: -1_000_000 - compositeTypeCount++,
+      entityKind: "Type",
+      kind: "Model",
+      serializedKind: "Model",
+      name: "",
+      decorators: [],
+      isFinished: true,
+      properties: new Map(),
+      sourceModels: [],
+      derivedModels: [],
+      expression: true,
+      isTemplateDeclaration: false,
+    } as unknown as Model;
+    compositeValueTypes.set(type, value);
+    return type;
+  }
+
+  /**
+   * Structural `isValueOfType` for object and array values (the Rust checker does not
+   * validate them yet, M12): properties against the model's (inherited) properties or
+   * indexer, items against the array element type.
+   */
+  function isCompositeValueOfType(value: CompositeValue, target: Type): boolean {
+    while (target.kind === "Alias") target = target.target;
+    switch (target.kind) {
+      case "Intrinsic":
+        return target.name === "unknown";
+      case "Union":
+        return [...target.variants.values()].some((variant) =>
+          isEntityValueOfType(value, variant.type),
+        );
+      case "Model": {
+        if (value.valueKind === "ArrayValue") {
+          if (!target.indexer || target.indexer.key.name !== "integer") return false;
+          const element = target.indexer.value;
+          return value.values.every((item) => isEntityValueOfType(item, element));
+        }
+        if (target.indexer?.key.name === "integer") return false;
+        const properties = new Map<string, ModelProperty>();
+        for (let model: Model | undefined = target; model; model = model.baseModel) {
+          for (const [name, property] of model.properties) {
+            if (!properties.has(name)) properties.set(name, property);
+          }
+        }
+        for (const [name, property] of properties) {
+          if (!property.optional && !value.properties.has(name)) return false;
+        }
+        for (const [name, { value: propertyValue }] of value.properties) {
+          const property = properties.get(name);
+          const propertyType = property?.type ?? target.indexer?.value;
+          if (!propertyType || !isEntityValueOfType(propertyValue, propertyType)) return false;
+        }
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
+  function isEntityValueOfType(value: unknown, target: Type): boolean {
+    return isAssignable(value, target, undefined)[0];
+  }
+
   function namedMap<T extends Type>(
     names: readonly string[],
     ids: readonly number[],
@@ -615,6 +991,14 @@ export function createProgram(checkResult: CheckResultJs): Program {
   ): void {
     type.namespace = optionalType<Namespace>(namespaceId);
   }
+}
+
+let syntaxKinds: Record<string, number> | undefined;
+
+/** TS `SyntaxKind` value for a Rust syntax kind name (the enums use the same member names). */
+function syntaxKindValue(name: string): number | undefined {
+  syntaxKinds ??= compilerSyntaxKind as unknown as Record<string, number>;
+  return syntaxKinds[name];
 }
 
 function findGlobalNamespaceId(types: readonly SerializedType[]): number {

@@ -353,7 +353,8 @@ describe("binder comparison: Rust vs TS patterns", () => {
       const diagnostics = rust(
         'extern dec doc(target: Type, value: valueof string);\n@@doc(Missing, "hi");',
       ).diagnostics;
-      expect(diagnostics.map((x) => x.code)).toContain("augment-decorator-target");
+      // TS reports only the unresolved reference, not augment-decorator-target.
+      expect(diagnostics.map((x) => x.code)).toEqual(["invalid-ref"]);
     });
   });
 });

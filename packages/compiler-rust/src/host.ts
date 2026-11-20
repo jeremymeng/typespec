@@ -7,8 +7,9 @@
 // used by the TS source loader (`typespec` export condition, `tspMain`, and
 // `main.tsp`/`index.mjs`/`index.js` directory index files).
 
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
+import { fileURLToPath as nodeFileURLToPath } from "node:url";
 import { checkProgram as checkProgramNative, type CheckProgramResultJs } from "../index.js";
 import { getDirectoryPath, joinPaths, normalizePath, resolvePath } from "./path-utils.js";
 
@@ -493,6 +494,17 @@ export interface CheckProgramOptions {
    * When `false` the Rust checker uses its built-in intrinsic stubs (TS `nostdlib`-like).
    */
   stdlib?: boolean;
+  /**
+   * Library packages (e.g. `@typespec/http`) served from the real file system, resolved from
+   * this package, so virtual hosts can import them like the TS tester's `libraries` (M11).
+   */
+  libraries?: readonly string[];
+  /** TS `auto-decorators` compiler feature (M11). */
+  autoDecorators?: boolean;
+  /** TS `function-declarations` compiler feature; when off, `fn` declarations warn (M11). */
+  functionDeclarations?: boolean;
+  /** Collect validated decorator applications to run the JS implementations (M11). */
+  collectDecoratorApplications?: boolean;
 }
 
 let compilerRoot: string | undefined;
@@ -511,23 +523,59 @@ export function getStdlibPaths(): string[] {
   return [joinPaths(root, "lib/intrinsics.tsp"), joinPaths(root, "lib/std/main.tsp")];
 }
 
+let packageRoot: string | undefined;
+
+/** Root directory of this package (libraries are resolved from its `node_modules`). */
+function getPackageRoot(): string {
+  packageRoot ??= resolvePath(
+    getDirectoryPath(normalizePath(nodeFileURLToPath(import.meta.url))),
+    "..",
+  );
+  return packageRoot;
+}
+
+/** Root directory of an installed library package, resolved from this package. */
+export function getLibraryRoot(name: string): string {
+  // Not `require.resolve(name/package.json)`: libraries may not export `./package.json`.
+  for (let dir = getPackageRoot(); ;) {
+    const candidate = joinPaths(dir, "node_modules", name);
+    if (existsSync(joinPaths(candidate, "package.json"))) {
+      return normalizePath(realpathSync(candidate));
+    }
+    const parent = getDirectoryPath(dir);
+    if (parent === dir) throw new Error(`Cannot find library "${name}" from ${getPackageRoot()}`);
+    dir = parent;
+  }
+}
+
 /**
- * Serve the compiler package (standard library files and the JS files they import) from the
- * real file system, so virtual hosts can load the standard library too.
+ * Serve the compiler package (standard library files and the JS files they import) and the
+ * given libraries from the real file system, so virtual hosts can load them too.
  */
-function withStdlib(host: ProgramHost): ProgramHost {
-  const root = getCompilerRoot();
+function withDiskPackages(
+  host: ProgramHost,
+  stdlib: boolean,
+  libraries: readonly string[],
+): ProgramHost {
+  const roots = [...(stdlib ? [getCompilerRoot()] : []), ...libraries.map(getLibraryRoot)];
+  if (roots.length === 0) return host;
   const nodeHost = createNodeProgramHost();
-  const inCompiler = (path: string) => {
+  const onDisk = (path: string) => {
     const normalized = resolvePath(path);
-    return normalized === root || normalized.startsWith(root + "/");
+    return roots.some((root) => normalized === root || normalized.startsWith(root + "/"));
   };
+  const isLibrarySpecifier = (specifier: string) =>
+    libraries.some((name) => specifier === name || specifier.startsWith(name + "/"));
   return {
-    readFile: (path) => (inCompiler(path) ? nodeHost.readFile(path) : host.readFile(path)),
-    resolveModule: (specifier, baseDir) =>
-      inCompiler(baseDir)
-        ? nodeHost.resolveModule(specifier, baseDir)
-        : host.resolveModule(specifier, baseDir),
+    readFile: (path) => (onDisk(path) ? nodeHost.readFile(path) : host.readFile(path)),
+    resolveModule(specifier, baseDir) {
+      if (onDisk(baseDir)) return nodeHost.resolveModule(specifier, baseDir);
+      if (isLibrarySpecifier(specifier)) {
+        const resolution = nodeHost.resolveModule(specifier, getPackageRoot());
+        if (resolution.resolvedPath) return resolution;
+      }
+      return host.resolveModule(specifier, baseDir);
+    },
     resolveEntrypoint: (path) => host.resolveEntrypoint(path),
   };
 }
@@ -540,12 +588,17 @@ export function checkProgram(
   options: CheckProgramOptions = {},
 ): CheckProgramResultJs {
   const stdlib = options.stdlib ?? true;
-  const programHost = stdlib ? withStdlib(host) : host;
+  const programHost = withDiskPackages(host, stdlib, options.libraries ?? []);
   return checkProgramNative(
     programHost.resolveEntrypoint(entryPath),
     (path) => programHost.readFile(path) ?? null,
     (specifier, baseDir) => programHost.resolveModule(specifier, baseDir),
     decorators,
-    { stdlib: stdlib ? getStdlibPaths() : undefined },
+    {
+      stdlib: stdlib ? getStdlibPaths() : undefined,
+      autoDecorators: options.autoDecorators,
+      functionDeclarations: options.functionDeclarations,
+      collectDecoratorApplications: options.collectDecoratorApplications,
+    },
   );
 }
