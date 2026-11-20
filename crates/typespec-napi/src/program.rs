@@ -9,7 +9,15 @@ use typespec_parser::{
 };
 use typespec_source::{ProgramSources, SourceFileKind, Span};
 
-use crate::checker::{check_parsed, DecoratorStateEntry, NodeToType, SerializedType, SymbolToType};
+use typespec_checker::CheckOptions;
+
+use crate::checker::{
+    check_parsed, run_check, serialize_check_result, DecoratorStateEntry, NodeToType,
+    SerializedType, SymbolToType,
+};
+use crate::decorator_apps::{
+    retain_arena, serialize_decorators, DecoratorApplicationJs, ExternDeclarationJs, NodeInfoJs,
+};
 use crate::scanner::DiagnosticInfo;
 
 /// Result of the JS `resolveModule(specifier, baseDir)` callback.
@@ -52,6 +60,14 @@ pub struct CheckProgramOptionsJs {
     /// loaded before the entry file in the compiler context (M10). Omitted or
     /// empty: no standard library (built-in intrinsic stubs).
     pub stdlib: Option<Vec<String>>,
+    /// TS `auto-decorators` compiler feature (M11).
+    pub auto_decorators: Option<bool>,
+    /// TS `function-declarations` feature (default `false`: `fn` declarations warn).
+    pub function_declarations: Option<bool>,
+    /// Collect validated decorator applications so the JS host can run the real
+    /// decorator implementations (M11). Ignored when a `decorators` registry
+    /// (M6 bridge) is passed.
+    pub collect_decorator_applications: Option<bool>,
 }
 
 #[napi(object)]
@@ -63,6 +79,22 @@ pub struct CheckProgramResultJs {
     pub decorator_state: Vec<DecoratorStateEntry>,
     /// Loaded files in load order (TypeSpec and JS imports).
     pub source_files: Vec<ProgramSourceFileInfo>,
+    /// Validated decorator applications in TS execution order (M11).
+    pub decorator_applications: Vec<DecoratorApplicationJs>,
+    /// `dec` / `fn` declarations (M11).
+    pub extern_declarations: Vec<ExternDeclarationJs>,
+    /// Locations of the nodes referenced by types, applications and declarations.
+    pub nodes: Vec<NodeInfoJs>,
+    /// Handle for `isTypeAssignableTo` (set when collecting decorator applications).
+    pub relation_handle: Option<u32>,
+    /// Deprecated types (`#deprecated` directive or deprecated base), M11.
+    pub deprecations: Vec<DeprecationJs>,
+}
+
+#[napi(object)]
+pub struct DeprecationJs {
+    pub type_id: u32,
+    pub message: String,
 }
 
 struct NapiSourceHost<'a> {
@@ -138,15 +170,58 @@ pub fn check_program<'env>(
         resolve_module,
         error: None,
     };
-    let stdlib = options
-        .and_then(|options| options.stdlib)
-        .unwrap_or_default();
+    let (stdlib, check_options) = match options {
+        Some(options) => (
+            options.stdlib.unwrap_or_default(),
+            CheckOptions {
+                auto_decorators: options.auto_decorators.unwrap_or(false),
+                function_declarations: options.function_declarations.unwrap_or(false),
+                collect_decorator_applications: decorators.is_none()
+                    && options.collect_decorator_applications.unwrap_or(false),
+            },
+        ),
+        None => (Vec::new(), CheckOptions::default()),
+    };
     let program =
         parse_program_with_stdlib(&entry_path, &mut host, ParseOptions::default(), &stdlib);
     if let Some(error) = host.error {
         return Err(error);
     }
-    let result = check_parsed(env, &program.parse_result, decorators);
+    let collect = check_options.collect_decorator_applications;
+    let mut deprecations = Vec::new();
+    let (result, decorators_info, relation_handle) = if decorators.is_none() {
+        let (mut checked, resolution_diagnostics) =
+            run_check(env, &program.parse_result, None, check_options);
+        deprecations = std::mem::take(&mut checked.deprecations)
+            .into_iter()
+            .map(|(type_id, message)| DeprecationJs {
+                type_id: type_id.as_u32(),
+                message,
+            })
+            .collect();
+        let arena = collect.then(|| checked.type_arena.clone());
+        let applications = std::mem::take(&mut checked.decorator_applications);
+        let externs = std::mem::take(&mut checked.extern_declarations);
+        let serialized = serialize_check_result(checked, resolution_diagnostics);
+        let info = serialize_decorators(
+            &applications,
+            &externs,
+            &serialized.types,
+            &program.parse_result,
+            &program.sources,
+        );
+        (serialized, Some(info), arena.map(retain_arena))
+    } else {
+        (
+            check_parsed(env, &program.parse_result, decorators),
+            None,
+            None,
+        )
+    };
+    let (decorator_applications, extern_declarations, nodes) = match decorators_info {
+        Some(info) => (info.applications, info.extern_declarations, info.nodes),
+        None => (Vec::new(), Vec::new(), Vec::new()),
+    };
     Ok(CheckProgramResultJs {
         types: result.types,
         symbol_to_type: result.symbol_to_type,
@@ -172,6 +247,11 @@ pub fn check_program<'env>(
                 .to_string(),
             })
             .collect(),
+        decorator_applications,
+        extern_declarations,
+        nodes,
+        relation_handle,
+        deprecations,
     })
 }
 

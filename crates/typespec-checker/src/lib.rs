@@ -11,10 +11,12 @@ pub mod type_relation;
 pub mod types;
 
 pub use binder::bind;
-pub use checker::{check, check_with_decorator_runner, CheckResult};
+pub use checker::{check, check_with_decorator_runner, check_with_options, CheckResult};
 pub use decorator::{
-    DecoratorApplication, DecoratorArgument, DecoratorContext, DecoratorRunner, DecoratorState,
-    DecoratorValue,
+    CheckOptions, DecoratorApplication, DecoratorApplicationKind, DecoratorArgument,
+    DecoratorContext, DecoratorRunner, DecoratorState, DecoratorValue, DecoratorValueEntity,
+    ExternDeclarationInfo, ExternDeclarationKind, ResolvedArgumentValue,
+    ResolvedDecoratorApplication, ResolvedDecoratorArgument,
 };
 pub use name_resolver::{resolve_names, NameResolution, ResolutionResult};
 pub use types::{

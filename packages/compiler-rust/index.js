@@ -773,12 +773,13 @@ if (
   }
 }
 
-const { bind, check, checkProgram, checkRelation, hello, parse, scan } = nativeBinding
+const { bind, check, checkProgram, checkRelation, hello, isTypeAssignableTo, parse, scan } = nativeBinding
 export { bind }
 export { check }
 export { checkProgram }
 export { checkRelation }
 export { hello }
+export { isTypeAssignableTo }
 export { parse }
 export { scan }
 export const __napiBindingTarget = __napiLoadedBindingTarget

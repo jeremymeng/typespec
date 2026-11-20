@@ -1699,8 +1699,19 @@ impl<'src> Parser<'src> {
                 Token::Identifier => arguments.push(self.parse_identifier(None, false, false)),
                 Token::StringLiteral => arguments.push(self.parse_string_literal()),
                 _ => {
-                    self.error("token-expected", Some("unexpected"));
-                    self.next_token();
+                    let message = format!("Unexpected token {:?}", self.token());
+                    self.error_with_message("token-expected", message);
+                    loop {
+                        self.next_token();
+                        if is_statement_keyword(self.token())
+                            || matches!(
+                                self.token(),
+                                Token::NewLine | Token::At | Token::Semicolon | Token::EndOfFile
+                            )
+                        {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -2770,6 +2781,25 @@ impl<'src> Parser<'src> {
         self.error_at_with_message(code, span, detail);
     }
 
+    fn error_with_message(&mut self, code: &'static str, message: String) {
+        let span = Span {
+            pos: self.token_pos(),
+            end: self.token_end(),
+        };
+        self.parse_error_in_next_finished_node = true;
+        self.tree_printable = false;
+        if self.real_position_of_last_error == span.pos as i64 {
+            return;
+        }
+        self.real_position_of_last_error = span.pos as i64;
+        self.diagnostics.borrow_mut().push(Diagnostic {
+            severity: DiagnosticSeverity::Error,
+            code,
+            message,
+            target: span,
+        });
+    }
+
     fn error_at(&mut self, code: &'static str, span: Span) {
         self.error_at_with_message(code, span, None);
     }
@@ -3134,6 +3164,17 @@ mod tests {
             result.arena.get(statements[0]).kind,
             SyntaxKind::ModelStatement
         );
+    }
+
+    #[test]
+    fn reports_unexpected_directive_argument_and_skips_to_line_end() {
+        let result = parse_source("#deprecated 1 2\nmodel A {}");
+        let messages = result
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(messages, ["Unexpected token NumericLiteral"]);
     }
 
     #[test]

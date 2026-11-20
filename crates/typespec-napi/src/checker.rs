@@ -3,9 +3,9 @@ use napi::Env;
 use napi_derive::napi;
 use typespec_checker::{
     bind as bind_parse_result, check as check_parse_result, check_with_decorator_runner,
-    resolve_names,
+    check_with_options, resolve_names,
     type_relation::{get_effective_model_type, type_name, TypeRelationChecker},
-    CheckResult, DecoratorValue, EnumMemberValue, Type, TypeId,
+    CheckOptions, CheckResult, DecoratorValue, EnumMemberValue, Type, TypeId,
 };
 use typespec_parser::{parse, ParseResult};
 use typespec_source::{bigint_to_napi_words, Diagnostic, DiagnosticSeverity, Numeric, SourceFile};
@@ -130,6 +130,19 @@ pub(crate) fn check_parsed<'env>(
     parse_result: &ParseResult,
     decorators: Option<Object<'env>>,
 ) -> CheckResultJs {
+    let (result, resolution_diagnostics) =
+        run_check(env, parse_result, decorators, CheckOptions::default());
+    serialize_check_result(result, resolution_diagnostics)
+}
+
+/// Bind, resolve and check, returning the raw result (M11: options and the
+/// collected decorator applications are needed by `checkProgram`).
+pub(crate) fn run_check<'env>(
+    env: &'env Env,
+    parse_result: &ParseResult,
+    decorators: Option<Object<'env>>,
+    options: CheckOptions,
+) -> (CheckResult, Vec<Diagnostic>) {
     let mut table = bind_parse_result(parse_result);
     let resolution = resolve_names(parse_result, &mut table);
     let result = if decorators.is_some() {
@@ -152,9 +165,9 @@ pub(crate) fn check_parsed<'env>(
             }
         }
     } else {
-        check_parse_result(parse_result, &table, &resolution.resolutions)
+        check_with_options(parse_result, &table, &resolution.resolutions, options)
     };
-    serialize_check_result(result, resolution.diagnostics)
+    (result, resolution.diagnostics)
 }
 
 #[napi]
@@ -209,7 +222,7 @@ pub fn check_relation(
     }
 }
 
-fn serialize_check_result(
+pub(crate) fn serialize_check_result(
     result: CheckResult,
     resolution_diagnostics: Vec<Diagnostic>,
 ) -> CheckResultJs {

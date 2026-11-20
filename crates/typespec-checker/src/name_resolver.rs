@@ -360,16 +360,8 @@ impl<'p, 't> NameResolver<'p, 't> {
                 arguments,
             } => {
                 self.resolve_decorator_target(target);
-                let result = self.resolve_type_ref(target_type);
-                if !matches!(result, ResolutionResult::Resolved(_)) {
-                    self.diagnostics.push(Diagnostic {
-                        severity: DiagnosticSeverity::Error,
-                        code: "augment-decorator-target",
-                        message: "Augment decorator first argument must be a type reference."
-                            .to_string(),
-                        target: self.node_span(target_type),
-                    });
-                }
+                // Unresolved targets only report `invalid-ref` (TS `checkAugmentDecorator`).
+                self.resolve_type_ref(target_type);
                 for arg in arguments {
                     self.resolve_value_expr(arg);
                 }
@@ -537,7 +529,9 @@ impl<'p, 't> NameResolver<'p, 't> {
             NodeData::ModelDeclarationExpression { .. }
             | NodeData::ScalarDeclarationExpression { .. }
             | NodeData::UnionDeclarationExpression { .. }
-            | NodeData::EnumDeclarationExpression { .. } => {
+            | NodeData::EnumDeclarationExpression { .. }
+            | NodeData::ValueOfExpression { .. }
+            | NodeData::TypeOfExpression { .. } => {
                 self.resolve_node(node_id);
                 ResolutionResult::Unknown
             }
@@ -564,7 +558,13 @@ impl<'p, 't> NameResolver<'p, 't> {
                     return base_result;
                 };
                 let name = self.identifier_name(id);
-                let result = self.lookup_member(base_sym, &name);
+                let result = match resolve_decorator {
+                    true => match self.lookup_member(base_sym, &format!("@{name}")) {
+                        ResolutionResult::Unknown => self.lookup_member(base_sym, &name),
+                        result => result,
+                    },
+                    false => self.lookup_member(base_sym, &name),
+                };
                 if report {
                     let ns = self.table.symbols[base_sym.index()].name.clone();
                     self.report_resolution_failure(id, &result, resolve_decorator, Some(&ns));
@@ -687,13 +687,7 @@ impl<'p, 't> NameResolver<'p, 't> {
                         self.node_span(node_id),
                     )
                 } else if decorator {
-                    (
-                        format!("Unknown decorator @{id}"),
-                        Span {
-                            pos: self.node(node_id).pos.saturating_sub(1),
-                            end: self.node(node_id).end,
-                        },
-                    )
+                    (format!("Unknown decorator @{id}"), self.node_span(node_id))
                 } else {
                     (format!("Unknown identifier {id}"), self.node_span(node_id))
                 };

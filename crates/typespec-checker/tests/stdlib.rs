@@ -341,6 +341,7 @@ fn decorator_argument_count_is_validated_per_checked_type() {
             expected_doc,
             expected_doc,
             expected_doc,
+            expected_doc,
             (
                 "/main.tsp",
                 "invalid-argument-count",
@@ -351,7 +352,6 @@ fn decorator_argument_count_is_validated_per_checked_type() {
                 "invalid-argument-count",
                 "Expected 0-1 arguments, but got 2."
             ),
-            expected_doc,
         ]
     );
 }

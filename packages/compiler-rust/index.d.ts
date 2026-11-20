@@ -9,6 +9,11 @@
  */
 export declare const __napiBindingTarget: 'native' | 'wasm32-wasi' | 'wasm32-wasip1'
 
+export interface AssignabilityResultJs {
+  related: boolean
+  diagnostics: Array<RelationDiagnosticJs>
+}
+
 export declare function bind(source: string): BindResult
 
 export interface BindResult {
@@ -31,6 +36,16 @@ export interface CheckProgramOptionsJs {
    * empty: no standard library (built-in intrinsic stubs).
    */
   stdlib?: Array<string>
+  /** TS `auto-decorators` compiler feature (M11). */
+  autoDecorators?: boolean
+  /** TS `function-declarations` feature (default `false`: `fn` declarations warn). */
+  functionDeclarations?: boolean
+  /**
+   * Collect validated decorator applications so the JS host can run the real
+   * decorator implementations (M11). Ignored when a `decorators` registry
+   * (M6 bridge) is passed.
+   */
+  collectDecoratorApplications?: boolean
 }
 
 export interface CheckProgramResultJs {
@@ -41,6 +56,16 @@ export interface CheckProgramResultJs {
   decoratorState: Array<DecoratorStateEntry>
   /** Loaded files in load order (TypeSpec and JS imports). */
   sourceFiles: Array<ProgramSourceFileInfo>
+  /** Validated decorator applications in TS execution order (M11). */
+  decoratorApplications: Array<DecoratorApplicationJs>
+  /** `dec` / `fn` declarations (M11). */
+  externDeclarations: Array<ExternDeclarationJs>
+  /** Locations of the nodes referenced by types, applications and declarations. */
+  nodes: Array<NodeInfoJs>
+  /** Handle for `isTypeAssignableTo` (set when collecting decorator applications). */
+  relationHandle?: number
+  /** Deprecated types (`#deprecated` directive or deprecated base), M11. */
+  deprecations: Array<DeprecationJs>
 }
 
 export declare function checkRelation(source: string, sourceTypeName: string, targetTypeName: string): RelationCheckResult
@@ -53,6 +78,27 @@ export interface CheckResultJs {
   decoratorState: Array<DecoratorStateEntry>
 }
 
+export interface DecoratorApplicationJs {
+  targetId: number
+  /** Fully qualified decorator name, e.g. `TypeSpec.@doc`. */
+  decorator: string
+  /** `"decorator"`, `"augment"` or `"docComment"`. */
+  kind: string
+  nodeId: number
+  args: Array<DecoratorArgumentJs>
+}
+
+export interface DecoratorArgumentJs {
+  /** `"type"` or `"value"`. */
+  kind: string
+  typeId?: number
+  /** JSON encoded value (`valueKind`, `value`, `typeId`, `properties`, `values`). */
+  valueJson?: string
+  nodeId?: number
+  /** `valueof` constraint options used to marshal numeric values. */
+  valueConstraintIds: Array<number>
+}
+
 export interface DecoratorStateEntry {
   typeId: number
   key: string
@@ -60,6 +106,11 @@ export interface DecoratorStateEntry {
   valueNumber?: number
   valueBoolean?: boolean
   valueTypeId?: number
+}
+
+export interface DeprecationJs {
+  typeId: number
+  message: string
 }
 
 export interface DiagnosticInfo {
@@ -70,7 +121,23 @@ export interface DiagnosticInfo {
   end: number
 }
 
+export interface ExternDeclarationJs {
+  fqn: string
+  /** `"decorator"` or `"function"`. */
+  kind: string
+  nodeId: number
+  isAuto: boolean
+  parameterNames: Array<string>
+  lastParameterRest: boolean
+}
+
 export declare function hello(): string
+
+/**
+ * TS `checker.isTypeAssignableTo` over a program checked with `checkProgram`
+ * (`relationHandle`). Returns `undefined` when the handle was released.
+ */
+export declare function isTypeAssignableTo(handle: number, source: RelationSourceJs, targetId: number): AssignabilityResultJs | null
 
 /** Result of the JS `resolveModule(specifier, baseDir)` callback. */
 export interface ModuleResolutionJs {
@@ -83,6 +150,19 @@ export interface ModuleResolutionJs {
   message?: string
   /** `package.json` the error should be reported on. */
   manifestPath?: string
+}
+
+/**
+ * Location of an AST node referenced by a type, decorator application or
+ * extern declaration (TS `Node` shims).
+ */
+export interface NodeInfoJs {
+  nodeId: number
+  /** TS `SyntaxKind` member name. */
+  kind: string
+  file?: string
+  pos: number
+  end: number
 }
 
 export interface NodeToType {
@@ -122,6 +202,23 @@ export interface RelationCheckResult {
   sourceTypeId?: number
   targetTypeId?: number
   diagnostics: Array<DiagnosticInfo>
+}
+
+export interface RelationDiagnosticJs {
+  code: string
+  message: string
+}
+
+/**
+ * Source of an assignability query: a checked type or a literal created on
+ * the JS side (TS `checker.createLiteralType`).
+ */
+export interface RelationSourceJs {
+  typeId?: number
+  string?: string
+  /** Numeric literal in its source text form. */
+  numeric?: string
+  boolean?: boolean
 }
 
 export declare function scan(source: string): ScanResult

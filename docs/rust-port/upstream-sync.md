@@ -26,6 +26,17 @@ Branch: `jeremymeng/rust-port-upstream-sync` (merged from `jeremymeng/rust-port-
 Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.comparison.test.ts`, and
 `checker-models.comparison.test.ts`.
 
+### Ported in M11 (standard decorators)
+
+| Upstream change                                              | Rust port                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `4f8e31935` Auto decorators — semantics                      | `auto dec` declarations, `auto-decorator-disabled` (unless `CheckOptions.auto_decorators` / napi `autoDecorators`), modifier validation (`invalid-modifier`), `declarationKind`; auto implementations synthesized in `runDecorators`.                                                                                              |
+| `isDeclarationExpressionSym` for augment-decorator targets   | `@@dec` targets that are declaration expressions / model or union expressions report `augment-decorator-target` like TS; an unresolved target reports only `invalid-ref`.                                                                                                                                                          |
+| `5a18007e6` `@encodedName` on enum members                   | Covered by running the real `@typespec/compiler` implementation; enum member arguments/targets are marshalled (`std-decorators.comparison.test.ts`).                                                                                                                                                                               |
+| `85ff8283c` `@encode(string)` on boolean                     | Covered by running the real implementation; `getEncode` compared against TS.                                                                                                                                                                                                                                                       |
+| `a06a62d03` No deprecated warnings in deprecated operations  | Deprecation tracking added (`#deprecated` directives and deprecated decorator declarations, exposed through the `TypeSpec.deprecated` state map; `deprecated` / `duplicate-deprecation` / `invalid-deprecation-argument`); references in a deprecated context — including operations in a deprecated interface — are not reported. |
+| Decorator argument / target checks, `missing-implementation` | Deferred from M10; see "Known behavioral differences" for the remaining value-system gaps.                                                                                                                                                                                                                                         |
+
 ### Known behavioral differences
 
 - **Compiler features.** TS gates union `extends` and declaration expressions behind the
@@ -85,20 +96,44 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   it per namespace statement. File-level usings are per file and match TS.
 - **Module resolution gaps (M9).** The JS host port of `module-resolver.ts` does not support `#imports`
   subpath imports, realpath/symlink canonicalization, or `tspconfig.yaml` entrypoints; imported `.js`
-  files are recorded in the source list but not executed (decorator registration is M11).
-- **Decorator argument validation is arity-only (M10).**
-  - _Symptom:_ Rust reports `invalid-argument-count` like TS but not argument type/value errors,
-    target errors, or missing JS implementations.
-  - _Repro:_ `@doc(123) model A {}` (TS: `invalid-argument` "Argument of type '123' is not assignable to
-    parameter of type 'valueof string'"); `@doc("a", "b", "c") model A {}` (TS additionally reports
-    `invalid-argument` for `"b"`); `@minValue(1) model A {}` (TS: `decorator-wrong-target`);
-    `extern dec foo(target: unknown);` without a JS implementation (TS: `missing-implementation`).
-  - _Root cause:_ TS `checkDecoratorArguments` / `checkDecoratorTarget`
-    (`packages/compiler/src/core/checker.ts`) check each argument against `valueof`/type constraints
-    with the value system and require a registered JS implementation; the Rust checker has no value
-    system and does not load decorator JS (`check_decorator_argument_count` in
-    `crates/typespec-checker/src/checker.rs` ports only the arity part).
-  - _Fix / owner:_ M11 (value-typed decorator arguments, target validation, JS implementation registry).
+  files are recorded in the source list; since M11 `compile()` imports them and runs their decorators.
+- **Decorator argument validation (M10 → M11).** Since M11, decorator arguments are checked against
+  type and `valueof` parameters, targets (`decorator-wrong-target`) and `missing-implementation` like TS
+  (`std-decorators.comparison.test.ts`). Remaining gaps are listed below under M11.
+- **Object / array values are not type-checked (M11).**
+  - _Symptom:_ `@service(#{title: 1}) namespace S;` — TS: `invalid-argument` "Argument of type '{ title: 1 }'
+    is not assignable to parameter of type 'ServiceOptions'"; Rust: no diagnostic.
+    `@example(#{a: "x"}) model A { a: int32 }` — TS: `unassignable` "Type '"x"' is not assignable to type
+    'int32'" at `"x"`; Rust: `unassignable` "Type 'object value' is not assignable to type 'A'" at the object.
+  - _Root cause:_ the Rust checker has no object/array value types (TS `checkObjectValue` /
+    `isValueOfType` per property); `valueof` model constraints accept any object value, and the adapter's
+    `checker.isValueOfType` reports at the whole value.
+  - _Fix / owner:_ M12 (value system: object/array values with property types).
+- **Relation errors are not flattened to the innermost mismatch (M11).**
+  - _Symptom:_ `op foo(x: string): void; @overload(foo) op bar(x: int32): void;` — TS: `unassignable`
+    "Type 'int32' is not assignable to type 'string'" at `x: int32`; Rust (via the adapter's
+    `isTypeAssignableTo`): `property-unassignable` "Types of property 'x' are incompatible …" at `bar`'s parameters.
+  - _Root cause:_ TS relation diagnostics retarget to the deepest node that has a source location
+    (`checker.ts` `isTypeAssignableTo` → `relation.ts` error chain flattening); Rust's relation keeps the
+    top-level chain.
+  - _Fix / owner:_ port the TS relation diagnostic flattening (M12).
+- **Decorators run after checking (M11).** JS implementations are replayed over the finished adapter graph
+  (`runDecorators`) instead of during `finishType`. Effects that TS decorators have on the _checker_ (e.g.
+  mutating a type that a later declaration copies via `model is` / spread) are visible only on the adapter
+  types they touch; copies made by the Rust checker do not see them. Types synthesized later
+  (`checker.createType`/`finishType`, typekits, `filterModelProperties`) run their decorators and
+  `onTargetFinish` validators but not `onGraphFinish`. Built-in compiler validators and `$onValidate` run
+  after all `onGraphFinish` validators (TS order). Owner: M12/M13 if an emitter depends on in-check mutation.
+- **No tuple / string-template types (M11).** `Scopes extends string[] = []` defaults are not checked
+  against the constraint (Rust has no `Tuple` type); tuple and string-template types are not modeled. Owner: M12.
+- **Template value arguments are placeholders (M11).** `#{}` / `#[]` template arguments and defaults are an
+  opaque `unknown` placeholder type in the Rust graph; they are turned into values only when used as
+  decorator arguments, and their constraint is not checked. Owner: M12 (value system).
+- **`resolveTypeReference` (M11).** `program.resolveTypeReference` / `checker.resolveTypeReference` on the
+  adapter resolve plain dotted paths only (no template arguments, no diagnostics). Owner: M12.
+- **Compiler features are not configurable (M11).** `auto-decorators` and function-declaration
+  (`experimental-feature`) gating use napi options (`autoDecorators` / `functionDeclarations`) instead of
+  `tspconfig.yaml` / library `features`; library files never warn. Owner: M13.
 - **Intersections with several record indexers (M10).**
   - _Symptom:_ `alias I = Record<string> & Record<int32>` has no indexer in Rust; TS merges the value
     types (`indexer = { key: string, value: <merged string & int32> }`).
@@ -112,21 +147,13 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
 
 ### Deferred (outside current scope or to be picked up by a later milestone)
 
-- `4f8e31935` auto-decorator semantics (`auto-decorator-disabled`, `declarationKind`, modifier
-  validation) — M10/M11.
-- `8574d5453` typeref values (`TypeRefValue`, `getTypeRefType`, value kind) — M11/M12.
-- `isDeclarationExpressionSym` handling for augment-decorator targets — M11.
-- `a06a62d03` suppress deprecated-type warnings inside deprecated operations — blocked: the Rust
-  checker does not implement deprecation tracking (`#deprecated` directive, `@deprecated`
-  semantics) or the `deprecated` diagnostic yet — M11/M13.
-- `5a18007e6` honor `@encodedName` on enum members — M11.
+- `8574d5453` typeref values (`TypeRefValue`, `getTypeRefType`, value kind) — M12 (value system).
 - `108ef0689` `Sym.node` / `getSymNode` typing (TS-only typing fix).
 - `57f06f3db` `$provideTypeInfo` / `program.getTypeInfo` — M12.
 - `e453a4752` enum member navigation in linter rules.
 - `ad69727db` ICE fix for interpolating a function call in a template declaration — blocked on
   `extern fn` / function calls / string template values / `Reflection` (M10–M12); the Rust checker
   does not panic on the upstream repro (covered by a unit test).
-- `85ff8283c` `@encode(string)` on boolean — M11.
 - `7aa17edfd` short diagnostic / linter rule names; `283ddec0c` unused suppressions; `463b08d58`
   duplicate `#suppress` warnings — diagnostics infrastructure, M13.
 - Linter (`6f38b48f3`, `e218d1688`), CLI (`b3a9dc54c`, `c8105ea27`), `skipTrivia` export

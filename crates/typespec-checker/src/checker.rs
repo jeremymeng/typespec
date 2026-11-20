@@ -7,8 +7,9 @@ use typespec_parser::ParseResult;
 use typespec_source::{Diagnostic, DiagnosticSeverity, Numeric, Span};
 
 use crate::decorator::{
-    decorator_state_key, DecoratorApplication, DecoratorArgument, DecoratorContext,
-    DecoratorRunner, DecoratorState, DecoratorValue,
+    decorator_state_key, CheckOptions, DecoratorApplication, DecoratorArgument, DecoratorContext,
+    DecoratorRunner, DecoratorState, DecoratorValue, ExternDeclarationInfo,
+    ResolvedDecoratorApplication,
 };
 use crate::instantiation::InstantiationMap;
 use crate::intrinsics::{register_intrinsics, Intrinsics};
@@ -21,7 +22,14 @@ use crate::types::{
     SymbolTable, TemplateParameterType, Type, TypeArena, TypeId, UnionType, UnionVariantType,
 };
 
+mod decorators;
+mod deprecation;
+
 pub struct Checker<'p> {
+    options: CheckOptions,
+    decorator_applications: Vec<ResolvedDecoratorApplication>,
+    extern_declarations: Vec<ExternDeclarationInfo>,
+    invalid_augment_decorators: HashSet<NodeId>,
     parse_result: &'p ParseResult,
     symbol_table: &'p SymbolTable,
     resolutions: &'p HashMap<NodeId, ResolutionResult>,
@@ -51,6 +59,13 @@ pub struct Checker<'p> {
     instance_contexts: HashMap<TypeId, HashMap<TypeId, TypeId>>,
     decorator_state: DecoratorState,
     intrinsic_declarations: HashMap<TypeId, IntrinsicDeclaration>,
+    /// Lazily built AST parent links (deprecation context walks).
+    node_parents: Option<HashMap<NodeId, NodeId>>,
+    reported_deprecations: HashSet<NodeId>,
+    /// Object / array value template arguments (and defaults) are not modeled as
+    /// values yet; each gets a distinct `unknown` placeholder type remembering its
+    /// expression so decorator arguments mapped from it can be evaluated (M11).
+    value_placeholders: HashMap<TypeId, NodeId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -82,6 +97,13 @@ pub struct CheckResult {
     /// Intrinsic scalar type -> its `lib/intrinsics.tsp` declaration (standard
     /// library loaded only).
     pub intrinsic_declarations: HashMap<TypeId, IntrinsicDeclaration>,
+    /// Validated decorator applications in TS execution order (M11); only
+    /// collected with [`CheckOptions::collect_decorator_applications`].
+    pub decorator_applications: Vec<ResolvedDecoratorApplication>,
+    /// `dec` / `fn` declarations (M11).
+    pub extern_declarations: Vec<ExternDeclarationInfo>,
+    /// Deprecated types and their message (TS `TypeSpec.deprecated` state map).
+    pub deprecations: Vec<(TypeId, String)>,
 }
 
 pub fn check(
@@ -112,6 +134,21 @@ pub fn check_with_decorator_runner(
     checker.finish()
 }
 
+/// Check with M11 options (auto-decorator feature, decorator application collection).
+pub fn check_with_options(
+    parse_result: &ParseResult,
+    symbol_table: &SymbolTable,
+    resolutions: &HashMap<NodeId, ResolutionResult>,
+    options: CheckOptions,
+) -> CheckResult {
+    let mut checker = Checker::new(parse_result, symbol_table, resolutions);
+    checker.options = options;
+    for script in &parse_result.scripts {
+        checker.check_script(*script);
+    }
+    checker.finish()
+}
+
 impl<'p> Checker<'p> {
     fn new(
         parse_result: &'p ParseResult,
@@ -137,6 +174,10 @@ impl<'p> Checker<'p> {
             decorators: Vec::new(),
         }));
         Self {
+            options: CheckOptions::default(),
+            decorator_applications: Vec::new(),
+            extern_declarations: Vec::new(),
+            invalid_augment_decorators: HashSet::new(),
             parse_result,
             symbol_table,
             resolutions,
@@ -161,11 +202,18 @@ impl<'p> Checker<'p> {
             template_parameter_spreads: HashMap::new(),
             decorator_state: HashMap::new(),
             intrinsic_declarations: HashMap::new(),
+            node_parents: None,
+            reported_deprecations: HashSet::new(),
+            value_placeholders: HashMap::new(),
         }
     }
 
     fn finish(mut self) -> CheckResult {
-        self.check_decorator_argument_counts();
+        self.check_declaration_modifiers();
+        self.check_decorator_declarations();
+        self.check_deprecation_directives();
+        self.check_augment_decorator_targets();
+        self.check_decorator_applications();
         self.report_unused_template_parameters();
         let binder_diagnostics = self
             .symbol_table
@@ -179,13 +227,17 @@ impl<'p> Checker<'p> {
             .cloned()
             .collect::<Vec<_>>();
         self.diagnostics.extend(binder_diagnostics);
+        let deprecations = self.collect_deprecations();
         CheckResult {
+            deprecations,
             type_arena: self.type_arena,
             symbol_to_type: self.symbol_to_type,
             node_to_type: self.node_to_type,
             diagnostics: self.diagnostics,
             decorator_state: self.decorator_state,
             intrinsic_declarations: self.intrinsic_declarations,
+            decorator_applications: self.decorator_applications,
+            extern_declarations: self.extern_declarations,
         }
     }
 
@@ -1548,6 +1600,7 @@ impl<'p> Checker<'p> {
             }
         };
         let type_id = self.type_for_symbol(symbol);
+        self.check_reference_deprecation(node_id, symbol, type_id);
         let result = if self
             .symbol_table
             .symbols
@@ -1665,9 +1718,14 @@ impl<'p> Checker<'p> {
         let element = if !element_is_plain_reference {
             self.type_for_node(element_type)
         } else {
-            self.resolved_symbol(node_id)
-                .map(|symbol| self.type_for_symbol(symbol))
-                .unwrap_or_else(|| self.type_for_node(element_type))
+            match self.resolved_symbol(node_id) {
+                Some(symbol) => {
+                    let element = self.type_for_symbol(symbol);
+                    self.check_reference_deprecation(element_type, symbol, element);
+                    element
+                }
+                None => self.type_for_node(element_type),
+            }
         };
         self.alias_structural_depth -= 1;
         if let Some(array_decl) = self.std_template("Array") {
@@ -1696,6 +1754,24 @@ impl<'p> Checker<'p> {
             is_template_declaration: false,
         };
         self.add_and_cache(node_id, Type::Model(model))
+    }
+
+    /// Type of a template argument or default; object / array values become a
+    /// [`Self::value_placeholders`] entry.
+    fn template_argument_type(&mut self, node: NodeId) -> TypeId {
+        if matches!(
+            self.node(node).data,
+            NodeData::ObjectLiteral { .. } | NodeData::ArrayLiteral { .. }
+        ) {
+            if let Some(placeholder) = self.type_cache.get(&node).copied() {
+                return placeholder;
+            }
+            let placeholder = self.type_arena.add(Type::Unknown);
+            self.value_placeholders.insert(placeholder, node);
+            self.cache_type(node, placeholder);
+            return placeholder;
+        }
+        self.type_for_node(node)
     }
 
     fn check_template_parameters(&mut self, params: &[NodeId]) -> Vec<TypeId> {
@@ -1732,9 +1808,13 @@ impl<'p> Checker<'p> {
             self.report_invalid_later_template_default(node_id, default_node);
         }
         let default_node = default;
-        let default = default.map(|default| self.type_for_node(default));
-        if let (Some(default), Some(default_node), Some(constraint)) =
-            (default, default_node, constraint)
+        let default = default.map(|default| self.template_argument_type(default));
+        // Tuple types are not modeled yet (checked as `unknown`); don't report
+        // them against the constraint (e.g. `@typespec/http`'s `Scopes extends string[] = []`).
+        let default_is_tuple = default_node
+            .is_some_and(|node| matches!(self.node(node).data, NodeData::TupleExpression { .. }));
+        if let (Some(default), Some(default_node), Some(constraint), false) =
+            (default, default_node, constraint, default_is_tuple)
         {
             let diagnostics = {
                 let relation = TypeRelationChecker::new(&self.type_arena);
@@ -1937,7 +2017,7 @@ impl<'p> Checker<'p> {
             else {
                 continue;
             };
-            let arg_type = self.type_for_node(argument);
+            let arg_type = self.template_argument_type(argument);
             if let Some(name_node) = name {
                 named_seen = true;
                 let name = self.identifier_name(name_node);
@@ -2016,7 +2096,9 @@ impl<'p> Checker<'p> {
             // Mirrors TS `checkArgumentAssignable`: only explicit arguments are
             // validated here; defaults are validated at their declaration.
             let arg = match (constraint, arg_node) {
-                (Some(constraint), Some(arg_node)) => {
+                (Some(constraint), Some(arg_node))
+                    if !self.value_placeholders.contains_key(&arg) =>
+                {
                     let constraint = self.substitute_type(constraint, &subst);
                     let diagnostics = {
                         let relation = TypeRelationChecker::new(&self.type_arena);
@@ -3029,71 +3111,6 @@ impl<'p> Checker<'p> {
     /// Recognizes the JS-only `TypeSpec.@indexer(key, value)` decorator natively.
     /// Mirrors the arity part of TS `checkDecoratorArguments`. TS checks decorators once per
     /// checked type (template declarations and each instance), so this walks every type.
-    fn check_decorator_argument_counts(&mut self) {
-        let mut checks = Vec::new();
-        for index in 0..self.type_arena.types().len() {
-            let type_id = TypeId::new(index as u32);
-            checks.extend(
-                self.decorators_for_type(type_id)
-                    .into_iter()
-                    .map(|decorator| decorator.node),
-            );
-        }
-        checks.extend(self.symbol_table.augment_decorators.iter().copied());
-        for node in checks {
-            self.check_decorator_argument_count(node);
-        }
-    }
-
-    fn check_decorator_argument_count(&mut self, node: NodeId) {
-        let (target, actual) = match &self.node(node).data {
-            NodeData::DecoratorExpression { target, arguments }
-            | NodeData::AugmentDecoratorStatement {
-                target, arguments, ..
-            } => (*target, arguments.len()),
-            _ => return,
-        };
-        let Some(symbol) = self.resolved_symbol(target) else {
-            return;
-        };
-        let Some(parameters) = self.symbol_table.symbols[symbol.index()]
-            .declarations
-            .iter()
-            .find_map(|declaration| match &self.node(*declaration).data {
-                NodeData::DecoratorDeclarationStatement { parameters, .. } => {
-                    Some(parameters.clone())
-                }
-                _ => None,
-            })
-        else {
-            return;
-        };
-        let flags = parameters
-            .iter()
-            .filter_map(|parameter| match &self.node(*parameter).data {
-                NodeData::FunctionParameter { optional, rest, .. } => Some((*optional, *rest)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let min = flags
-            .iter()
-            .filter(|(optional, rest)| !optional && !rest)
-            .count();
-        let max = match flags.last() {
-            Some((_, true)) => None,
-            _ => Some(flags.len()),
-        };
-        if actual >= min && max.is_none_or(|max| actual <= max) {
-            return;
-        }
-        let message = match max {
-            None => format!("Expected at least {min} arguments, but got {actual}."),
-            Some(max) if max == min => format!("Expected {min} arguments, but got {actual}."),
-            Some(max) => format!("Expected {min}-{max} arguments, but got {actual}."),
-        };
-        self.report("invalid-argument-count", &message, node);
-    }
-
     fn native_indexer(&mut self, decorators: &[NodeId]) -> Option<ModelIndexer> {
         let implicit = self.symbol_table.implicit_using?;
         let indexer_symbol = self.symbol_table.scopes[implicit.index()]

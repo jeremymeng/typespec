@@ -33,6 +33,7 @@
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.7.0",
+    "@typespec/http": "workspace:^",
     "vitest": "catalog:"
   }
 }

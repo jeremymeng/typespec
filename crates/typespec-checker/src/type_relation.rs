@@ -178,8 +178,14 @@ impl<'a> TypeRelationChecker<'a> {
             };
         }
 
-        if self.is_reflection_assignment(source, target) {
-            return Ok(());
+        // Matches TS: a reflection model target (`Reflection.Model`, ...) accepts exactly the
+        // types of its kind; it is never related structurally.
+        if self.reflection_kind(target).is_some() {
+            return if self.is_reflection_assignment(source, target) {
+                Ok(())
+            } else {
+                Err(vec![self.unassignable(source, target, target_span)])
+            };
         }
 
         if self.literal_assignable_to(source, target) {
@@ -453,7 +459,6 @@ impl<'a> TypeRelationChecker<'a> {
                 | "Scalar"
                 | "Union"
                 | "UnionVariant"
-                | "Type"
         ) {
             return None;
         }
