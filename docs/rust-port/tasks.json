@@ -3,8 +3,8 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-11-19T23:39:00Z",
-  "updated_by": "agent:rust-port-m10",
+  "updated_at": "2026-11-20T00:49:21Z",
+  "updated_by": "agent:rust-port-m11",
   "tasks": [
     {
       "id": "M1",
@@ -1244,14 +1244,14 @@
     {
       "id": "M11",
       "title": "Standard decorator coverage and helper API surface",
-      "status": "not_started",
+      "status": "in_progress",
       "depends_on": ["M10"],
       "plan_section": "docs/rust-port/plan.md#m11--standard-decorator-coverage-and-helper-api-surface",
       "complexity": "large",
-      "assignee": null,
-      "branch": null,
+      "assignee": "agent:rust-port-m11",
+      "branch": "jeremymeng/rust-port-m11-std-decorators",
       "pr": null,
-      "started_at": null,
+      "started_at": "2026-11-20T00:49:21Z",
       "completed_at": null,
       "key_source_files": [
         "packages/compiler/src/lib/intrinsic/decorators.ts",
@@ -1313,7 +1313,13 @@
           "text": "pnpm -C packages/compiler-rust build / test all green"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-11-20T00:49:21Z",
+          "author": "agent:rust-port-m11",
+          "text": "Claimed M11 on jeremymeng/rust-port-m11-std-decorators (based on jeremymeng/rust-port-upstream-sync 8bf566345)."
+        }
+      ]
     },
     {
       "id": "M12",
