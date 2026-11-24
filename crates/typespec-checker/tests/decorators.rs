@@ -471,3 +471,39 @@ fn find_model(program: &Program, name: &str) -> TypeId {
         .map(|index| TypeId::new(index as u32))
         .unwrap_or_else(|| panic!("model {name}"))
 }
+
+#[test]
+fn union_decorator_targets_are_checked_before_variants() {
+    // Matches TS `checkUnion`: the union has no variants yet when its decorators are checked.
+    let program = check_main(
+        "extern dec foo(target: Reflection.Model);
+        @foo union U { a: string }
+        @@foo(U);",
+    );
+    assert_eq!(main_codes(&program), []);
+}
+
+#[test]
+fn missing_identifiers_from_parse_recovery_are_not_reported() {
+    let program = check_main(r#"model Foo { a: string; #deprecated "x" b?: string; }"#);
+    let codes = main_codes(&program)
+        .into_iter()
+        .map(|(code, _)| code)
+        .collect::<Vec<_>>();
+    assert_eq!(codes, ["token-expected"; 3]);
+}
+
+#[test]
+fn decorator_wrong_target_uses_qualified_type_names() {
+    let program = check_main(
+        "extern dec foo(target: Reflection.Operation);
+        namespace test { @foo model Foo {} }",
+    );
+    assert_eq!(
+        main_codes(&program),
+        [(
+            "decorator-wrong-target",
+            "Cannot apply @foo decorator to test.Foo since it is not assignable to Operation"
+        )]
+    );
+}

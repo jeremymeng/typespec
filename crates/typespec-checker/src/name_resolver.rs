@@ -681,6 +681,11 @@ impl<'p, 't> NameResolver<'p, 't> {
             ResolutionResult::Resolved(_) => {}
             ResolutionResult::Unknown => {
                 let id = self.identifier_name(node_id);
+                // TS `resolveTypeReferenceSymInternal` skips references with parse errors: the
+                // synthetic identifier's parse error is the root cause and is already reported.
+                if id.starts_with("<missing identifier>") {
+                    return;
+                }
                 let (message, target) = if let Some(ns) = namespace {
                     (
                         format!("Namespace {ns} doesn't have member {id}"),

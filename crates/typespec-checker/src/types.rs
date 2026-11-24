@@ -302,6 +302,9 @@ pub enum Type {
     Interface(InterfaceType),
     Namespace(NamespaceType),
     TemplateParameter(TemplateParameterType),
+    Tuple(TupleType),
+    StringTemplate(StringTemplateType),
+    StringTemplateSpan(StringTemplateSpanType),
 
     // Intrinsics are separate variants rather than `Intrinsic(IntrinsicKind)`
     // so common checker matches stay exhaustive and adding non-intrinsic M5b-e
@@ -358,6 +361,9 @@ impl Type {
             Type::Interface(_) => "Interface",
             Type::Namespace(_) => "Namespace",
             Type::TemplateParameter(_) => "TemplateParameter",
+            Type::Tuple(_) => "Tuple",
+            Type::StringTemplate(_) => "StringTemplate",
+            Type::StringTemplateSpan(_) => "StringTemplateSpan",
             Type::String => "String",
             Type::Bytes => "Bytes",
             Type::Int8 => "Int8",
@@ -410,6 +416,31 @@ pub struct TemplateParameterType {
     pub symbol: SymbolId,
     pub constraint: Option<TypeId>,
     pub default: Option<TypeId>,
+}
+
+/// TS `Tuple`: `[A, B]` in type position.
+#[derive(Debug, Clone)]
+pub struct TupleType {
+    pub node: Option<NodeId>,
+    pub values: Vec<TypeId>,
+}
+
+/// TS `StringTemplate`: `"a${B}c"` in type position. `string_value` is set when every
+/// interpolated span is a literal (or a serializable string template).
+#[derive(Debug, Clone)]
+pub struct StringTemplateType {
+    pub node: Option<NodeId>,
+    pub spans: Vec<TypeId>,
+    pub string_value: Option<String>,
+}
+
+/// TS `StringTemplateSpan`: a literal part (`is_interpolated == false`, `span_type` is the
+/// string literal) or an interpolated expression.
+#[derive(Debug, Clone)]
+pub struct StringTemplateSpanType {
+    pub node: Option<NodeId>,
+    pub is_interpolated: bool,
+    pub span_type: TypeId,
 }
 
 #[derive(Debug, Clone)]

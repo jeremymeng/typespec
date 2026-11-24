@@ -5,7 +5,9 @@ use typespec_parser::ast::NodeId;
 use typespec_source::{Diagnostic, DiagnosticSeverity, Numeric, Span};
 
 use crate::numeric_ranges::{is_in_range, numeric_scalar_info, range_subsumes};
-use crate::types::{ModelPropertyType, ModelType, ScalarType, Type, TypeArena, TypeId, UnionType};
+use crate::types::{
+    ModelIndexer, ModelPropertyType, ModelType, ScalarType, Type, TypeArena, TypeId, UnionType,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationResult {
@@ -21,6 +23,9 @@ impl RelationResult {
 
 pub struct TypeRelationChecker<'a> {
     arena: &'a TypeArena,
+    /// Properties written in an object value literal (`#{ a: 1 }`): TS reports them as
+    /// `unexpected-property` when the target model doesn't declare them.
+    object_value_properties: Option<&'a HashSet<TypeId>>,
 }
 
 /// Relation pairs currently being checked. Revisiting a pair means the types are recursive; each
@@ -31,7 +36,15 @@ struct RelationContext {
 
 impl<'a> TypeRelationChecker<'a> {
     pub fn new(arena: &'a TypeArena) -> Self {
-        Self { arena }
+        Self {
+            arena,
+            object_value_properties: None,
+        }
+    }
+
+    pub fn with_object_value_properties(mut self, properties: &'a HashSet<TypeId>) -> Self {
+        self.object_value_properties = Some(properties);
+        self
     }
 
     pub fn is_type_identical_to(&self, source: TypeId, target: TypeId) -> bool {
@@ -242,8 +255,53 @@ impl<'a> TypeRelationChecker<'a> {
                     Err(vec![self.unassignable(source, target, target_span)])
                 }
             }
-            (Type::Model(_), Type::Model(_)) => {
+            (Type::Model(source_model), Type::Model(target_model)) => {
+                // TS `isTypeAssignableToWorker` model/indexer rules.
+                let source_is_array = self.is_integer_indexer(source_model.indexer);
+                if target_model.name != "object"
+                    && target_model.indexer.is_none()
+                    && source_is_array
+                {
+                    let key = source_model.indexer.map(|indexer| indexer.key).unwrap();
+                    return Err(vec![self.missing_index(key, target, target_span)]);
+                }
+                if self.is_integer_indexer(target_model.indexer) {
+                    return if source_is_array {
+                        self.has_index_and_is_assignable_to(source, target, target_span, ctx)
+                    } else {
+                        Err(vec![self.unassignable(source, target, target_span)])
+                    };
+                }
                 self.models_assignable(source, target, target_span, ctx)
+            }
+            // TS `isTupleAssignableToArray` (min/max items are not checked yet).
+            (Type::Tuple(tuple), Type::Model(target_model))
+                if self.is_integer_indexer(target_model.indexer) =>
+            {
+                let item_target = target_model.indexer.unwrap().value;
+                for item in &tuple.values {
+                    self.assignable_internal(*item, item_target, target_span, ctx)?;
+                }
+                Ok(())
+            }
+            // TS `isTupleAssignableToTuple`.
+            (Type::Tuple(source_tuple), Type::Tuple(target_tuple)) => {
+                if source_tuple.values.len() != target_tuple.values.len() {
+                    let mut diagnostic = self.unassignable(source, target, target_span);
+                    diagnostic.message = format!(
+                        "{}\n  Source has {} element(s) but target requires {}.",
+                        diagnostic.message,
+                        source_tuple.values.len(),
+                        target_tuple.values.len()
+                    );
+                    return Err(vec![diagnostic]);
+                }
+                for (source_item, target_item) in
+                    source_tuple.values.iter().zip(target_tuple.values.iter())
+                {
+                    self.assignable_internal(*source_item, *target_item, target_span, ctx)?;
+                }
+                Ok(())
             }
             (Type::Enum(_), Type::Enum(_)) => {
                 Err(vec![self.unassignable(source, target, target_span)])
@@ -265,7 +323,14 @@ impl<'a> TypeRelationChecker<'a> {
         }
 
         let mut errors = Vec::new();
+        // TS `areModelsRelated`: the source's own properties not matched by a target property
+        // must satisfy the target indexer.
+        let mut remaining = self
+            .model(source_id)
+            .map(|model| model.properties.clone())
+            .unwrap_or_default();
         for (target_name, target_prop_id) in self.walk_model_properties_inherited(target_id) {
+            remaining.shift_remove(&target_name);
             let Some(target_prop) = self.model_property(target_prop_id) else {
                 continue;
             };
@@ -303,6 +368,44 @@ impl<'a> TypeRelationChecker<'a> {
                 }
             }
         }
+        if let Some(indexer) = self.model(target_id).and_then(|model| model.indexer) {
+            for prop_id in remaining.values() {
+                let Some(prop) = self.model_property(*prop_id) else {
+                    continue;
+                };
+                if let Err(diagnostics) =
+                    self.assignable_internal(prop.property_type, indexer.value, target_span, ctx)
+                {
+                    errors.extend(diagnostics);
+                    break;
+                }
+            }
+            // Named models must declare a compatible indexer; anonymous models need not.
+            let source_named = self.model(source_id).is_some_and(|m| !m.name.is_empty());
+            if source_named && !self.is_integer_indexer(Some(indexer)) {
+                if let Err(diagnostics) =
+                    self.has_index_and_is_assignable_to(source_id, target_id, target_span, ctx)
+                {
+                    errors.extend(diagnostics);
+                }
+            }
+        } else if let Some(object_value_properties) = self.object_value_properties {
+            // TS `shouldCheckExcessProperties`: only object values are checked.
+            for (name, prop_id) in &remaining {
+                if object_value_properties.contains(prop_id) {
+                    errors.push(Diagnostic {
+                        severity: DiagnosticSeverity::Error,
+                        code: "unexpected-property",
+                        message: format!(
+                            "Object value may only specify known properties, and '{}' does not exist in type '{}'.",
+                            name,
+                            self.type_name(target_id)
+                        ),
+                        target: target_span,
+                    });
+                }
+            }
+        }
         ctx.visiting.remove(&(source_id, target_id));
         if errors.is_empty() {
             Ok(())
@@ -322,9 +425,19 @@ impl<'a> TypeRelationChecker<'a> {
             (Type::BooleanLiteral(source), Type::BooleanLiteral(target)) => {
                 source.value == target.value
             }
-            (Type::StringLiteral(_), Type::String) => true,
+            // TS `isSimpleTypeAssignableTo` string template rules.
+            (Type::StringTemplate(source), Type::StringLiteral(target)) => {
+                source.string_value.as_deref() == Some(target.value.as_str())
+            }
+            (Type::StringLiteral(source), Type::StringTemplate(target)) => {
+                target.string_value.as_deref() == Some(source.value.as_str())
+            }
+            (Type::StringTemplate(source), Type::StringTemplate(target)) => {
+                target.string_value.is_some() && source.string_value == target.string_value
+            }
+            (Type::StringLiteral(_) | Type::StringTemplate(_), Type::String) => true,
             (Type::BooleanLiteral(_), Type::Boolean) => true,
-            (Type::StringLiteral(_), _) => {
+            (Type::StringLiteral(_) | Type::StringTemplate(_), _) => {
                 self.scalar_related(target, intrinsic_target_id(self.arena, "string"))
             }
             (Type::BooleanLiteral(_), _) => {
@@ -517,6 +630,51 @@ impl<'a> TypeRelationChecker<'a> {
         }
     }
 
+    /// TS `isArrayModelType`: the indexer key is `integer`.
+    fn is_integer_indexer(&self, indexer: Option<ModelIndexer>) -> bool {
+        indexer.is_some_and(|indexer| {
+            matches!(
+                self.arena.get(self.get_non_alias_type(indexer.key)),
+                Type::Integer
+            )
+        })
+    }
+
+    /// TS `hasIndexAndIsAssignableTo`.
+    fn has_index_and_is_assignable_to(
+        &self,
+        source: TypeId,
+        target: TypeId,
+        span: Span,
+        ctx: &mut RelationContext,
+    ) -> Result<(), Vec<Diagnostic>> {
+        let Some(target_indexer) = self.model(target).and_then(|model| model.indexer) else {
+            return Ok(());
+        };
+        match self.model(source).and_then(|model| model.indexer) {
+            Some(source_indexer)
+                if self.get_non_alias_type(source_indexer.key)
+                    == self.get_non_alias_type(target_indexer.key) =>
+            {
+                self.assignable_internal(source_indexer.value, target_indexer.value, span, ctx)
+            }
+            _ => Err(vec![self.missing_index(target_indexer.key, source, span)]),
+        }
+    }
+
+    fn missing_index(&self, key: TypeId, source: TypeId, span: Span) -> Diagnostic {
+        Diagnostic {
+            severity: DiagnosticSeverity::Error,
+            code: "missing-index",
+            message: format!(
+                "Index signature for type '{}' is missing in type '{}'.",
+                self.type_name(key),
+                self.type_name(source)
+            ),
+            target: span,
+        }
+    }
+
     fn model_property(&self, type_id: TypeId) -> Option<&ModelPropertyType> {
         match self.arena.get(type_id) {
             Type::ModelProperty(prop) => Some(prop),
@@ -668,34 +826,108 @@ fn count_properties_inherited(arena: &TypeArena, model_id: TypeId) -> usize {
 pub fn type_name(arena: &TypeArena, type_id: TypeId) -> String {
     let type_id = get_non_alias_type(arena, type_id);
     match arena.get(type_id) {
-        Type::Scalar(s) => s.name.clone(),
-        Type::Model(model) if model.name.is_empty() => "{}".to_string(),
-        Type::Model(model) if !model.template_arguments.is_empty() => {
-            format_template_name(arena, &model.name, &model.template_arguments)
+        Type::Scalar(s) => format!(
+            "{}{}",
+            namespace_prefix(arena, s.namespace.filter(|_| !s.expression)),
+            s.name
+        ),
+        Type::Model(model) if model.name.is_empty() && model.properties.is_empty() => {
+            "{}".to_string()
         }
-        Type::Model(model) => model.name.clone(),
-        Type::ModelProperty(prop) => prop.name.clone(),
-        Type::Enum(en) => en.name.clone(),
-        Type::EnumMember(member) => member.name.clone(),
+        Type::Model(model) if model.name == "Array" && model.indexer.is_some() => {
+            format!("{}[]", type_name(arena, model.indexer.unwrap().value))
+        }
+        Type::Model(model) if model.name.is_empty() => format!(
+            "{{ {} }}",
+            model
+                .properties
+                .iter()
+                .map(|(name, prop)| match arena.get(*prop) {
+                    Type::ModelProperty(prop) =>
+                        format!("{name}: {}", type_name(arena, prop.property_type)),
+                    _ => name.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Type::Model(model) => {
+            let name = format!(
+                "{}{}",
+                namespace_prefix(arena, model.namespace.filter(|_| !model.expression)),
+                model.name
+            );
+            if model.template_arguments.is_empty() {
+                name
+            } else {
+                format_template_name(arena, &name, &model.template_arguments)
+            }
+        }
+        Type::ModelProperty(prop) => format!("{}.{}", type_name(arena, prop.model), prop.name),
+        Type::Tuple(tuple) => format!(
+            "[{}]",
+            tuple
+                .values
+                .iter()
+                .map(|value| type_name(arena, *value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Type::StringTemplate(template) => match &template.string_value {
+            Some(value) if !value.is_empty() => format!("\"{value}\""),
+            _ => "string".to_string(),
+        },
+        Type::StringTemplateSpan(span) => type_name(arena, span.span_type),
+        Type::Enum(en) => format!(
+            "{}{}",
+            namespace_prefix(arena, en.namespace.filter(|_| !en.expression)),
+            en.name
+        ),
+        Type::EnumMember(member) => {
+            format!("{}.{}", type_name(arena, member.r#enum), member.name)
+        }
         Type::Union(union) if union.name.is_empty() => union_type_name(arena, union),
-        Type::Union(union) if !union.template_arguments.is_empty() => {
-            format_template_name(arena, &union.name, &union.template_arguments)
+        Type::Union(union) => {
+            let name = format!(
+                "{}{}",
+                namespace_prefix(arena, union.namespace.filter(|_| !union.expression)),
+                union.name
+            );
+            if union.template_arguments.is_empty() {
+                name
+            } else {
+                format_template_name(arena, &name, &union.template_arguments)
+            }
         }
-        Type::Union(union) => union.name.clone(),
         Type::UnionVariant(variant) => type_name(arena, variant.variant_type),
         Type::Alias(alias) if !alias.template_arguments.is_empty() => {
             format_template_name(arena, &alias.name, &alias.template_arguments)
         }
         Type::Alias(alias) => alias.name.clone(),
-        Type::Operation(operation) if !operation.template_arguments.is_empty() => {
-            format_template_name(arena, &operation.name, &operation.template_arguments)
+        Type::Operation(operation) => {
+            let prefix = match operation.interface {
+                Some(interface) => format!("{}.", type_name(arena, interface)),
+                None => namespace_prefix(arena, operation.namespace),
+            };
+            let name = format!("{prefix}{}", operation.name);
+            if operation.template_arguments.is_empty() {
+                name
+            } else {
+                format_template_name(arena, &name, &operation.template_arguments)
+            }
         }
-        Type::Operation(operation) => operation.name.clone(),
-        Type::Interface(interface) if !interface.template_arguments.is_empty() => {
-            format_template_name(arena, &interface.name, &interface.template_arguments)
+        Type::Interface(interface) => {
+            let name = format!(
+                "{}{}",
+                namespace_prefix(arena, interface.namespace),
+                interface.name
+            );
+            if interface.template_arguments.is_empty() {
+                name
+            } else {
+                format_template_name(arena, &name, &interface.template_arguments)
+            }
         }
-        Type::Interface(interface) => interface.name.clone(),
-        Type::Namespace(namespace) => namespace.name.clone(),
+        Type::Namespace(_) => namespace_full_name(arena, type_id),
         Type::TemplateParameter(param) => param.name.clone(),
         Type::String => "string".to_string(),
         Type::Bytes => "bytes".to_string(),
@@ -730,6 +962,80 @@ pub fn type_name(arena: &TypeArena, type_id: TypeId) -> String {
         Type::NumericLiteral(value) => value.value.to_string(),
         Type::BooleanLiteral(value) => value.value.to_string(),
         Type::Error => "<error>".to_string(),
+    }
+}
+
+/// TS `getTypeName(type, { nameOnly: true })`: no namespace or container qualification.
+pub fn type_name_only(arena: &TypeArena, type_id: TypeId) -> String {
+    let type_id = get_non_alias_type(arena, type_id);
+    let (name, namespace) = match arena.get(type_id) {
+        Type::ModelProperty(prop) => return prop.name.clone(),
+        Type::EnumMember(member) => return member.name.clone(),
+        Type::Namespace(namespace) => return namespace.name.clone(),
+        Type::Operation(operation) if operation.interface.is_some() => {
+            let full = type_name(arena, type_id);
+            let prefix = format!("{}.", type_name(arena, operation.interface.unwrap()));
+            return full.strip_prefix(&prefix).unwrap_or(&full).to_string();
+        }
+        Type::Model(model) => (type_name(arena, type_id), model.namespace),
+        Type::Scalar(scalar) => (type_name(arena, type_id), scalar.namespace),
+        Type::Enum(en) => (type_name(arena, type_id), en.namespace),
+        Type::Union(union) => (type_name(arena, type_id), union.namespace),
+        Type::Interface(interface) => (type_name(arena, type_id), interface.namespace),
+        Type::Operation(operation) => (type_name(arena, type_id), operation.namespace),
+        _ => return type_name(arena, type_id),
+    };
+    let prefix = namespace_prefix(arena, namespace);
+    match name.strip_prefix(&prefix) {
+        Some(stripped) => stripped.to_string(),
+        None => name,
+    }
+}
+
+/// TS `getNamespaceFullName`.
+fn namespace_full_name(arena: &TypeArena, namespace: TypeId) -> String {
+    let mut segments = Vec::new();
+    let mut current = Some(namespace);
+    while let Some(Type::Namespace(ns)) = current.map(|id| arena.get(id)) {
+        if ns.name.is_empty() {
+            break;
+        }
+        segments.push(ns.name.as_str());
+        current = ns.namespace;
+    }
+    segments.reverse();
+    segments.join(".")
+}
+
+/// TS `getNamespacePrefix`: empty for the global and standard library namespaces.
+fn namespace_prefix(arena: &TypeArena, namespace: Option<TypeId>) -> String {
+    let Some(namespace) = namespace else {
+        return String::new();
+    };
+    let Type::Namespace(ns) = arena.get(namespace) else {
+        return String::new();
+    };
+    // A missing parent is the global namespace.
+    let parent_name = |id: Option<TypeId>| match id.map(|id| arena.get(id)) {
+        Some(Type::Namespace(parent)) => Some((parent.name.as_str(), parent.namespace)),
+        None => Some(("", None)),
+        _ => None,
+    };
+    let is_std = match parent_name(ns.namespace) {
+        Some(("", _)) => ns.name == "TypeSpec",
+        Some(("TypeSpec", grandparent)) => {
+            ns.name == "Reflection" && matches!(parent_name(grandparent), Some(("", _)))
+        }
+        _ => false,
+    };
+    if is_std {
+        return String::new();
+    }
+    let full_name = namespace_full_name(arena, namespace);
+    if full_name.is_empty() {
+        full_name
+    } else {
+        format!("{full_name}.")
     }
 }
 

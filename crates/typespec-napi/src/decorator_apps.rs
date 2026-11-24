@@ -200,7 +200,7 @@ fn write_type_id(out: &mut String, type_id: Option<TypeId>) {
     }
 }
 
-fn write_value_json(out: &mut String, value: &DecoratorValueEntity) {
+pub(crate) fn write_value_json(out: &mut String, value: &DecoratorValueEntity) {
     match value {
         DecoratorValueEntity::String { value, type_id } => {
             out.push_str("{\"valueKind\":\"StringValue\",\"value\":");
