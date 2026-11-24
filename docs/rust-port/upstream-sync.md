@@ -37,6 +37,25 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
 | `a06a62d03` No deprecated warnings in deprecated operations  | Deprecation tracking added (`#deprecated` directives and deprecated decorator declarations, exposed through the `TypeSpec.deprecated` state map; `deprecated` / `duplicate-deprecation` / `invalid-deprecation-argument`); references in a deprecated context — including operations in a deprecated interface — are not reported. |
 | Decorator argument / target checks, `missing-implementation` | Deferred from M10; see "Known behavioral differences" for the remaining value-system gaps.                                                                                                                                                                                                                                         |
 
+### Handled in M12 (json-schema on the Program adapter)
+
+- **Object / array value type-checking.** Object and array values get TS-shaped synthetic types
+  (`createTypeForObjectValue` / `createTypeForArrayValue`, `crates/typespec-checker/src/checker/values.rs`);
+  property defaults (including optional properties), typed `const` declarations and `valueof` decorator
+  arguments (`@service(#{ title: 1 })` → `invalid-argument`) are checked with TS's flattened diagnostics
+  (innermost literal property, `missing-property`, `unexpected-property`, first failing array element,
+  combined messages otherwise). Compared with TS (codes, messages, positions) in
+  `stdlib.comparison.test.ts`.
+- **Tuple and string-template types.** `Tuple`, `StringTemplate` and `StringTemplateSpan` are modeled in
+  Rust, napi and the adapter; tuple→array / tuple→tuple relations, `non-literal-string-template`,
+  template substitution, and `Scopes extends string[] = []`-style defaults are checked against their
+  constraint.
+- **Default values.** `ModelProperty.defaultValue` is a TS `Value` (typed as the property type) on the
+  adapter.
+- **Checker parity found by the json-schema suite.** Model indexer relations (`missing-index`), qualified
+  type names (`getTypeName`), union decorator ordering, missing-identifier `invalid-ref`, `T[]` counting as
+  a template parameter use.
+
 ### Known behavioral differences
 
 - **Compiler features.** TS gates union `extends` and declaration expressions behind the
@@ -100,15 +119,18 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
 - **Decorator argument validation (M10 → M11).** Since M11, decorator arguments are checked against
   type and `valueof` parameters, targets (`decorator-wrong-target`) and `missing-implementation` like TS
   (`std-decorators.comparison.test.ts`). Remaining gaps are listed below under M11.
-- **Object / array values are not type-checked (M11).**
-  - _Symptom:_ `@service(#{title: 1}) namespace S;` — TS: `invalid-argument` "Argument of type '{ title: 1 }'
-    is not assignable to parameter of type 'ServiceOptions'"; Rust: no diagnostic.
-    `@example(#{a: "x"}) model A { a: int32 }` — TS: `unassignable` "Type '"x"' is not assignable to type
-    'int32'" at `"x"`; Rust: `unassignable` "Type 'object value' is not assignable to type 'A'" at the object.
-  - _Root cause:_ the Rust checker has no object/array value types (TS `checkObjectValue` /
-    `isValueOfType` per property); `valueof` model constraints accept any object value, and the adapter's
-    `checker.isValueOfType` reports at the whole value.
-  - _Fix / owner:_ M12 (value system: object/array values with property types).
+- **Adapter `checker.isValueOfType` for object / array values (M11, narrowed in M12).** Values are now
+  type-checked by the Rust checker (see "Handled in M12"), but checks that JS decorator implementations
+  run themselves still go through the adapter.
+  - _Symptom:_ `@example(#{a: "x"}) model A { a: int32 }` — TS: `unassignable` "Type '"x"' is not
+    assignable to type 'int32'" at `"x"`; Rust: `unassignable` "Type 'object value' is not assignable to
+    type 'A'" at the object.
+  - _Root cause:_ the adapter's `checker.isValueOfType` checks composite values structurally in JS and
+    reports at the whole value; the napi relation export takes a type id and returns diagnostics without
+    locations.
+  - _Fix / owner:_ expose the Rust value check (`check_value_of_type`) through napi for decorator argument
+    values (they already carry node ids). Owner: post-M13 emitter follow-on (`@typespec/openapi3`); no
+    json-schema output depends on it.
 - **Relation errors are not flattened to the innermost mismatch (M11).**
   - _Symptom:_ `op foo(x: string): void; @overload(foo) op bar(x: int32): void;` — TS: `unassignable`
     "Type 'int32' is not assignable to type 'string'" at `x: int32`; Rust (via the adapter's
@@ -116,21 +138,33 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   - _Root cause:_ TS relation diagnostics retarget to the deepest node that has a source location
     (`checker.ts` `isTypeAssignableTo` → `relation.ts` error chain flattening); Rust's relation keeps the
     top-level chain.
-  - _Fix / owner:_ port the TS relation diagnostic flattening (M12).
+  - _Fix / owner:_ M12 ported the flattening for value checks only (`checker/values.rs`). Type relations
+    requested through the adapter's `isTypeAssignableTo` still return the top-level chain without
+    locations; port `relation.ts` error flattening into the napi relation export. Owner: post-M13 emitter
+    follow-on.
 - **Decorators run after checking (M11).** JS implementations are replayed over the finished adapter graph
   (`runDecorators`) instead of during `finishType`. Effects that TS decorators have on the _checker_ (e.g.
   mutating a type that a later declaration copies via `model is` / spread) are visible only on the adapter
   types they touch; copies made by the Rust checker do not see them. Types synthesized later
   (`checker.createType`/`finishType`, typekits, `filterModelProperties`) run their decorators and
   `onTargetFinish` validators but not `onGraphFinish`. Built-in compiler validators and `$onValidate` run
-  after all `onGraphFinish` validators (TS order). Owner: M12/M13 if an emitter depends on in-check mutation.
-- **No tuple / string-template types (M11).** `Scopes extends string[] = []` defaults are not checked
-  against the constraint (Rust has no `Tuple` type); tuple and string-template types are not modeled. Owner: M12.
+  after all `onGraphFinish` validators (TS order). M12 found no json-schema output depending on
+  in-check mutation, so this is unchanged. Owner: post-M13 emitter follow-on, if an emitter depends on it.
+- **Tuple `@minItems` / `@maxItems` (M12).** TS checks a tuple's length against the target array's
+  `@minItems` / `@maxItems` in the relation (`isTupleAssignableToArrayModel`); Rust only checks each
+  element. Repro: `@maxItems(1) model A is string[]; model M<T extends A> {} alias X = M<["a", "b"]>;`
+  (TS: `invalid-argument`, Rust: none). Root cause: decorator state is not available to the Rust relation
+  (decorators replay in JS). Owner: post-M13 (needs Rust-side `@minItems`/`@maxItems` state).
+- **String templates with value interpolations (M12).** Templates whose spans reference `const` values
+  (TS value-world string templates, `mixed-string-template`) are not modeled: spans are always types.
+  Owner: post-M13 value-system follow-on.
 - **Template value arguments are placeholders (M11).** `#{}` / `#[]` template arguments and defaults are an
   opaque `unknown` placeholder type in the Rust graph; they are turned into values only when used as
-  decorator arguments, and their constraint is not checked. Owner: M12 (value system).
+  decorator arguments, and their constraint is not checked (M12 did not change this; json-schema does not
+  use template value arguments). Owner: post-M13 value-system follow-on.
 - **`resolveTypeReference` (M11).** `program.resolveTypeReference` / `checker.resolveTypeReference` on the
-  adapter resolve plain dotted paths only (no template arguments, no diagnostics). Owner: M12.
+  adapter resolve plain dotted paths only (no template arguments, no diagnostics). json-schema does not
+  call it. Owner: post-M13 emitter follow-on (needs a napi entry point to check a reference expression).
 - **Compiler features are not configurable (M11).** `auto-decorators` and function-declaration
   (`experimental-feature`) gating use napi options (`autoDecorators` / `functionDeclarations`) instead of
   `tspconfig.yaml` / library `features`; library files never warn. Owner: M13.
@@ -142,17 +176,23 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   - _Fix / owner:_ port the indexer-value merge (follow-up to M10; needed before M12 emitters see such types).
 - **Single-source `check()` has no standard library (M10).** The napi `check(source)` API used by the
   M2–M8 comparison suites keeps the built-in intrinsic stubs (TS `nostdlib`-like): `Array`/`Record`,
-  `TypeSpec` declarations and decorator declarations are only available through `checkProgram`. Owner:
-  M12 (adapter on top of `checkProgram`).
+  `TypeSpec` declarations and decorator declarations are only available through `checkProgram`. M12 kept
+  it (the M2–M8 suites compare `nostdlib`-like behavior and their helpers pick types by name; converting
+  32 suites is mechanical but large). New comparison suites use `checkProgram` / `compile`. Owner: M13
+  (switch `check()` to `checkProgram` with an in-memory host when the CLI entry point lands).
 
 ### Deferred (outside current scope or to be picked up by a later milestone)
 
-- `8574d5453` typeref values (`TypeRefValue`, `getTypeRefType`, value kind) — M12 (value system).
+- `8574d5453` typeref values (`TypeRefValue`, `getTypeRefType`, value kind) — not needed by json-schema;
+  post-M13 value-system follow-on.
 - `108ef0689` `Sym.node` / `getSymNode` typing (TS-only typing fix).
-- `57f06f3db` `$provideTypeInfo` / `program.getTypeInfo` — M12.
+- `57f06f3db` `$provideTypeInfo` / `program.getTypeInfo` — not used by json-schema; post-M13 emitter
+  follow-on (the adapter would call library `$provideTypeInfo` hooks after decorators).
+- `@typespec/rest` decorator coverage (M11 stretch) — not needed by json-schema; `@typespec/openapi3`
+  follow-on (out of M12 scope per the plan).
 - `e453a4752` enum member navigation in linter rules.
 - `ad69727db` ICE fix for interpolating a function call in a template declaration — blocked on
-  `extern fn` / function calls / string template values / `Reflection` (M10–M12); the Rust checker
+  `extern fn` / function calls (still not checked after M12; string templates are) / `Reflection`; the Rust checker
   does not panic on the upstream repro (covered by a unit test).
 - `7aa17edfd` short diagnostic / linter rule names; `283ddec0c` unused suppressions; `463b08d58`
   duplicate `#suppress` warnings — diagnostics infrastructure, M13.
