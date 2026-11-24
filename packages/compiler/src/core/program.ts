@@ -238,12 +238,27 @@ export async function compile(
   options: CompilerOptions = {},
   oldProgram?: Program, // NOTE: deliberately separate from options to avoid memory leak by chaining all old programs together.
 ) {
+  return compileWithProgramFactory(host, options, () =>
+    createProgram(host, mainFile, options, oldProgram),
+  );
+}
+
+/**
+ * Run the `compile` pipeline (progress reporting and emitter stage) over a program produced by
+ * `createProgramFn`. Used by the experimental Rust checker (`tsp compile --use-rust-checker`).
+ * @internal
+ */
+export async function compileWithProgramFactory(
+  host: CompilerHost,
+  options: CompilerOptions,
+  createProgramFn: () => Promise<{ program: Program; shouldAbort: boolean }>,
+) {
   const logger = createLogger({ sink: host.logSink });
   const { program, shouldAbort } = await logger.trackAction(
     "Compiling...",
     "Compiling",
     async (task) => {
-      const result = await createProgram(host, mainFile, options, oldProgram);
+      const result = await createProgramFn();
       if (result.program.hasError()) {
         task.fail();
       } else if (result.program.diagnostics.length > 0) {

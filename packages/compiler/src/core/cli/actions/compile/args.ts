@@ -44,6 +44,8 @@ export interface CompileCliArgs {
   "linter-rule"?: string[];
   "dry-run"?: boolean;
   "ignore-deprecated"?: boolean;
+  /** Experimental: check with the Rust checker (`@typespec/compiler-rust`). */
+  "use-rust-checker"?: boolean;
   args?: string[];
 }
 

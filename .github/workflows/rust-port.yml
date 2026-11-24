@@ -76,3 +76,9 @@ jobs:
 
       - name: Test native module
         run: pnpm -C packages/compiler-rust test
+
+      # M13: run the compiler's CLI e2e suite through `tsp compile` with the Rust checker enabled.
+      - name: Compiler CLI e2e with the Rust checker
+        run: pnpm -C packages/compiler exec vitest run --config ./vitest.config.e2e.ts test/e2e/cli
+        env:
+          TYPESPEC_USE_RUST_CHECKER: "1"

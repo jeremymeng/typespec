@@ -16,6 +16,7 @@ import {
 } from "../../utils.js";
 import type { CompileCliArgs } from "./args.js";
 import { getCompilerOptions } from "./args.js";
+import { isRustCheckerEnabled, loadRustCheckerCompile } from "./rust-checker.js";
 import type { ProjectWatcher, WatchHost } from "./watch.js";
 import { createWatchHost, createWatcher } from "./watch.js";
 
@@ -34,10 +35,21 @@ export async function compileAction(host: CliCompilerHost, args: CompileCliArgs)
     process.exit(1);
   }
 
+  let compile = compileProgram;
+  if (isRustCheckerEnabled(args)) {
+    try {
+      compile = await loadRustCheckerCompile(host, entrypoint);
+    } catch (e: any) {
+      // eslint-disable-next-line no-console
+      console.error(pc.red(e?.message ?? String(e)));
+      process.exit(1);
+    }
+  }
+
   if (args.watch) {
-    await compileWatch(host, entrypoint, args);
+    await compileWatch(host, entrypoint, args, compile);
   } else {
-    await compileOnce(host, entrypoint, args);
+    await compileOnce(host, entrypoint, args, compile);
   }
 }
 
@@ -68,10 +80,11 @@ async function compileOnce(
   host: CompilerHost,
   entrypoint: string,
   args: CompileCliArgs,
+  compile: typeof compileProgram,
 ): Promise<void> {
   const cliOptions = await getCompilerOptionsOrExit(host, entrypoint, args);
   try {
-    const program = await compileProgram(host, entrypoint, cliOptions);
+    const program = await compile(host, entrypoint, cliOptions);
     logProgramResult(host, program);
     if (args.stats) {
       printStats(program.stats);
@@ -88,6 +101,7 @@ async function compileWatch(
   cliHost: CliCompilerHost,
   entrypoint: string,
   args: CompileCliArgs,
+  compile: typeof compileProgram,
 ): Promise<void> {
   const compilerOptions = await getCompilerOptionsOrExit(cliHost, entrypoint, args);
 
@@ -115,7 +129,7 @@ async function compileWatch(
         if (diagnostics.length > 0) {
           return { diagnostics };
         }
-        return await compileProgram(watchHost, entrypoint, newCompilerOptions);
+        return await compile(watchHost, entrypoint, newCompilerOptions);
       };
       currentCompilePromise = run().catch(logInternalCompilerError).then(onCompileFinished);
     } else {

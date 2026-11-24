@@ -196,6 +196,12 @@ async function runCli(
             type: "boolean",
             describe: "Treat warnings as errors and return non-zero exit code if there are any.",
           })
+          .option("use-rust-checker", {
+            type: "boolean",
+            hidden: true,
+            describe:
+              "[Experimental] Check the program with the Rust checker (@typespec/compiler-rust). Also enabled by TYPESPEC_USE_RUST_CHECKER=1.",
+          })
           .option("no-emit", {
             type: "boolean",
             describe: "Do not run any emitters.",
