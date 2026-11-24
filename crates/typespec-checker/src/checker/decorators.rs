@@ -253,7 +253,7 @@ impl Checker<'_> {
             };
             if kind == ExternDeclarationKind::Decorator
                 && flags & modifier_flags::AUTO != 0
-                && !self.options.auto_decorators
+                && !(self.options.auto_decorators || self.feature_enabled("auto-decorators", node))
             {
                 self.report(
                     "auto-decorator-disabled",
@@ -263,7 +263,8 @@ impl Checker<'_> {
             }
             // TS reports this for project files only (the stdlib's `extern fn typeref` is not).
             if kind == ExternDeclarationKind::Function
-                && !self.options.function_declarations
+                && !(self.options.function_declarations
+                    || self.feature_enabled("function-declarations", node))
                 && !self.is_library_node(node)
             {
                 self.diagnostics.push(Diagnostic {

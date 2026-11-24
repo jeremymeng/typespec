@@ -898,7 +898,7 @@ impl<'p> Checker<'p> {
             self.symbol_to_type.insert(symbol, type_id);
         }
 
-        if let Some(extends) = extends {
+        if let Some(extends) = extends.filter(|_| !self.feature_enabled("union-extends", node_id)) {
             self.report(
                 "union-extends-disabled",
                 "Union `extends` clauses require the 'union-extends' feature to be enabled. Add 'union-extends' to the 'features' list in your tspconfig.yaml.",
@@ -2063,11 +2063,13 @@ impl<'p> Checker<'p> {
     }
 
     fn report_unused_template_parameters(&mut self) {
-        let unused = self
+        let mut unused = self
             .template_parameter_usage
             .iter()
             .filter_map(|(node, used)| (!*used).then_some(*node))
             .collect::<Vec<_>>();
+        // Source order, like the TS linter's program navigation.
+        unused.sort_by_key(|node| (self.node(*node).pos, node.as_u32()));
         for node in unused {
             // A linter rule in TS: only reported in project files.
             if self.is_library_node(node) {
@@ -2083,7 +2085,9 @@ impl<'p> Checker<'p> {
                 .unwrap_or_default();
             self.diagnostics.push(Diagnostic {
                 severity: DiagnosticSeverity::Warning,
-                code: "unused-template-parameter",
+                // Linter rule diagnostic (full rule code): the JS host reports it only when the
+                // rule is enabled and no error occurred, like the TS linter stage (M13).
+                code: "@typespec/compiler/unused-template-parameter",
                 message: format!(
                     "Templates should use all specified parameters, and parameter '{parameter_name}' does not exist in type '{type_name}'. Consider removing this parameter."
                 ),
@@ -2934,9 +2938,9 @@ impl<'p> Checker<'p> {
         id.map(|id| self.identifier_name(id)).unwrap_or_default()
     }
 
-    /// Diagnostics for declarations used in expression position. The TS checker skips
-    /// `declaration-expression-disabled` when the `declaration-expressions` compiler feature is
-    /// enabled in tspconfig; the Rust port has no feature configuration so it always reports.
+    /// Diagnostics for declarations used in expression position. Like TS,
+    /// `declaration-expression-disabled` is skipped when the `declaration-expressions` compiler
+    /// feature is enabled for the node's location (M13).
     fn report_declaration_expression_constraints(
         &mut self,
         node_id: NodeId,
@@ -2949,11 +2953,39 @@ impl<'p> Checker<'p> {
                 *first,
             );
         }
-        self.report(
-            "declaration-expression-disabled",
-            "Declaration expressions require the 'declaration-expressions' feature to be enabled. Add 'declaration-expressions' to the 'features' list in your tspconfig.yaml.",
-            node_id,
-        );
+        if !self.feature_enabled("declaration-expressions", node_id) {
+            self.report(
+                "declaration-expression-disabled",
+                "Declaration expressions require the 'declaration-expressions' feature to be enabled. Add 'declaration-expressions' to the 'features' list in your tspconfig.yaml.",
+                node_id,
+            );
+        }
+    }
+
+    /// TS `isCompilerFeatureEnabled(program, feature, node)`: project files use the project
+    /// features, library files their library's features, standard library files none (M13).
+    pub(crate) fn feature_enabled(&self, feature: &str, node: NodeId) -> bool {
+        let pos = self.node(node).pos;
+        let contains = |script: &&NodeId| {
+            let script = self.node(**script);
+            script.pos <= pos && pos <= script.end
+        };
+        if self
+            .parse_result
+            .compiler_scripts
+            .iter()
+            .any(|s| contains(&s))
+        {
+            return false;
+        }
+        if let Some(script) = self.parse_result.library_scripts.iter().find(contains) {
+            return self
+                .options
+                .library_features
+                .get(script)
+                .is_some_and(|features| features.iter().any(|f| f == feature));
+        }
+        self.options.project_features.iter().any(|f| f == feature)
     }
 
     fn check_union_base_type(
@@ -4861,9 +4893,57 @@ mod tests {
             !result
                 .diagnostics
                 .iter()
-                .any(|d| d.code == "unused-template-parameter"),
+                .any(|d| d.code == "@typespec/compiler/unused-template-parameter"),
             "{:?}",
             result.diagnostics
+        );
+    }
+
+    #[test]
+    fn unused_template_parameters_are_reported_in_source_order() {
+        let result = check_source("model A<T> {} model B<U> {} model C<V, W> {}");
+        let positions = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "@typespec/compiler/unused-template-parameter")
+            .map(|d| d.target.pos)
+            .collect::<Vec<_>>();
+        assert_eq!(positions.len(), 4);
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    fn check_source_with_options(source: &str, options: CheckOptions) -> CheckResult {
+        let source = SourceFile::new(source.to_string());
+        let parse_result = parse(&source);
+        let mut table = bind(&parse_result);
+        let resolution = resolve_names(&parse_result, &mut table);
+        check_with_options(&parse_result, &table, &resolution.resolutions, options)
+    }
+
+    #[test]
+    fn project_features_disable_feature_diagnostics() {
+        let source = "union A { a: string } union B extends A { b: int32 } model M { p: model { x: string } }";
+        let codes = |options| {
+            check_source_with_options(source, options)
+                .diagnostics
+                .iter()
+                .map(|d| d.code)
+                .collect::<Vec<_>>()
+        };
+        let disabled = codes(CheckOptions::default());
+        assert!(disabled.contains(&"union-extends-disabled"), "{disabled:?}");
+        assert!(
+            disabled.contains(&"declaration-expression-disabled"),
+            "{disabled:?}"
+        );
+        let enabled = codes(CheckOptions {
+            project_features: vec!["union-extends".into(), "declaration-expressions".into()],
+            ..CheckOptions::default()
+        });
+        assert!(!enabled.contains(&"union-extends-disabled"), "{enabled:?}");
+        assert!(
+            !enabled.contains(&"declaration-expression-disabled"),
+            "{enabled:?}"
         );
     }
 }

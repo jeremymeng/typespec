@@ -62,6 +62,9 @@ pub struct NodeInfoJs {
     pub file: Option<String>,
     pub pos: u32,
     pub end: u32,
+    /// Span of the node's identifier (TS `getSourceLocation` with `locateId`), M13.
+    pub id_pos: Option<u32>,
+    pub id_end: Option<u32>,
 }
 
 pub(crate) struct DecoratorSerialization {
@@ -161,12 +164,22 @@ pub(crate) fn serialize_decorators(
                 Some((file, local)) => (Some(sources.get(file).path.clone()), local.pos, local.end),
                 None => (None, node.pos, node.end),
             };
+            let id_span = node.data.locate_id().map(|id_node| {
+                let id_node = parse_result.arena.get(id_node);
+                let offset = node.pos.saturating_sub(pos);
+                (
+                    id_node.pos.saturating_sub(offset),
+                    id_node.end.saturating_sub(offset),
+                )
+            });
             NodeInfoJs {
                 node_id: id,
                 kind: format!("{:?}", node.kind),
                 file,
                 pos,
                 end,
+                id_pos: id_span.map(|(pos, _)| pos),
+                id_end: id_span.map(|(_, end)| end),
             }
         })
         .collect();

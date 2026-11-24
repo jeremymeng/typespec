@@ -330,7 +330,7 @@ describe("binder comparison: Rust vs TS patterns", () => {
       const diagnostics = rust("namespace A { model Foo {} }\nusing A;").diagnostics;
       expect(diagnostics).toContainEqual(
         expect.objectContaining({
-          code: "unused-using",
+          code: "@typespec/compiler/unused-using",
           message: "'using A' is declared but never used.",
         }),
       );

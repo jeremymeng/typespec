@@ -447,6 +447,39 @@ pub enum NodeData {
 }
 
 impl NodeData {
+    /// Node TS `getSourceLocation(target, { locateId: true })` reports instead of the whole
+    /// node: a type reference's target, otherwise the node's `id` (M13).
+    pub fn locate_id(&self) -> Option<NodeId> {
+        match self {
+            NodeData::TypeReference { target, .. } => Some(*target),
+            NodeData::TypeSpecScript { id, .. }
+            | NodeData::MemberExpression { id, .. }
+            | NodeData::NamespaceStatement { id, .. }
+            | NodeData::OperationStatement { id, .. }
+            | NodeData::ModelStatement { id, .. }
+            | NodeData::ModelProperty { id, .. }
+            | NodeData::ScalarStatement { id, .. }
+            | NodeData::ScalarConstructor { id, .. }
+            | NodeData::InterfaceStatement { id, .. }
+            | NodeData::UnionStatement { id, .. }
+            | NodeData::EnumStatement { id, .. }
+            | NodeData::EnumMember { id, .. }
+            | NodeData::AliasStatement { id, .. }
+            | NodeData::ConstStatement { id, .. }
+            | NodeData::TemplateParameterDeclaration { id, .. }
+            | NodeData::ObjectLiteralProperty { id, .. }
+            | NodeData::DecoratorDeclarationStatement { id, .. }
+            | NodeData::FunctionDeclarationStatement { id, .. }
+            | NodeData::FunctionParameter { id, .. } => Some(*id),
+            NodeData::ModelDeclarationExpression { id, .. }
+            | NodeData::ScalarDeclarationExpression { id, .. }
+            | NodeData::UnionDeclarationExpression { id, .. }
+            | NodeData::EnumDeclarationExpression { id, .. }
+            | NodeData::UnionVariant { id, .. } => *id,
+            _ => None,
+        }
+    }
+
     pub fn push_children(&self, children: &mut Vec<NodeId>) {
         match self {
             NodeData::TypeSpecScript { id, statements, .. } => {

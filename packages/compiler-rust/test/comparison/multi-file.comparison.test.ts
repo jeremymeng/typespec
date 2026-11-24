@@ -74,7 +74,7 @@ async function compileTs(files: Files): Promise<TsOutcome> {
       diagnostics.map((d) => {
         const location = getSourceLocation(d.target);
         return {
-          code: d.code.replace(/^@typespec\/compiler\//, ""),
+          code: d.code,
           severity: d.severity,
           message: d.message,
           ...(location
@@ -125,7 +125,7 @@ function compileRust(files: Files): TsOutcome {
   // TS skips the linter stage (where `unused-using` is reported) once an error
   // has been reported; the Rust checker has no linter stage and always reports it.
   const hasError = result.diagnostics.some((d) => d.severity === "error");
-  const diagnostics = result.diagnostics.filter((d) => !(hasError && d.code === "unused-using"));
+  const diagnostics = result.diagnostics.filter((d) => !(hasError && d.code === "@typespec/compiler/unused-using"));
   return {
     diagnostics: sortDiagnostics(
       diagnostics.map((d) => ({

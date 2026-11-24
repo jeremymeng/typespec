@@ -58,7 +58,10 @@ async function emitRust(code: string, options: EmitterOptions): Promise<EmitResu
 }
 
 // Reported unconditionally by Rust but only by the TS linter (known difference, owner M13).
-const linterGatedCodes = new Set(["unused-using", "unused-template-parameter"]);
+const linterGatedCodes = new Set([
+  "@typespec/compiler/unused-using",
+  "@typespec/compiler/unused-template-parameter",
+]);
 
 async function expectSameOutput(
   code: string,

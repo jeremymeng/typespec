@@ -111,6 +111,9 @@ export interface NodeShim {
   readonly pos: number;
   readonly end: number;
   readonly file?: string;
+  /** Span of the node's identifier (TS `getSourceLocation(node, { locateId: true })`, M13). */
+  readonly idPos?: number;
+  readonly idEnd?: number;
   parent?: NodeShim;
 }
 
@@ -405,6 +408,9 @@ export function createProgram(checkResult: CheckResultJs | CheckProgramResultJs)
         pos: info.pos,
         end: info.end,
         file: info.file ?? undefined,
+        ...(info.idPos !== undefined && info.idPos !== null
+          ? { idPos: info.idPos, idEnd: info.idEnd ?? info.idPos }
+          : {}),
         // Template declarations get their parameters in `linkTemplates`.
         ...(templatedStatementKinds.has(info.kind) ? { templateParameters: [] } : {}),
       },
