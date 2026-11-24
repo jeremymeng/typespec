@@ -14,6 +14,31 @@ This directory contains the planning and tracking artifacts for porting the Type
 
 Related: [`docs/adr/0001-arena-based-type-graph.md`](../adr/0001-arena-based-type-graph.md) — ADR for the arena allocation decision.
 
+## Compiling with the Rust checker (M13)
+
+The `tsp` CLI can type-check with the Rust checker and run emitters on the result (experimental, opt-in):
+
+```powershell
+# Build the native module and the bridge (and their workspace dependencies)
+pnpm -r --filter "@typespec/compiler-rust..." build
+
+# Compile a project through the Rust checker
+cd my-project
+node <repo>/packages/compiler/cmd/tsp.js compile . --emit @typespec/json-schema --use-rust-checker
+
+# Or enable it with an environment variable
+$env:TYPESPEC_USE_RUST_CHECKER = "1"
+node <repo>/packages/compiler/cmd/tsp.js compile .
+```
+
+- The CLI prints `Experimental: checking with the Rust checker (@typespec/compiler-rust).` on stderr.
+- `@typespec/compiler-rust` is found next to the project, next to the running compiler
+  (`packages/compiler-rust` in this repo), or through `TYPESPEC_COMPILER_RUST_PATH=<path to packages/compiler-rust>`.
+  It must be built (`dist/tsp-bridge.js` and the `.node` binding).
+- `tspconfig.yaml` (emitters, options, linter, `features`, `entrypoint`, `warn-as-error`) is honored. Known
+  gaps are listed in [`upstream-sync.md`](./upstream-sync.md) under "Known behavioral differences (M13 CLI
+  bridge)".
+
 ## Workflow for Agents
 
 ### 1. Pick a task

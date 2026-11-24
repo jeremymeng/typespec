@@ -3,7 +3,7 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-11-24T22:36:46Z",
+  "updated_at": "2026-11-24T23:27:43Z",
   "updated_by": "agent:rust-port-m13",
   "tasks": [
     {
@@ -1422,7 +1422,7 @@
     {
       "id": "M13",
       "title": "Wire Rust checker into tsp compile CLI (--use-rust-checker)",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": ["M12"],
       "plan_section": "docs/rust-port/plan.md#m13--wire-rust-checker-into-the-existing-tsp-compile-cli",
       "complexity": "medium",
@@ -1430,7 +1430,7 @@
       "branch": "jeremymeng/rust-port-m13-cli",
       "pr": null,
       "started_at": "2026-11-24T22:36:46Z",
-      "completed_at": null,
+      "completed_at": "2026-11-24T23:27:43Z",
       "key_source_files": [
         "packages/compiler/src/core/program.ts",
         "packages/compiler/cmd/tsp.js",
@@ -1439,72 +1439,81 @@
       ],
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "Add --use-rust-checker flag to compile CLI action"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Respect TYPESPEC_USE_RUST_CHECKER=1 environment variable"
         },
         {
-          "done": false,
-          "text": "New packages/compiler/src/core/program-rust-bridge.ts: compileWithRustChecker(host, mainFile, options)"
+          "done": true,
+          "text": "Bridge: packages/compiler-rust/src/tsp-bridge.ts createRustProgram(host, mainFile, options), driven by compileWithProgramFactory in packages/compiler (deviation: bridge lives in compiler-rust)"
         },
         {
-          "done": false,
-          "text": "@typespec/compiler-rust added as optional peer dep of @typespec/compiler"
+          "done": true,
+          "text": "No peer dep (would create a workspace cycle; deviation): compiler-rust is located and dynamically imported by packages/compiler/src/core/cli/actions/compile/rust-checker.ts"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Dynamic import of compiler-rust so non-Rust users do not pay cost"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Host callbacks bridge wraps existing CompilerHost for Rust readFile/resolveModule"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Standard decorators registered before check() (M11 helpers)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Program adapter (M8/M12) built from Rust check() output"
         },
         {
-          "done": false,
-          "text": "Existing emitter  loop works on Rust-derived Program identically"
+          "done": true,
+          "text": "Existing emitter loop works on Rust-derived Program identically"
         },
         {
-          "done": false,
-          "text": "Diagnostics surfaced with clear \"rust-checker\" identification on failures"
+          "done": true,
+          "text": "Rust path identified by an \"Experimental: checking with the Rust checker\" notice on stderr; diagnostics printed with line/column like TS"
         },
         {
-          "done": false,
-          "text": "Smoke test: tsp compile <sample> --emit @typespec/json-schema --use-rust-checker produces byte-identical output vs TS path"
+          "done": true,
+          "text": "Smoke test (fixture project in packages/compiler-rust/test/cli): tsp compile <sample> --emit @typespec/json-schema --use-rust-checker produces byte-identical output vs TS path"
         },
         {
-          "done": false,
-          "text": "CI matrix entry runs documented subset of @typespec/compiler E2E tests with TYPESPEC_USE_RUST_CHECKER=1"
+          "done": true,
+          "text": "Rust Port workflow runs @typespec/compiler test/e2e/cli (22 tests) with TYPESPEC_USE_RUST_CHECKER=1"
         },
         {
-          "done": false,
+          "done": true,
           "text": "README updates: packages/compiler/README.md and docs/rust-port/README.md note Rust-checker option as experimental"
         },
         {
-          "done": false,
+          "done": true,
           "text": "No regressions in default (TS-checker) path"
         },
         {
-          "done": false,
+          "done": true,
           "text": "cargo build / test / clippy -D warnings / fmt --check all green"
         },
         {
-          "done": false,
+          "done": true,
           "text": "pnpm -C packages/compiler-rust build / test + packages/compiler build / test all green"
         }
       ],
       "log": [
-        { "timestamp": "2026-11-24T22:36:46Z", "author": "agent:rust-port-m13", "text": "Claimed M13 on branch jeremymeng/rust-port-m13-cli (based on jeremymeng/rust-port-upstream-sync after M12)." }
+        {
+          "timestamp": "2026-11-24T22:36:46Z",
+          "author": "agent:rust-port-m13",
+          "text": "Claimed M13 on branch jeremymeng/rust-port-m13-cli (based on jeremymeng/rust-port-upstream-sync after M12)."
+        },
+        {
+          "timestamp": "2026-11-24T23:27:43Z",
+          "author": "agent:rust-port-m13",
+          "text": "Completed M13: tsp compile --use-rust-checker / TYPESPEC_USE_RUST_CHECKER=1 checks with the Rust checker through the compiler-rust tsp-bridge and the unchanged emitter pipeline; json-schema output byte-identical and CLI diagnostics output identical to TS on the CLI fixtures. Also: linter gating of unused-using/unused-template-parameter (full codes, source order), compiler features from tspconfig/library tspconfig, tspconfig entrypoint, package.json #imports, short-name resolution + ambiguous-short-name, duplicate-suppression, suppress-error. Validation: cargo fmt/clippy -D warnings/test green; compiler-rust 1175 passed, 5 skipped; @typespec/compiler 4775 passed, 6 skipped; compiler e2e/cli 22/22 with TYPESPEC_USE_RUST_CHECKER=1. Deferred (post-M13): --trace, version mismatch, incompatible-library, unused suppressions (LSP-only), single-file check() stdlib + helper conversion, diagnostic interleaving of decorator vs checker diagnostics."
+        }
       ]
     }
   ]

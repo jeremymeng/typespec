@@ -58,12 +58,10 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
 
 ### Known behavioral differences
 
-- **Compiler features.** TS gates union `extends` and declaration expressions behind the
-  `union-extends` / `declaration-expressions` features (enabled per library by `655c74139`). The Rust
-  port has no feature configuration yet, so it always reports `union-extends-disabled` and
-  `declaration-expression-disabled` — matching TS with features disabled (the default for user code).
-  M10 loads the standard library without needing either feature (it uses neither), so per-library feature
-  configuration is still absent. Owner: M13 (library metadata / `tspconfig.yaml`).
+- **Compiler features (handled in M13).** `union-extends`, `declaration-expressions`, `auto-decorators` and
+  `function-declarations` are enabled from `tspconfig.yaml` `features` and per library from the library's
+  own `tspconfig.yaml` (TS `resolveLibraryFeatures`), via the napi `features` / `libraryFeatures` options
+  used by `tsp compile --use-rust-checker`. Direct `checkProgram` callers still pass them explicitly.
 - **Spread sources in template instances.** Instantiating `model Bar<U> { ...Foo<U> }` substitutes the
   copied properties directly instead of re-instantiating `Foo<A>`, so decorators run on `Bar<A>`'s
   properties (with resolved arguments) but `Foo<A>` is only created when referenced elsewhere.
@@ -84,38 +82,23 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   - _Fix:_ port `parseIdOrValueForVariant` into the Rust parser (keyword/modifier → identifier wrapped
     in a `TypeReference`, error only when no `:` follows) and add parser comparison cases. Owner: a
     parser-parity (M3) follow-up.
-- **`unused-template-parameter` is always reported (linter gating).**
-  - _Symptom:_ Rust emits a `unused-template-parameter` warning for every unused template parameter;
-    TS emits nothing by default.
-  - _Repro:_ `model TargetA {} model Constrained<T extends TargetA> {}` (also `model M<T> {}`). `T`
-    is genuinely unused: a constraint is not a usage in either implementation.
-  - _Root cause:_ not a usage-tracking difference — usage marking matches TS for models, scalars,
-    aliases, operations, unions, interfaces, defaults and self references (TS marks usage at
-    `packages/compiler/src/core/checker.ts:1744` and `checker.ts:4146`; Rust at
-    `crates/typespec-checker/src/checker.rs:1726`). In TS the check is a built-in linter rule
-    (`packages/compiler/src/core/linter-rules/unused-template-parameter.rule.ts`, registered by
-    `createBuiltInLinter` in `packages/compiler/src/core/linter.ts:587`) that only runs when enabled
-    through the linter rule set (`packages/compiler/src/core/program.ts:452-522`); when enabled, TS
-    reports the same parameters with code `@typespec/compiler/unused-template-parameter`. Rust
-    reports it unconditionally from the checker (`check` → `report_unused_template_parameters`,
-    `crates/typespec-checker/src/checker.rs:150`, `checker.rs:1730`) with the unqualified code
-    `unused-template-parameter`, and iterates a `HashMap` so the report order is not stable. Since M10
-    it is skipped for library files (including the standard library), like TS linting only project files.
-  - _Fix:_ stop reporting from the checker; expose the usage map (like
-    `getTemplateParameterUsageMap`) and run the rule in a linter stage gated by the linter rule set,
-    reporting `@typespec/compiler/unused-template-parameter` in source order. Owner: M13 (linter
-    configuration / `tsp compile` integration).
-
-- **`unused-using` is not linter-gated (M9).** TS reports `@typespec/compiler/unused-using` from a
-  built-in linter rule that is disabled by default and skipped once any error is reported. Rust reports
-  `unused-using` from the name resolver unconditionally (unqualified code, also when errors exist). Files
-  loaded through a package (library location) are skipped like TS. Owner: M13 (linter stage).
+- **`unused-template-parameter` / `unused-using` linter gating (handled in M13).** Rust now reports both
+  with their linter codes (`@typespec/compiler/unused-template-parameter`,
+  `@typespec/compiler/unused-using`) in source order; the CLI bridge reports them only when the rule is
+  enabled by the linter rule set (TS `createBuiltInLinter`) in the linting stage, which (like TS) is not
+  reached once an error was reported. Direct `checkProgram` / `compile()` callers still get
+  them unconditionally (filter by code). Remaining difference: with library rules also enabled, Rust
+  built-in rule diagnostics are reported before all JS library rule diagnostics rather than interleaved
+  by rule order. Owner: post-M13 linter follow-on.
 - **Usings inside block namespaces (M9).** Rust stores `namespace A { using B; }` on the merged namespace
   scope, so such a using is visible in other `namespace A { }` blocks (including in other files); TS keeps
   it per namespace statement. File-level usings are per file and match TS.
-- **Module resolution gaps (M9).** The JS host port of `module-resolver.ts` does not support `#imports`
-  subpath imports, realpath/symlink canonicalization, or `tspconfig.yaml` entrypoints; imported `.js`
-  files are recorded in the source list; since M11 `compile()` imports them and runs their decorators.
+- **Module resolution gaps (M9, narrowed in M13).** M13 added `tspconfig.yaml` `entrypoint` and
+  `package.json#imports` to the JS host. Remaining: `#imports` only reads the nearest `package.json` and
+  only supports `./` targets (no conditions objects, patterns, or package targets); no realpath/symlink
+  canonicalization; the default simple `tspconfig.yaml` reader of `createNodeProgramHost` ignores
+  `extends` (the CLI bridge plugs in the real YAML config loader). Owner: post-M13 module-resolution
+  follow-on.
 - **Decorator argument validation (M10 → M11).** Since M11, decorator arguments are checked against
   type and `valueof` parameters, targets (`decorator-wrong-target`) and `missing-implementation` like TS
   (`std-decorators.comparison.test.ts`). Remaining gaps are listed below under M11.
@@ -165,9 +148,9 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
 - **`resolveTypeReference` (M11).** `program.resolveTypeReference` / `checker.resolveTypeReference` on the
   adapter resolve plain dotted paths only (no template arguments, no diagnostics). json-schema does not
   call it. Owner: post-M13 emitter follow-on (needs a napi entry point to check a reference expression).
-- **Compiler features are not configurable (M11).** `auto-decorators` and function-declaration
-  (`experimental-feature`) gating use napi options (`autoDecorators` / `functionDeclarations`) instead of
-  `tspconfig.yaml` / library `features`; library files never warn. Owner: M13.
+- **Compiler features (M11, handled in M13).** `auto-decorators` / function-declaration gating now also
+  follow `tspconfig.yaml` / library features when compiled through the CLI (see "Compiler features"
+  above); the napi `autoDecorators` / `functionDeclarations` options remain for direct callers.
 - **Intersections with several record indexers (M10).**
   - _Symptom:_ `alias I = Record<string> & Record<int32>` has no indexer in Rust; TS merges the value
     types (`indexer = { key: string, value: <merged string & int32> }`).
@@ -178,8 +161,38 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   M2–M8 comparison suites keeps the built-in intrinsic stubs (TS `nostdlib`-like): `Array`/`Record`,
   `TypeSpec` declarations and decorator declarations are only available through `checkProgram`. M12 kept
   it (the M2–M8 suites compare `nostdlib`-like behavior and their helpers pick types by name; converting
-  32 suites is mechanical but large). New comparison suites use `checkProgram` / `compile`. Owner: M13
-  (switch `check()` to `checkProgram` with an in-memory host when the CLI entry point lands).
+  32 suites is mechanical but large). New comparison suites use `checkProgram` / `compile`. M13 did not
+  change it: the CLI goes through `checkProgram`, and converting the suites does not affect CLI parity.
+  Owner: post-M13 test-infrastructure follow-on (switch `check()` to `checkProgram` with an in-memory
+  host and convert the helpers).
+
+### Handled in M13 (`tsp compile --use-rust-checker`)
+
+- Diagnostics are printed by the TS CLI with `file:line:col` and code frames (real `SourceFile`s,
+  identifier spans like TS `locateId`), with `#suppress`, `suppress-error`, `--warn-as-error` and exit codes.
+- Linter gating of `unused-using` / `unused-template-parameter`, compiler features from `tspconfig.yaml`
+  and libraries, `tspconfig.yaml` `entrypoint`, `package.json#imports` (see above).
+- `7aa17edfd` short diagnostic / linter rule names: `#suppress` and linter rule codes resolve short names
+  through the compiler's own `diagnostic-code` resolver; `ambiguous-short-name` is reported.
+- `463b08d58` duplicate `#suppress`: `duplicate-suppression` warnings for project files.
+
+### Known behavioral differences (M13 CLI bridge)
+
+- **Diagnostic order across stages.** Rust returns checker diagnostics for the whole program before JS
+  decorators run, so a decorator diagnostic on an earlier declaration prints after a checker diagnostic
+  on a later one (TS interleaves them during checking). Name-resolution diagnostics (`invalid-ref`,
+  `ambiguous-symbol`) are merged into the checker list by position (`merge_resolution_diagnostics` in
+  `crates/typespec-napi/src/checker.rs`), which matches TS for the fixtures but is heuristic. Repro:
+  `model A { @minValue(10) @maxValue(1) x: int32 } model B { x: Missing }` — TS prints `invalid-range`
+  (1:11) then `invalid-ref` (2:14); Rust prints them reversed. Root cause: decorators replay after checking (M11).
+  Owner: post-M13 (needs in-check decorator callbacks).
+- **Not implemented in the bridge.** `--trace` output (tracer is a no-op), the compiler version mismatch
+  check, `incompatible-library` (`validateLoadedLibraries`), template instantiation trace in diagnostic
+  messages, codefixes, and `283ddec0c` unused suppressions (TS reports them only in the language server).
+  `getSourceFileLocationContext` returns libraries without their `$lib` metadata name. Owner: post-M13
+  CLI follow-on.
+- **Single-shot only.** `tsp compile --watch --use-rust-checker` reuses the same path for each rebuild but
+  is untested; `tsp` language server and `tsp init` do not use the Rust checker.
 
 ### Deferred (outside current scope or to be picked up by a later milestone)
 
@@ -194,7 +207,7 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
 - `ad69727db` ICE fix for interpolating a function call in a template declaration — blocked on
   `extern fn` / function calls (still not checked after M12; string templates are) / `Reflection`; the Rust checker
   does not panic on the upstream repro (covered by a unit test).
-- `7aa17edfd` short diagnostic / linter rule names; `283ddec0c` unused suppressions; `463b08d58`
-  duplicate `#suppress` warnings — diagnostics infrastructure, M13.
+- `7aa17edfd` short names and `463b08d58` duplicate `#suppress` — handled in M13; `283ddec0c` unused
+  suppressions — language-server only in TS, post-M13 CLI follow-on.
 - Linter (`6f38b48f3`, `e218d1688`), CLI (`b3a9dc54c`, `c8105ea27`), `skipTrivia` export
   (`99eacfbd3`), server, formatter, and JSDoc-only changes — outside the checker port.

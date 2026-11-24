@@ -1141,6 +1141,49 @@ Don't try to predict every API json-schema uses — let the emitter's actual usa
 
 ### M13 — Wire Rust checker into the existing `tsp compile` CLI
 
+**Status**: done (branch `jeremymeng/rust-port-m13-cli`). Implementation notes and deviations from the
+deliverables below:
+
+- **Flag**: hidden `tsp compile --use-rust-checker` (also `TYPESPEC_USE_RUST_CHECKER=1`, CLI flag wins when
+  given). The CLI prints an "Experimental: checking with the Rust checker" notice on stderr. Watch mode uses the
+  same path (not separately tested).
+- **No optional peer dependency (deviation).** `@typespec/compiler-rust` is private and depends on
+  `@typespec/compiler`, so a peer dependency would create a workspace cycle. Instead
+  `packages/compiler/src/core/cli/actions/compile/rust-checker.ts` dynamically imports
+  `@typespec/compiler-rust/tsp-bridge` (lookup order: `TYPESPEC_COMPILER_RUST_PATH`, a `@typespec/compiler-rust`
+  package in the directory hierarchy of the entrypoint / cwd / compiler root, the sibling
+  `packages/compiler-rust`, then node resolution). Nothing from compiler-rust is loaded unless the flag is set.
+- **Bridge lives in compiler-rust (deviation).** The plan's `program-rust-bridge.ts` is
+  `packages/compiler-rust/src/tsp-bridge.ts` (`createRustProgram(host, mainFile, options)`), built to
+  `dist/tsp-bridge.js` by `tsc -p tsconfig.build.json`. It loads compiler internals (linter, diagnostic codes,
+  module resolver, config loader, YAML parser) from the _running_ compiler's `dist` so module instances (and
+  `SourceFile`s, diagnostics, `$lib` state) are shared. The compiler side only gained
+  `compileWithProgramFactory` (`@internal`, not exported) so the unchanged `compile()` drives the emitter
+  pipeline with a different program factory.
+- **Stage order** mirrors TS `createProgram`: emitter/library loading, duplicate-suppression and
+  ambiguous-short-name checks, linter configuration, checker diagnostics, decorators, validators,
+  `missing-import`, linting. Built-in rules (`unused-using`, `unused-template-parameter`) are computed by Rust
+  with full `@typespec/compiler/...` codes in source order and only reported when enabled by the rule set
+  (they replace the TS rule bodies; library rules run in JS on the adapter).
+- **Diagnostics** are reported with real `SourceFile`s and identifier spans (TS `locateId`), so the CLI prints
+  `file:line:col` with code frames, honors `#suppress` (including short names and `suppress-error` on errors),
+  `--warn-as-error` and exit codes like TS.
+- **Features**: `union-extends`, `declaration-expressions`, `auto-decorators`, `function-declarations` come
+  from `tspconfig.yaml` `features` and each imported library's own `tspconfig.yaml` features (TS
+  `resolveLibraryFeatures` / `isFeatureEnabled`; the program is re-checked once when a library enables any).
+- **Module resolution**: `tspconfig.yaml` `entrypoint` and `package.json#imports` (`./` targets only) in the JS
+  host.
+- **Tests**: `packages/compiler-rust/test/cli/tsp-cli.test.ts` spawns the built `tsp` with and without the flag
+  on fixtures (json-schema byte-identical output, warnings/suppressions, errors, linter, `#imports`,
+  entrypoint, features) and compares stdout and emitted files. The compiler CLI e2e suite
+  (`packages/compiler/test/e2e/cli`, 22 tests) passes with `TYPESPEC_USE_RUST_CHECKER=1` and runs in the
+  Rust Port workflow. `test/e2e/scenarios` calls `compile()` in-process, so the flag does not apply.
+- **Deferred (post-M13 follow-on)**: `--trace`, compiler version mismatch check, `incompatible-library`
+  (`validateLoadedLibraries`), unused suppressions (`283ddec0c`, LSP-only in TS), template instantiation
+  trace in diagnostics, codefixes, stdlib for single-file `check()` + test-helper conversion, `extends` in the
+  default simple tspconfig reader (the CLI bridge uses the real YAML config loader). See
+  `upstream-sync.md` "Known behavioral differences".
+
 **Goal**: Add `tsp compile --use-rust-checker main.tsp` (or equivalent flag/env var) to the existing TS `tsp` CLI in `packages/compiler`. When the flag is set, the CLI loads sources, calls the Rust `check()` via the M9–M12 infrastructure, builds a Program via the M8/M12 adapter, and feeds that Program to the existing emitter pipeline. With this, `tsp compile main.tsp --emit @typespec/json-schema` works end-to-end through the Rust checker.
 
 **Why**: M9–M12 produce the capability; M13 makes it accessible via the canonical user-facing CLI. Without M13, users would have to write Node scripts that import `@typespec/compiler-rust` and invoke the adapter manually.
