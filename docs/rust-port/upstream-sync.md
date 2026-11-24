@@ -211,3 +211,70 @@ Comparison coverage was added in `parser.comparison.test.ts`, `checker-unions.co
   suppressions — language-server only in TS, post-M13 CLI follow-on.
 - Linter (`6f38b48f3`, `e218d1688`), CLI (`b3a9dc54c`, `c8105ea27`), `skipTrivia` export
   (`99eacfbd3`), server, formatter, and JSDoc-only changes — outside the checker port.
+
+### Post-M13 follow-up backlog
+
+This is the consolidated list of remaining work after M13. The sections above contain repros and
+implementation details for the checker and adapter parity items. "Post-M13" is a follow-up label, not a
+planned M14; prioritize these based on the next emitter or CLI scenario that needs them.
+
+#### Checker and adapter parity
+
+- [ ] Port value-world `typeref` support (`TypeRefValue`, `getTypeRefType`, value kind) and string-template
+      interpolation of `const` values. Owner: value-system follow-up.
+- [ ] Replace opaque `#{}` / `#[]` template argument placeholders with values and check their constraints.
+      Owner: value-system follow-up.
+- [ ] Check tuple lengths against `@minItems` / `@maxItems`; make Rust relation checking see this decorator
+      state. Owner: relation/decorator-state follow-up.
+- [ ] Merge indexers from intersections of multiple `Record` types. Owner: M10 checker follow-up.
+- [ ] Expose Rust's located object/array value checking through napi for JS decorator checks, and flatten
+      adapter relation diagnostics to the innermost mismatch with locations. Owner: emitter-adapter follow-up
+      (needed for scenarios such as `@typespec/openapi3`).
+- [ ] Support template arguments and diagnostics in `resolveTypeReference`. Owner: adapter follow-up.
+- [ ] Implement `$provideTypeInfo` / `program.getTypeInfo`. Owner: emitter-adapter follow-up.
+- [ ] Bring `@typespec/rest` decorator coverage up to parity and run the OpenAPI emitter end-to-end.
+      Owner: OpenAPI emitter follow-up.
+- [ ] Close the post-check decorator replay gaps: let decorator mutations affect types copied during
+      checking, and run graph-finish validators for types synthesized later. Owner: decorator/checker
+      integration follow-up.
+- [ ] Re-instantiate spread sources such as `Foo<A>` when used from `Bar<A>`, rather than only substituting
+      copied properties. Owner: template-instantiation follow-up.
+- [ ] Investigate deprecation behavior per template instance (called out as a gap in the M12 plan but
+      without a recorded repro); add a TS comparison case and fix any confirmed mismatch. Owner:
+      template/deprecation follow-up.
+- [ ] Support function calls / `Reflection` enough to complete upstream fix `ad69727db` for interpolated
+      function calls in template declarations. Owner: function/value-system follow-up.
+
+#### Source loading and test infrastructure
+
+- [ ] Keep `using` declarations local to their block-namespace statement, including across files. Owner:
+      binder/scope follow-up.
+- [ ] Extend `#imports` beyond nearest-package `./` targets to conditions, patterns, and package targets;
+      canonicalize paths through symlinks; and honor `tspconfig.yaml` `extends` in the default Node host.
+      Owner: module-resolution follow-up.
+- [ ] Execute imported `.js` files so their library/decorator registrations are available. Owner: library
+      loading follow-up.
+- [ ] Load the standard library from the single-source `check()` API and migrate the legacy comparison
+      suites/helpers to an in-memory `checkProgram` host. Owner: test-infrastructure follow-up.
+- [ ] Accept reserved keywords/modifiers as union variant names when followed by `:` (TS parser parity).
+      Owner: M3 parser follow-up.
+- [ ] Preserve library `$lib` metadata in `getSourceFileLocationContext`. Owner: library metadata follow-up.
+
+#### CLI, diagnostics, and linter integration
+
+- [ ] Interleave checker and decorator diagnostics in source/checking order, and interleave built-in
+      linter diagnostics with library rules by rule order. Owner: in-check decorator/linter integration.
+- [ ] Implement `--trace`, compiler-version and incompatible-library checks, template-instantiation
+      diagnostic traces, code fixes, and unused-suppression diagnostics where applicable. Owner: CLI /
+      diagnostics follow-up; unused suppressions are language-server-only in TS.
+- [ ] Test and support `tsp compile --watch --use-rust-checker`; integrate the Rust path with the language
+      server and `tsp init` only if those workflows are in scope. Owner: CLI integration follow-up.
+- [ ] Gate linter diagnostics for direct `checkProgram` / `compile()` callers using their configured rule
+      set, not only in the CLI bridge. Owner: compiler-rust API/linter follow-up.
+
+#### Upstream changes not currently planned for the Rust checker
+
+- `108ef0689` (`Sym.node` / `getSymNode`) is a TypeScript-only typing change.
+- `e453a4752` enum-member navigation is specific to linter rules; revisit if Rust-backed linting is added.
+- Upstream server, formatter, `skipTrivia`, and unrelated CLI/linter changes remain outside the checker
+  port unless a concrete Rust-checker integration requires them.
