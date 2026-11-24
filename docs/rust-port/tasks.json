@@ -3,8 +3,8 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-11-20T02:17:56Z",
-  "updated_by": "agent:rust-port-m11",
+  "updated_at": "2026-11-24T21:17:45Z",
+  "updated_by": "agent:rust-port-m12",
   "tasks": [
     {
       "id": "M1",
@@ -1329,14 +1329,14 @@
     {
       "id": "M12",
       "title": "Expand Program adapter for @typespec/json-schema emitter",
-      "status": "not_started",
+      "status": "in_progress",
       "depends_on": ["M11"],
       "plan_section": "docs/rust-port/plan.md#m12--expand-program-adapter-to-broad-ts-program-interface-coverage",
       "complexity": "large",
-      "assignee": null,
-      "branch": null,
+      "assignee": "agent:rust-port-m12",
+      "branch": "jeremymeng/rust-port-m12",
       "pr": null,
-      "started_at": null,
+      "started_at": "2026-11-24T21:17:45Z",
       "completed_at": null,
       "key_source_files": [
         "packages/compiler/src/core/types.ts",
@@ -1406,7 +1406,13 @@
           "text": "pnpm -C packages/compiler-rust build / test all green"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-11-24T21:17:45Z",
+          "author": "agent:rust-port-m12",
+          "text": "Claimed M12 on branch jeremymeng/rust-port-m12 (based on jeremymeng/rust-port-upstream-sync after M11)."
+        }
+      ]
     },
     {
       "id": "M13",
