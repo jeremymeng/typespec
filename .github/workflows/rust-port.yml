@@ -66,9 +66,10 @@ jobs:
         run: pnpm install
 
       # The standard library (M10) imports `@typespec/compiler`'s built `dist/**/tsp-index.js`; the M11
-      # decorator comparison tests also run `@typespec/http`'s built implementations.
-      - name: Build @typespec/compiler and @typespec/http
-        run: pnpm -r --filter "@typespec/http..." build
+      # decorator comparison tests also run `@typespec/http`'s built implementations and the M12
+      # emitter tests run `@typespec/json-schema` (and `@typespec/asset-emitter`).
+      - name: Build @typespec/compiler-rust dependencies
+        run: pnpm -r --filter "@typespec/compiler-rust^..." build
 
       - name: Build native module
         run: pnpm -C packages/compiler-rust build

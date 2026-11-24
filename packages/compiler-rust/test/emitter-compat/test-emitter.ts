@@ -445,6 +445,11 @@ interface EmitterTemplateParameter extends EmitterBase {
   name: string;
 }
 
+/** Types the emitter only reports by kind. */
+interface EmitterKindOnlyType extends EmitterBase {
+  kind: "Tuple" | "StringTemplate" | "StringTemplateSpan";
+}
+
 type EmitterNamedType =
   EmitterModel | EmitterScalar | EmitterEnum | EmitterUnion | EmitterInterface | EmitterAlias;
 
@@ -459,4 +464,5 @@ type EmitterType =
   | EmitterNumberLiteral
   | EmitterBooleanLiteral
   | EmitterIntrinsic
-  | EmitterTemplateParameter;
+  | EmitterTemplateParameter
+  | EmitterKindOnlyType;

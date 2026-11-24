@@ -1,3 +1,4 @@
+import { getTypeName as compilerGetTypeName, type TypeNameOptions } from "@typespec/compiler";
 import { SyntaxKind as compilerSyntaxKind } from "@typespec/compiler/ast";
 import type {
   CheckProgramResultJs,
@@ -13,6 +14,20 @@ import {
   type DiagnosticTarget,
   type SerializedDiagnostic,
 } from "./diagnostics.js";
+import type { EmitterHost } from "./host-fs.js";
+import { createValue, type ValueShim } from "./values.js";
+
+/** TS `Value` (string, numeric, boolean, null, enum, object and array values). */
+export type Value = ValueShim;
+
+const templatedStatementKinds = new Set([
+  "ModelStatement",
+  "ScalarStatement",
+  "InterfaceStatement",
+  "OperationStatement",
+  "UnionStatement",
+  "AliasStatement",
+]);
 
 export interface Program {
   checker: Checker;
@@ -28,6 +43,8 @@ export interface Program {
   readonly stateMaps: Map<symbol, Map<Type, unknown>>;
   readonly stateSets: Map<symbol, Set<Type>>;
   compilerOptions: Record<string, unknown>;
+  /** TS `program.host` output side, set by `compile()` (M12). */
+  host?: EmitterHost;
   /** TS `projectRoot`; also how typekit's `$(program)` recognizes a program. */
   projectRoot: string;
   _decoratorState: WeakMap<Type, Record<string, unknown>>;
@@ -40,6 +57,16 @@ export interface Program {
   _applyDecoratorsToType?: (type: Type) => void;
   /** TS `program.resolveTypeReference`, limited to plain dotted references (M11). */
   resolveTypeReference(reference: string): [Type | undefined, readonly Diagnostic[]];
+  /** TS `program.sourceFiles`: loaded TypeSpec scripts by path (script shims, M12). */
+  readonly sourceFiles: Map<string, SourceFileShim>;
+  /** TS `program.jsSourceFiles`: loaded JS files by path (M12). */
+  readonly jsSourceFiles: Map<string, SourceFileShim>;
+}
+
+/** TS `TypeSpecScriptNode` / `JsSourceFileNode` shim: the file path only (M12). */
+export interface SourceFileShim {
+  kind: number;
+  file: { path: string };
 }
 
 /** Subset of the TS `Checker` used by the standard decorator implementations (M11). */
@@ -47,6 +74,12 @@ export interface Checker {
   getGlobalNamespaceType(): Namespace;
   getStdType(name: string): Type;
   isStdType(type: Type, name?: string): boolean;
+  /** TS `checker.getTypeName` (M12). */
+  getTypeName(type: Type, options?: TypeNameOptions): string;
+  /** TS `checker.cloneType`: a finished copy with its own member collections (M12). */
+  cloneType<T extends Type>(type: T, additionalProps?: Partial<T>): T;
+  /** TS `checker.createAndFinishType` (M12). */
+  createAndFinishType<T extends object>(typeDef: T): T & Type;
   /** TS `createType`, used by typekits to synthesize types after checking. */
   createType<T extends object>(typeDef: T): T & Type;
   /** TS `finishType`: runs the type's decorators and marks it finished. */
@@ -96,6 +129,14 @@ export interface DecoratorApplication {
   node?: NodeShim;
 }
 
+/** TS `TypeMapper` of a template instance (M12). */
+export interface TypeMapper {
+  partial: boolean;
+  args: Type[];
+  map: Map<TemplateParameter, Type>;
+  source: { node: NodeShim };
+}
+
 interface BaseType {
   readonly id: number;
   readonly entityKind: "Type";
@@ -135,6 +176,7 @@ export interface Model extends BaseType {
   expression: boolean;
   templateArguments?: Type[];
   templateParameters?: TemplateParameter[];
+  templateMapper?: TypeMapper;
   isTemplateDeclaration: boolean;
 }
 
@@ -144,7 +186,9 @@ export interface ModelProperty extends BaseType {
   type: Type;
   sourceProperty?: ModelProperty;
   optional: boolean;
-  defaultValue?: Type;
+  /** @deprecated TS keeps the type form for compatibility; use defaultValue. */
+  default?: Type;
+  defaultValue?: Value;
   model?: Model;
 }
 
@@ -158,6 +202,7 @@ export interface Scalar extends BaseType {
   expression: boolean;
   templateArguments?: Type[];
   templateParameters?: TemplateParameter[];
+  templateMapper?: TypeMapper;
   isTemplateDeclaration: boolean;
 }
 
@@ -185,6 +230,7 @@ export interface Union extends BaseType {
   baseType?: Model | Scalar | Enum | Union;
   templateArguments?: Type[];
   templateParameters?: TemplateParameter[];
+  templateMapper?: TypeMapper;
   isTemplateDeclaration: boolean;
 }
 
@@ -205,6 +251,7 @@ export interface Operation extends BaseType {
   sourceOperation?: Operation;
   templateArguments?: Type[];
   templateParameters?: TemplateParameter[];
+  templateMapper?: TypeMapper;
   isTemplateDeclaration: boolean;
 }
 
@@ -216,6 +263,7 @@ export interface Interface extends BaseType {
   operations: Map<string, Operation>;
   templateArguments?: Type[];
   templateParameters?: TemplateParameter[];
+  templateMapper?: TypeMapper;
   isTemplateDeclaration: boolean;
 }
 
@@ -226,6 +274,7 @@ export interface Alias extends BaseType {
   target: Type;
   templateArguments?: Type[];
   templateParameters?: TemplateParameter[];
+  templateMapper?: TypeMapper;
   isTemplateDeclaration: boolean;
 }
 
@@ -258,6 +307,23 @@ export interface TemplateParameter extends BaseType {
   default?: Type;
 }
 
+export interface Tuple extends BaseType {
+  kind: "Tuple";
+  values: Type[];
+}
+
+export interface StringTemplate extends BaseType {
+  kind: "StringTemplate";
+  spans: StringTemplateSpan[];
+  stringValue?: string;
+}
+
+export interface StringTemplateSpan extends BaseType {
+  kind: "StringTemplateSpan";
+  isInterpolated: boolean;
+  type: Type;
+}
+
 /** Object / array value shapes produced by the decorator argument marshalling (M11). */
 export type CompositeValue =
   | { valueKind: "ObjectValue"; properties: Map<string, { value: unknown }> }
@@ -279,7 +345,10 @@ export type Type =
   | NumericLiteral
   | BooleanLiteral
   | Intrinsic
-  | TemplateParameter;
+  | TemplateParameter
+  | Tuple
+  | StringTemplate
+  | StringTemplateSpan;
 
 const intrinsicScalars = new Map<string, string>([
   ["String", "string"],
@@ -336,6 +405,8 @@ export function createProgram(checkResult: CheckResultJs | CheckProgramResultJs)
         pos: info.pos,
         end: info.end,
         file: info.file ?? undefined,
+        // Template declarations get their parameters in `linkTemplates`.
+        ...(templatedStatementKinds.has(info.kind) ? { templateParameters: [] } : {}),
       },
     ]),
   );
@@ -371,6 +442,17 @@ export function createProgram(checkResult: CheckResultJs | CheckProgramResultJs)
     createLiteralType,
     createType(typeDef) {
       return Object.assign(typeDef, { entityKind: "Type", isFinished: false }) as any;
+    },
+    createAndFinishType: (typeDef) => checker.finishType(checker.createType(typeDef)),
+    getTypeName: (type, options) => compilerGetTypeName(type as any, options),
+    cloneType(type, additionalProps) {
+      const clone: any = { ...type, ...additionalProps };
+      for (const [key, value] of Object.entries(clone)) {
+        if (additionalProps && key in additionalProps) continue;
+        if (value instanceof Map) clone[key] = new Map(value);
+        else if (key === "decorators" && Array.isArray(value)) clone[key] = [...value];
+      }
+      return checker.finishType(clone);
     },
     finishType(type) {
       if ("decorators" in type && type.decorators.length > 0) {
@@ -425,6 +507,8 @@ export function createProgram(checkResult: CheckResultJs | CheckProgramResultJs)
     stateMaps,
     stateSets,
     compilerOptions: {},
+    sourceFiles: sourceFileShims("typespec", compilerSyntaxKind.TypeSpecScript),
+    jsSourceFiles: sourceFileShims("js", compilerSyntaxKind.JsSourceFile),
     projectRoot: "/",
     _decoratorState: decoratorState,
     _typeCache: typeCache,
@@ -437,6 +521,8 @@ export function createProgram(checkResult: CheckResultJs | CheckProgramResultJs)
     getOrCreate(type.id);
   }
   populateReverseLinks();
+  linkTemplates();
+  linkDefaultValues();
   populateDecoratorState(checkResult.decoratorState);
   if ("deprecations" in checkResult) {
     // TS `markDeprecated` state (`createStateSymbol("deprecated")`), read by `getDeprecationDetails`.
@@ -447,6 +533,15 @@ export function createProgram(checkResult: CheckResultJs | CheckProgramResultJs)
     }
   }
   return program;
+
+  function sourceFileShims(kind: string, syntaxKind: number): Map<string, SourceFileShim> {
+    const files = "sourceFiles" in checkResult ? checkResult.sourceFiles : [];
+    return new Map(
+      files
+        .filter((file) => file.kind === kind)
+        .map((file) => [file.path, { kind: syntaxKind, file: { path: file.path } }]),
+    );
+  }
 
   /** TS `resolveTypeReference` for plain dotted references (no template arguments). */
   function resolveDottedReference(reference: string): Type | undefined {
@@ -653,6 +748,24 @@ export function createProgram(checkResult: CheckResultJs | CheckProgramResultJs)
         return { ...base, kind: "Boolean", value: serialized.literalBoolean ?? false };
       case "TemplateParameter":
         return { ...base, kind: "TemplateParameter", name: serialized.name };
+      case "Tuple":
+        return { ...base, kind: "Tuple", values: [] };
+      case "StringTemplate":
+        return {
+          ...base,
+          kind: "StringTemplate",
+          spans: [],
+          ...(serialized.stringValue !== undefined && serialized.stringValue !== null
+            ? { stringValue: serialized.stringValue }
+            : {}),
+        };
+      case "StringTemplateSpan":
+        return {
+          ...base,
+          kind: "StringTemplateSpan",
+          isInterpolated: serialized.isInterpolated ?? false,
+          type: undefinedTypePlaceholder(),
+        };
       default:
         throw new Error(`Unsupported serialized type kind '${serialized.kind}'`);
     }
@@ -694,7 +807,7 @@ export function createProgram(checkResult: CheckResultJs | CheckProgramResultJs)
           requiredType(serialized.propertyTypeId, "model property type"),
         );
         type.sourceProperty = optionalType<ModelProperty>(serialized.sourcePropertyId);
-        type.defaultValue = optionalType(serialized.defaultTypeId);
+        type.default = optionalType(serialized.defaultTypeId);
         break;
       case "Scalar":
         setOptionalNamespace(type, serialized.namespaceId);
@@ -749,6 +862,17 @@ export function createProgram(checkResult: CheckResultJs | CheckProgramResultJs)
         type.constraint = optionalType(serialized.constraintId);
         type.default = optionalType(serialized.templateDefaultId);
         break;
+      case "Tuple":
+        type.values = serialized.valueIds.map((id) =>
+          dereferenceAlias(requiredType(id, "tuple value")),
+        );
+        break;
+      case "StringTemplate":
+        type.spans = typeArray<StringTemplateSpan>(serialized.spanIds);
+        break;
+      case "StringTemplateSpan":
+        type.type = dereferenceAlias(requiredType(serialized.spanTypeId, "string template span"));
+        break;
       case "String":
       case "Number":
       case "Boolean":
@@ -765,6 +889,51 @@ export function createProgram(checkResult: CheckResultJs | CheckProgramResultJs)
         type.baseScalar.derivedScalars.push(type);
       }
     }
+  }
+
+  /**
+   * TS template linkage (M12): declarations' nodes expose `templateParameters` (read by
+   * `isTemplateDeclaration`) and instances get a `templateMapper` (read by emitters to name
+   * instances and by `isTemplateInstance`). Instances whose arguments still reference template
+   * parameters are partial, like TS instances checked inside a template declaration.
+   */
+  /** TS ModelProperty.defaultValue: the default materialized as a Value. */
+  function linkDefaultValues(): void {
+    for (const serialized of checkResult.types) {
+      if (!serialized.defaultValueJson) continue;
+      const property = typeCache.get(serialized.id) as ModelProperty | undefined;
+      if (property?.kind !== "ModelProperty") continue;
+      const value = createValue(program, JSON.parse(serialized.defaultValueJson), undefined);
+      // TS `checkDefaultValue` types the default as the property type.
+      if (value) property.defaultValue = { ...value, type: property.type } as Value;
+    }
+  }
+
+  function linkTemplates(): void {
+    for (const type of typeCache.values()) {
+      if (!("templateParameters" in type) || !type.node) continue;
+      const parameters = type.templateParameters ?? [];
+      if (type.isTemplateDeclaration) {
+        const node = type.node as NodeShim & { templateParameters?: NodeShim[] };
+        if (!node.templateParameters?.length) {
+          node.templateParameters = parameters.map((parameter) => parameter.node!);
+        }
+        continue;
+      }
+      const args = type.templateArguments ?? [];
+      if (args.length === 0) continue;
+      const map = new Map<TemplateParameter, Type>();
+      parameters.forEach((parameter, index) => map.set(parameter, args[index]));
+      const partial = args.some(referencesTemplateParameter);
+      type.templateMapper = { partial, args, map, source: { node: type.node } };
+      if (partial) type.isFinished = false;
+    }
+  }
+
+  function referencesTemplateParameter(type: Type): boolean {
+    if (type.kind === "TemplateParameter") return true;
+    if ("templateMapper" in type && type.templateMapper) return type.templateMapper.partial;
+    return false;
   }
 
   function populateDecoratorState(entries: readonly DecoratorStateEntry[]): void {

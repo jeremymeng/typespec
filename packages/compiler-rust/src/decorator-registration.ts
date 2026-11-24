@@ -20,6 +20,8 @@ import type {
   ExternDeclarationJs,
 } from "../index.js";
 import type { Diagnostic } from "./diagnostics.js";
+import { loadEmitters, runEmitters, type EmitCompilerOptions } from "./emitter.js";
+import { createNodeEmitterHost, type EmitterHost } from "./host-fs.js";
 import {
   checkProgram,
   createNodeProgramHost,
@@ -30,14 +32,13 @@ import {
 import { joinPaths } from "./path-utils.js";
 import {
   createProgram,
-  type CompositeValue,
   type DecoratorApplication,
   type DecoratorArgument,
-  type EnumMember,
   type NodeShim,
   type Program,
   type Type,
 } from "./program.js";
+import { createValue, type SerializedValue, type ValueShim } from "./values.js";
 
 export type DecoratorImplementation = (context: any, target: any, ...args: any[]) => any;
 
@@ -106,6 +107,13 @@ export interface CompileOptions extends Omit<CheckProgramOptions, "collectDecora
    * Other JS source files are imported from disk.
    */
   jsModules?: Record<string, Record<string, unknown>>;
+  /**
+   * TS compiler options (M12): `emit` emitters run after validation, like TS `compile`, and
+   * become `program.compilerOptions`.
+   */
+  compilerOptions?: EmitCompilerOptions;
+  /** Host emitters write through (`program.host`); defaults to the real file system (M12). */
+  outputHost?: EmitterHost;
 }
 
 /**
@@ -117,7 +125,13 @@ export async function compile(
   host: ProgramHost = createNodeProgramHost(),
   options: CompileOptions = {},
 ): Promise<Program> {
-  const { jsModules, runValidators = true, ...checkOptions } = options;
+  const {
+    jsModules,
+    runValidators = true,
+    compilerOptions = {},
+    outputHost,
+    ...checkOptions
+  } = options;
   const result = checkProgram(entryPath, host, undefined, {
     ...checkOptions,
     collectDecoratorApplications: true,
@@ -134,6 +148,10 @@ export async function compile(
     }
   }
   const program = createProgram(result);
+  program.compilerOptions = { ...compilerOptions };
+  program.host = outputHost ?? createNodeEmitterHost();
+  // TS loads emitters (and validates their options) before checking.
+  const emitters = await loadEmitters(program, compilerOptions, jsModules);
   runDecorators(program, result, registry, { reportMissingImplementations: allLoaded });
   if (runValidators) {
     if (checkOptions.stdlib ?? true) await runCompilerValidators(program);
@@ -141,6 +159,10 @@ export async function compile(
       const diagnostics = await validator(program);
       if (Array.isArray(diagnostics)) program.reportDiagnostics(diagnostics);
     }
+  }
+  // Like TS, emitters only run when checking and validation reported no errors.
+  if (emitters.length > 0 && !program.hasError()) {
+    await runEmitters(program, emitters, compilerOptions);
   }
   return program;
 }
@@ -342,14 +364,6 @@ function createAutoDecoratorImplementation(
   };
 }
 
-interface SerializedValue {
-  valueKind: string;
-  value?: string | boolean;
-  typeId?: number;
-  properties?: Array<[string, SerializedValue]>;
-  values?: SerializedValue[];
-}
-
 /** Marshal a validated argument like TS `checkDecoratorArgument` + `marshalTypeForJs`. */
 function createArgument(
   program: Program,
@@ -378,104 +392,6 @@ function createArgument(
 }
 
 const unsupported = Symbol("unsupported");
-
-interface ValueShim {
-  entityKind: "Value";
-  valueKind: string;
-  value: unknown;
-  type: Type;
-  scalar: undefined;
-  node?: NodeShim;
-}
-
-function createValue(
-  program: Program,
-  serialized: SerializedValue,
-  node: NodeShim | undefined,
-): ValueShim | undefined {
-  const literalType = (fallback: () => Type) =>
-    serialized.typeId === undefined
-      ? fallback()
-      : (program._typeCache.get(serialized.typeId) ?? fallback());
-  const value = (valueKind: string, raw: unknown, type: Type): ValueShim => ({
-    entityKind: "Value",
-    valueKind,
-    value: raw,
-    type,
-    scalar: undefined,
-    ...(node ? { node } : {}),
-  });
-  switch (serialized.valueKind) {
-    case "StringValue": {
-      const raw = serialized.value as string;
-      return value(
-        "StringValue",
-        raw,
-        literalType(() => program.checker.createLiteralType(raw)),
-      );
-    }
-    case "NumericValue": {
-      const raw = Numeric(serialized.value as string);
-      return value(
-        "NumericValue",
-        raw,
-        literalType(() => program.checker.createLiteralType(raw)),
-      );
-    }
-    case "BooleanValue": {
-      const raw = serialized.value as boolean;
-      return value(
-        "BooleanValue",
-        raw,
-        literalType(() => program.checker.createLiteralType(raw)),
-      );
-    }
-    case "NullValue":
-      return value("NullValue", null, program.checker.nullType);
-    case "EnumValue": {
-      const member = program._typeCache.get(serialized.typeId!) as EnumMember | undefined;
-      if (!member) return undefined;
-      return value("EnumValue", member, member.enum);
-    }
-    case "ObjectValue": {
-      const properties = new Map<string, { name: string; value: ValueShim }>();
-      for (const [name, property] of serialized.properties ?? []) {
-        const propertyValue = createValue(program, property, undefined);
-        if (!propertyValue) return undefined;
-        properties.set(name, { name, value: propertyValue });
-      }
-      const objectValue = {
-        entityKind: "Value",
-        valueKind: "ObjectValue",
-        properties,
-        scalar: undefined,
-        ...(node ? { node } : {}),
-      } as unknown as ValueShim & CompositeValue;
-      objectValue.type = program._createCompositeValueType(objectValue);
-      return objectValue;
-    }
-    case "ArrayValue": {
-      const values: ValueShim[] = [];
-      for (const item of serialized.values ?? []) {
-        const itemValue = createValue(program, item, undefined);
-        if (!itemValue) return undefined;
-        values.push(itemValue);
-      }
-      const arrayValue = {
-        entityKind: "Value",
-        valueKind: "ArrayValue",
-        values,
-        scalar: undefined,
-        ...(node ? { node } : {}),
-      } as unknown as ValueShim & CompositeValue;
-      arrayValue.type = program._createCompositeValueType(arrayValue);
-      return arrayValue;
-    }
-    default:
-      // Const references, scalar constructors, ... (M12 value system).
-      return undefined;
-  }
-}
 
 /** TS `marshalTypeForJs`. */
 function marshalValue(value: ValueShim, constraints: readonly Type[]): unknown {
