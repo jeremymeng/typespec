@@ -44,13 +44,18 @@ export interface ProgramHost {
 }
 
 type ResolveErrorCode =
-  "MODULE_NOT_FOUND" | "INVALID_MODULE" | "INVALID_MAIN" | "INVALID_MODULE_EXPORT_TARGET";
+  | "MODULE_NOT_FOUND"
+  | "INVALID_MODULE"
+  | "INVALID_MAIN"
+  | "INVALID_MODULE_IMPORT_TARGET"
+  | "INVALID_MODULE_EXPORT_TARGET";
 
 interface NodePackage {
   name?: string;
   main?: unknown;
   tspMain?: string;
   exports?: Exports;
+  imports?: Exports;
   dir: string;
   file: string;
 }
@@ -247,8 +252,48 @@ function nodePatternKeyCompare(keyA: string, keyB: string) {
   return keyB.length - keyA.length;
 }
 
+/** Project settings of a directory's `tspconfig.yaml` used while loading (TS `kind: project`). */
+export interface ProjectConfigInfo {
+  entrypoint?: string;
+  features?: readonly string[];
+}
+
+export interface ProgramHostOptions {
+  /**
+   * Read the project config (`tspconfig.yaml` with `kind: project`) of a directory, or
+   * `undefined`. Defaults to a minimal reader of top-level `kind` / `entrypoint` keys; the
+   * `tsp` CLI bridge passes one built on the compiler's YAML parser.
+   */
+  loadProjectConfig?: (dir: string) => ProjectConfigInfo | undefined;
+}
+
+/**
+ * Minimal synchronous reader of the top-level scalar `kind` and `entrypoint` keys of a
+ * `tspconfig.yaml` (no `extends`, no validation).
+ */
+export function readSimpleProjectConfig(text: string): ProjectConfigInfo | undefined {
+  const values = new Map<string, string>();
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^([A-Za-z-]+):\s*(.*?)\s*$/.exec(line.replace(/\s+#.*$/, ""));
+    if (!match) continue;
+    values.set(match[1], match[2].replace(/^(["'])(.*)\1$/, "$2"));
+  }
+  if (values.get("kind") !== "project") return undefined;
+  const entrypoint = values.get("entrypoint");
+  return entrypoint ? { entrypoint } : {};
+}
+
 /** Create a {@link ProgramHost} over a synchronous file system. */
-export function createProgramHost(fs: ProgramFileSystem): ProgramHost {
+export function createProgramHost(
+  fs: ProgramFileSystem,
+  options: ProgramHostOptions = {},
+): ProgramHost {
+  const loadProjectConfig =
+    options.loadProjectConfig ??
+    ((dir: string) => {
+      const text = fs.readFile(joinPaths(dir, "tspconfig.yaml"));
+      return text === undefined ? undefined : readSimpleProjectConfig(text);
+    });
   const isFile = (path: string) => fs.stat(path)?.isFile() ?? false;
   const realpath = (path: string) => {
     try {
@@ -356,6 +401,40 @@ export function createProgramHost(fs: ProgramFileSystem): ProgramHost {
       );
     };
 
+    const resolvePackageImportPath = (pkg: NodePackage, pkgDir: string): string | undefined => {
+      if (!pkg.imports || typeof pkg.imports !== "object" || Array.isArray(pkg.imports)) {
+        return undefined;
+      }
+      const context = { specifier, packageUrl: pathToFileURL(pkgDir) };
+      let match: string | null | undefined;
+      try {
+        if (specifier === "#" || specifier.startsWith("#/")) {
+          throw new EsmResolveError(esmErrorMessage(context, "Invalid module specifier."));
+        }
+        // Only `./` targets are supported; TS also resolves bare package targets.
+        match = resolvePackageImportsExports(
+          context,
+          specifier,
+          pkg.imports as Record<string, Exports>,
+        );
+        if (!match) throw new EsmResolveError(esmErrorMessage(context));
+      } catch (error) {
+        if (error instanceof InvalidPackageTargetError) {
+          throw new ResolveModuleError("INVALID_MODULE_IMPORT_TARGET", error.message, pkg);
+        } else if (error instanceof EsmResolveError) {
+          throw new ResolveModuleError("INVALID_MODULE", error.message, pkg);
+        }
+        throw error;
+      }
+      const resolved = realpath(fileURLToPath(match));
+      if (isFile(resolved)) return resolved;
+      throw new ResolveModuleError(
+        "INVALID_MODULE_IMPORT_TARGET",
+        `Import "${specifier}" resolving to "${resolved}" is not a file.`,
+        pkg,
+      );
+    };
+
     const resolvePackage = (packageName: string): NodePackage | undefined => {
       for (const dir of listDirHierarchy(absoluteStart)) {
         const pkgFile = resolvePath(dir, "package.json");
@@ -377,7 +456,17 @@ export function createProgramHost(fs: ProgramFileSystem): ProgramHost {
       if (resolved) return { path: resolved, library };
     }
 
-    // Package subpath imports (`#foo`) are not supported yet (see docs/rust-port/plan.md M9).
+    // Package subpath imports (`#foo`, M13): the nearest package.json declaring `imports`.
+    if (specifier.startsWith("#")) {
+      for (const dir of listDirHierarchy(absoluteStart)) {
+        const pkgFile = resolvePath(dir, "package.json");
+        if (!isFile(pkgFile)) continue;
+        const resolved = resolvePackageImportPath(readPackage(pkgFile), dir);
+        if (resolved) return { path: resolved, library: true };
+        break;
+      }
+    }
+
     const moduleSpecifier = parseNodeModuleSpecifier(specifier);
     if (moduleSpecifier !== null) {
       const pkg = resolvePackage(moduleSpecifier.packageName);
@@ -392,6 +481,9 @@ export function createProgramHost(fs: ProgramFileSystem): ProgramHost {
   }
 
   function resolveEntrypointForDir(dir: string): string {
+    // An explicit `entrypoint` in the directory's project `tspconfig.yaml` takes precedence (M13).
+    const config = loadProjectConfig(dir);
+    if (config?.entrypoint !== undefined) return resolvePath(dir, config.entrypoint);
     const pkgFile = resolvePath(dir, "package.json");
     const pkg = isFile(pkgFile) ? readPackage(pkgFile) : undefined;
     if (pkg?.exports) {
@@ -435,24 +527,27 @@ export function createProgramHost(fs: ProgramFileSystem): ProgramHost {
 }
 
 /** Host backed by the real file system. */
-export function createNodeProgramHost(): ProgramHost {
-  return createProgramHost({
-    readFile(path) {
-      try {
-        return readFileSync(path, "utf8");
-      } catch {
-        return undefined;
-      }
+export function createNodeProgramHost(options: ProgramHostOptions = {}): ProgramHost {
+  return createProgramHost(
+    {
+      readFile(path) {
+        try {
+          return readFileSync(path, "utf8");
+        } catch {
+          return undefined;
+        }
+      },
+      stat(path) {
+        try {
+          return statSync(path);
+        } catch {
+          return undefined;
+        }
+      },
+      realpath: (path) => realpathSync(path),
     },
-    stat(path) {
-      try {
-        return statSync(path);
-      } catch {
-        return undefined;
-      }
-    },
-    realpath: (path) => realpathSync(path),
-  });
+    options,
+  );
 }
 
 /**
@@ -505,9 +600,21 @@ export interface CheckProgramOptions {
   functionDeclarations?: boolean;
   /** Collect validated decorator applications to run the JS implementations (M11). */
   collectDecoratorApplications?: boolean;
+  /** Compiler features enabled for project code (TS `tspconfig.yaml` `features`, M13). */
+  features?: readonly string[];
+  /** Compiler features enabled by libraries for their own code (their `tspconfig.yaml`, M13). */
+  libraryFeatures?: readonly { root: string; features: readonly string[] }[];
 }
 
 let compilerRoot: string | undefined;
+
+/**
+ * Use the `@typespec/compiler` package at `root` for the standard library and compiler
+ * validators (the `tsp` CLI bridge passes the running compiler, M13).
+ */
+export function setCompilerRoot(root: string): void {
+  compilerRoot = normalizePath(root);
+}
 
 /** Root directory of the `@typespec/compiler` package providing the standard library. */
 export function getCompilerRoot(): string {
@@ -599,6 +706,11 @@ export function checkProgram(
       autoDecorators: options.autoDecorators,
       functionDeclarations: options.functionDeclarations,
       collectDecoratorApplications: options.collectDecoratorApplications,
+      features: options.features && [...options.features],
+      libraryFeatures: options.libraryFeatures?.map(({ root, features }) => ({
+        root: normalizePath(root),
+        features: [...features],
+      })),
     },
   );
 }

@@ -49,6 +49,10 @@ pub struct ProgramDiagnosticInfo {
     /// Position local to `file`.
     pub pos: u32,
     pub end: u32,
+    /// Span of the target node's identifier (TS `getSourceLocation(target, { locateId: true })`,
+    /// used when formatting diagnostics), local to `file`; absent when no node has this exact span.
+    pub id_pos: Option<u32>,
+    pub id_end: Option<u32>,
 }
 
 #[napi(object)]
@@ -56,6 +60,8 @@ pub struct ProgramSourceFileInfo {
     pub path: String,
     /// `"typespec"`, `"js"` or `"external"`.
     pub kind: String,
+    /// TS location context of a TypeSpec file: `"project"`, `"library"` or `"compiler"` (M13).
+    pub context: Option<String>,
 }
 
 #[napi(object)]
@@ -229,6 +235,8 @@ pub fn check_program<'env>(
             map_library_features(&program.parse_result, &program.sources, &library_features);
     }
     let suppress_directives = collect_suppress_directives(&program.parse_result, &program.sources);
+    let file_contexts = collect_file_contexts(&program.parse_result, &program.sources);
+    let id_spans = IdSpans::new(&program.parse_result);
     let collect = check_options.collect_decorator_applications;
     let mut deprecations = Vec::new();
     let (result, decorators_info, relation_handle) = if decorators.is_none() {
@@ -271,7 +279,7 @@ pub fn check_program<'env>(
         diagnostics: result
             .diagnostics
             .into_iter()
-            .map(|diagnostic| locate_diagnostic(diagnostic, &program.sources))
+            .map(|diagnostic| locate_diagnostic(diagnostic, &program.sources, &id_spans))
             .collect(),
         decorator_state: result.decorator_state,
         source_files: program
@@ -280,6 +288,13 @@ pub fn check_program<'env>(
             .iter()
             .filter(|file| file.kind != SourceFileKind::External)
             .map(|file| ProgramSourceFileInfo {
+                context: (file.kind == SourceFileKind::TypeSpec).then(|| {
+                    file_contexts
+                        .get(&file.path)
+                        .copied()
+                        .unwrap_or("project")
+                        .to_string()
+                }),
                 path: file.path.clone(),
                 kind: match file.kind {
                     SourceFileKind::TypeSpec => "typespec",
@@ -296,6 +311,29 @@ pub fn check_program<'env>(
         deprecations,
         suppress_directives,
     })
+}
+
+/// TS location context of each library/compiler TypeSpec file, by path (others are `"project"`).
+fn collect_file_contexts(
+    parse_result: &ParseResult,
+    sources: &ProgramSources,
+) -> HashMap<String, &'static str> {
+    let mut contexts = HashMap::new();
+    let mut add = |scripts: &[NodeId], context: &'static str| {
+        for script in scripts {
+            let node = parse_result.arena.get(*script);
+            if let Some((file, _)) = sources.locate_span(Span {
+                pos: node.pos,
+                end: node.end,
+            }) {
+                contexts.insert(sources.get(file).path.clone(), context);
+            }
+        }
+    };
+    add(&parse_result.library_scripts, "library");
+    // Compiler scripts are also library scripts: the more specific context wins.
+    add(&parse_result.compiler_scripts, "compiler");
+    contexts
 }
 
 /// Library script -> features of the library whose root contains the script's file.
@@ -381,17 +419,49 @@ fn collect_suppress_directives(
         .collect()
 }
 
+/// Node span -> identifier span (TS `locateId`) for nodes with an identifier.
+struct IdSpans(HashMap<(u32, u32), (u32, u32)>);
+
+impl IdSpans {
+    fn new(parse_result: &ParseResult) -> Self {
+        let arena = &parse_result.arena;
+        let mut spans = HashMap::new();
+        for node in arena.nodes() {
+            if let Some(id) = node.data.locate_id() {
+                let id = arena.get(id);
+                spans
+                    .entry((node.pos, node.end))
+                    .or_insert((id.pos, id.end));
+            }
+        }
+        Self(spans)
+    }
+}
+
 fn locate_diagnostic(
     diagnostic: DiagnosticInfo,
     sources: &ProgramSources,
+    id_spans: &IdSpans,
 ) -> ProgramDiagnosticInfo {
     let span = Span {
         pos: diagnostic.pos,
         end: diagnostic.end,
     };
-    let (file, pos, end) = match sources.locate_span(span) {
-        Some((file, local)) => (Some(sources.get(file).path.clone()), local.pos, local.end),
-        None => (None, 0, 0),
+    let (file, pos, end, id_span) = match sources.locate_span(span) {
+        Some((file, local)) => {
+            let offset = span.pos - local.pos;
+            let id_span = id_spans
+                .0
+                .get(&(span.pos, span.end))
+                .map(|(pos, end)| (pos - offset, end - offset));
+            (
+                Some(sources.get(file).path.clone()),
+                local.pos,
+                local.end,
+                id_span,
+            )
+        }
+        None => (None, 0, 0, None),
     };
     ProgramDiagnosticInfo {
         severity: diagnostic.severity,
@@ -400,5 +470,7 @@ fn locate_diagnostic(
         file,
         pos,
         end,
+        id_pos: id_span.map(|(pos, _)| pos),
+        id_end: id_span.map(|(_, end)| end),
     }
 }

@@ -232,13 +232,40 @@ pub fn check_relation(
     }
 }
 
+/// Approximate the TS diagnostic order (M13): TS reports `using` diagnostics while resolving,
+/// before checking, and reference diagnostics (`invalid-ref`, ...) when the checker reaches the
+/// reference, i.e. mostly in source order among the checker diagnostics.
+fn merge_resolution_diagnostics(
+    checker: Vec<Diagnostic>,
+    resolution: Vec<Diagnostic>,
+) -> Vec<Diagnostic> {
+    let (early, references): (Vec<_>, Vec<_>) = resolution
+        .into_iter()
+        .partition(|d| matches!(d.code, "duplicate-using" | "using-invalid-ref"));
+    let (lint, mut references): (Vec<_>, Vec<_>) =
+        references.into_iter().partition(|d| d.code.contains('/'));
+    references.sort_by_key(|d| d.target.pos);
+    let mut references = references.into_iter().peekable();
+    let mut merged = early;
+    for diagnostic in checker {
+        while let Some(reference) =
+            references.next_if(|reference| reference.target.pos < diagnostic.target.pos)
+        {
+            merged.push(reference);
+        }
+        merged.push(diagnostic);
+    }
+    merged.extend(references);
+    merged.extend(lint);
+    merged
+}
+
 pub(crate) fn serialize_check_result(
     result: CheckResult,
     resolution_diagnostics: Vec<Diagnostic>,
 ) -> CheckResultJs {
     let decorator_state = serialize_decorator_state(&result);
-    let mut diagnostics = result.diagnostics;
-    diagnostics.extend(resolution_diagnostics);
+    let diagnostics = merge_resolution_diagnostics(result.diagnostics, resolution_diagnostics);
 
     let mut symbol_to_type = result
         .symbol_to_type

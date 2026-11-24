@@ -172,7 +172,7 @@ export async function compile(
  * part of the public API, so they are loaded from the same compiler `dist` files the standard
  * library's decorators come from (shared state keys).
  */
-async function runCompilerValidators(program: Program): Promise<void> {
+export async function runCompilerValidators(program: Program): Promise<void> {
   const root = getCompilerRoot();
   const load = (path: string) =>
     import(pathToFileURL(joinPaths(root, path)).href) as Promise<Record<string, any>>;

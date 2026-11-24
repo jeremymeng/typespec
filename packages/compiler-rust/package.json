@@ -5,7 +5,13 @@
   "description": "Learning-project Rust port scaffold for the TypeSpec compiler.",
   "type": "module",
   "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./tsp-bridge": "./dist/tsp-bridge.js",
+    "./package.json": "./package.json"
+  },
   "files": [
+    "dist",
     "index.js",
     "index.d.ts",
     "intrinsic-decorators.js",
@@ -13,8 +19,9 @@
     "*.node"
   ],
   "scripts": {
-    "build": "napi build --platform --release --esm --manifest-path ../../crates/typespec-napi/Cargo.toml --output-dir . && node patch-index-exports.mjs",
-    "build:debug": "napi build --platform --esm --manifest-path ../../crates/typespec-napi/Cargo.toml --output-dir . && node patch-index-exports.mjs",
+    "build": "napi build --platform --release --esm --manifest-path ../../crates/typespec-napi/Cargo.toml --output-dir . && node patch-index-exports.mjs && tsc -p tsconfig.build.json",
+    "build:debug": "napi build --platform --esm --manifest-path ../../crates/typespec-napi/Cargo.toml --output-dir . && node patch-index-exports.mjs && tsc -p tsconfig.build.json",
+    "build:ts": "tsc -p tsconfig.build.json",
     "build:spike": "node -e \"console.log('Spike crate is frozen on napi v2; see docs/rust-port/spike-napi-roundtrip.md')\"",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"

@@ -1,0 +1,8 @@
+{
+  "name": "rust-cli-imports-fixture",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#models/*": "./models/*"
+  }
+}

@@ -204,12 +204,20 @@ export interface ProgramDiagnosticInfo {
   /** Position local to `file`. */
   pos: number
   end: number
+  /**
+   * Span of the target node's identifier (TS `getSourceLocation(target, { locateId: true })`,
+   * used when formatting diagnostics), local to `file`; absent when no node has this exact span.
+   */
+  idPos?: number
+  idEnd?: number
 }
 
 export interface ProgramSourceFileInfo {
   path: string
   /** `"typespec"`, `"js"` or `"external"`. */
   kind: string
+  /** TS location context of a TypeSpec file: `"project"`, `"library"` or `"compiler"` (M13). */
+  context?: string
 }
 
 export interface RelationCheckResult {
