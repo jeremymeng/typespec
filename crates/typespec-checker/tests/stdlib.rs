@@ -394,3 +394,189 @@ fn named_template_argument_name_is_not_a_reference() {
     )]);
     assert_eq!(codes(&program), []);
 }
+
+#[test]
+fn record_constraint_requires_index_on_named_models() {
+    let program = check_with_stdlib(&[(
+        "/main.tsp",
+        "model Foo { n: int32 }
+        model Bar is Record<int32> { n: int32 }
+        model W<T extends Record<int32>> { t: T }
+        model X { a: W<Foo>; b: W<Bar>; c: W<{ n: int32 }>; d: W<{ n: string }>; e: W<int32[]> }",
+    )]);
+    let found = codes(&program)
+        .into_iter()
+        .map(|(_, code, message)| (code, message))
+        .collect::<Vec<_>>();
+    assert_eq!(found.len(), 3, "{found:?}");
+    assert!(found[0].1.contains("Foo"), "{found:?}");
+    assert!(found[1].1.contains("'{ n: string }'"), "{found:?}");
+    assert!(found[2].1.contains("'int32[]'"), "{found:?}");
+}
+
+#[test]
+fn tuples_relate_to_arrays_and_tuples() {
+    let program = check_with_stdlib(&[(
+        "/main.tsp",
+        "model W<T extends string[]> { t: T }
+        model Y<T extends [string, int32]> { t: T }
+        model X { pair: [string, int32]; a: W<[\"a\", \"b\"]>; b: W<[1]>; c: Y<[string]>; d: Y<[\"x\", 1]> }",
+    )]);
+    let Type::Tuple(tuple) = program
+        .checked
+        .type_arena
+        .get(property_type(&program, "X", "pair"))
+    else {
+        panic!("expected tuple");
+    };
+    assert_eq!(tuple.values.len(), 2);
+    let found = codes(&program)
+        .into_iter()
+        .map(|(_, code, message)| (code, message))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        vec![
+            (
+                "invalid-argument",
+                "Argument of type '[1]' is not assignable to parameter of type 'string[]'"
+            ),
+            (
+                "invalid-argument",
+                "Argument of type '[string]' is not assignable to parameter of type '[string, int32]'"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn string_templates_serialize_literal_spans() {
+    let program = check_with_stdlib(&[(
+        "/main.tsp",
+        "alias P = \"pre\";
+        model T<A extends string> { s: \"${A}-${P}\" }
+        model X { a: T<\"a\">; b: \"${P}-${int32}\"; c: \"${P}-fixed\" }
+        @doc(\"${int32}\") model D {}",
+    )]);
+    let string_value = |model: &str, property: &str| match program
+        .checked
+        .type_arena
+        .get(property_type(&program, model, property))
+    {
+        Type::StringTemplate(template) => template.string_value.clone(),
+        other => panic!("expected string template, got {}", other.kind_name()),
+    };
+    assert_eq!(string_value("X", "b"), None);
+    assert_eq!(string_value("X", "c"), Some("pre-fixed".to_string()));
+    let Type::Model(x) = program.checked.type_arena.get(find_model(&program, "X")) else {
+        unreachable!()
+    };
+    let Type::ModelProperty(a) = program.checked.type_arena.get(x.properties["a"]) else {
+        unreachable!()
+    };
+    let Type::Model(instance) = program.checked.type_arena.get(a.property_type) else {
+        panic!("expected template instance");
+    };
+    let Type::ModelProperty(s) = program.checked.type_arena.get(instance.properties["s"]) else {
+        unreachable!()
+    };
+    assert!(matches!(
+        program.checked.type_arena.get(s.property_type),
+        Type::StringTemplate(template) if template.string_value.as_deref() == Some("a-pre")
+    ));
+    let found = codes(&program)
+        .into_iter()
+        .map(|(_, code, _)| code)
+        .collect::<Vec<_>>();
+    assert_eq!(found, vec!["non-literal-string-template"]);
+}
+
+#[test]
+fn property_defaults_are_collected_as_values() {
+    let program = check_with_stdlib(&[(
+        "/main.tsp",
+        "model X { a: string = \"x\"; b: int32[] = #[1, 2]; c: { n: int32 } = #{ n: 1 }; d?: int32 }",
+    )]);
+    assert!(codes(&program).is_empty(), "{:?}", codes(&program));
+    let Type::Model(x) = program.checked.type_arena.get(find_model(&program, "X")) else {
+        unreachable!()
+    };
+    let default_of = |name: &str| {
+        program
+            .checked
+            .default_values
+            .iter()
+            .find(|(id, _)| *id == x.properties[name])
+            .map(|(_, value)| format!("{value:?}"))
+    };
+    assert!(default_of("a").unwrap().contains("\"x\""));
+    assert!(default_of("b").unwrap().starts_with("Array"));
+    assert!(default_of("c").unwrap().starts_with("Object"));
+    assert_eq!(default_of("d"), None);
+}
+#[test]
+fn object_and_array_values_are_checked_against_their_type() {
+    let program = check_with_stdlib(&[(
+        "/main.tsp",
+        "model P { x: int32; y?: string }
+        const c = #{ x: 1 };
+        const bad: P = #{ x: \"s\" };
+        model X {
+          a?: int32[] = #[1, \"b\"];
+          b?: P = #{ x: \"s\" };
+          c?: P = #{ x: 1, z: 2 };
+          d?: P = #{ y: \"a\" };
+          h?: int32 = #[1];
+          r?: Record<int32> = #{ a: \"x\" };
+          u?: string | int32 = #[1];
+          s?: P = #{ ...c, y: \"ok\" };
+          ok?: P = c;
+        }",
+    )]);
+    let found = codes(&program)
+        .into_iter()
+        .map(|(_, code, message)| (code, message))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        vec![
+            ("unassignable", "Type '\"s\"' is not assignable to type 'int32'"),
+            ("unassignable", "Type '\"b\"' is not assignable to type 'int32'"),
+            ("unassignable", "Type '\"s\"' is not assignable to type 'int32'"),
+            (
+                "unexpected-property",
+                "Object value may only specify known properties, and 'z' does not exist in type 'P'."
+            ),
+            (
+                "missing-property",
+                "Property 'x' is missing on type '{ y: \"a\" }' but required in 'P'"
+            ),
+            ("unassignable", "Type '[1]' is not assignable to type 'int32'"),
+            ("unassignable", "Type '\"x\"' is not assignable to type 'int32'"),
+            (
+                "unassignable",
+                "Type '[1]' is not assignable to type 'string | int32'"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn decorator_value_arguments_are_checked_against_value_constraints() {
+    let program = check_with_stdlib(&[(
+        "/main.tsp",
+        "@service(#{ title: 1 }) namespace A {}
+        @service(#{ title: \"ok\" }) namespace B {}",
+    )]);
+    let found = codes(&program)
+        .into_iter()
+        .map(|(_, code, message)| (code, message))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        vec![(
+            "invalid-argument",
+            "Argument of type '{ title: 1 }' is not assignable to parameter of type 'ServiceOptions'"
+        )]
+    );
+}

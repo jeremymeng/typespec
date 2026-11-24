@@ -31,6 +31,8 @@ pub struct SerializedType {
     pub property_type_id: Option<u32>,
     pub optional: Option<bool>,
     pub default_type_id: Option<u32>,
+    /// JSON encoded default value (same encoding as decorator argument values).
+    pub default_value_json: Option<String>,
     pub source_property_id: Option<u32>,
     pub effective_type_id: Option<u32>,
     pub decorator_node_ids: Vec<u32>,
@@ -76,6 +78,14 @@ pub struct SerializedType {
     pub is_template_declaration: bool,
     pub constraint_id: Option<u32>,
     pub template_default_id: Option<u32>,
+    /// Tuple values.
+    pub value_ids: Vec<u32>,
+    /// String template spans.
+    pub span_ids: Vec<u32>,
+    pub string_value: Option<String>,
+    pub is_interpolated: Option<bool>,
+    /// String template span type.
+    pub span_type_id: Option<u32>,
 }
 
 #[napi(object)]
@@ -270,6 +280,11 @@ pub(crate) fn serialize_check_result(
             .map(|d| d.node.as_u32())
             .collect();
     }
+    for (type_id, value) in &result.default_values {
+        let mut json = String::new();
+        crate::decorator_apps::write_value_json(&mut json, value);
+        types[type_id.index()].default_value_json = Some(json);
+    }
 
     CheckResultJs {
         types,
@@ -349,6 +364,7 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
         property_type_id: None,
         optional: None,
         default_type_id: None,
+        default_value_json: None,
         source_property_id: None,
         effective_type_id: None,
         decorator_node_ids: Vec::new(),
@@ -394,6 +410,11 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
         is_template_declaration: false,
         constraint_id: None,
         template_default_id: None,
+        value_ids: Vec::new(),
+        span_ids: Vec::new(),
+        string_value: None,
+        is_interpolated: None,
+        span_type_id: None,
     };
 
     match ty {
@@ -661,6 +682,20 @@ fn serialize_type(id: u32, ty: &Type, arena: &typespec_checker::TypeArena) -> Se
             serialized.symbol_id = Some(param.symbol.as_u32());
             serialized.constraint_id = param.constraint.map(|id| id.as_u32());
             serialized.template_default_id = param.default.map(|id| id.as_u32());
+        }
+        Type::Tuple(tuple) => {
+            serialized.node_id = tuple.node.map(|id| id.as_u32());
+            serialized.value_ids = tuple.values.iter().map(|id| id.as_u32()).collect();
+        }
+        Type::StringTemplate(template) => {
+            serialized.node_id = template.node.map(|id| id.as_u32());
+            serialized.span_ids = template.spans.iter().map(|id| id.as_u32()).collect();
+            serialized.string_value = template.string_value.clone();
+        }
+        Type::StringTemplateSpan(span) => {
+            serialized.node_id = span.node.map(|id| id.as_u32());
+            serialized.is_interpolated = Some(span.is_interpolated);
+            serialized.span_type_id = Some(span.span_type.as_u32());
         }
         _ => {}
     }

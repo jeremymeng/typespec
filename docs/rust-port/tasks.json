@@ -3,8 +3,8 @@
   "schema_version": 1,
   "project": "typespec-rust-port",
   "plan": "docs/rust-port/plan.md",
-  "updated_at": "2026-11-20T02:17:56Z",
-  "updated_by": "agent:rust-port-m11",
+  "updated_at": "2026-11-24T22:11:33Z",
+  "updated_by": "agent:rust-port-m12",
   "tasks": [
     {
       "id": "M1",
@@ -1329,15 +1329,15 @@
     {
       "id": "M12",
       "title": "Expand Program adapter for @typespec/json-schema emitter",
-      "status": "not_started",
+      "status": "done",
       "depends_on": ["M11"],
       "plan_section": "docs/rust-port/plan.md#m12--expand-program-adapter-to-broad-ts-program-interface-coverage",
       "complexity": "large",
-      "assignee": null,
-      "branch": null,
+      "assignee": "agent:rust-port-m12",
+      "branch": "jeremymeng/rust-port-m12",
       "pr": null,
-      "started_at": null,
-      "completed_at": null,
+      "started_at": "2026-11-24T21:17:45Z",
+      "completed_at": "2026-11-24T22:11:33Z",
       "key_source_files": [
         "packages/compiler/src/core/types.ts",
         "packages/compiler/src/core/program.ts",
@@ -1346,67 +1346,78 @@
       ],
       "checklist": [
         {
-          "done": false,
+          "done": true,
           "text": "Add @typespec/json-schema as devDependency of @typespec/compiler-rust"
         },
         {
-          "done": false,
+          "done": true,
           "text": "M8 adapter extended: checker.getTypeName produces TS-identical FQNs"
         },
         {
-          "done": false,
+          "done": true,
           "text": "M8 adapter extended: checker.cloneType, checker.getStdType"
         },
         {
-          "done": false,
+          "done": true,
           "text": "program.host with readFile/writeFile/mkdirp/stat (Node fs in prod, in-memory for tests)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "program.compilerOptions surface pass-through from CLI/test harness"
         },
         {
-          "done": false,
+          "done": true,
           "text": "program.sourceFiles for file-aware emitters"
         },
         {
-          "done": false,
+          "done": true,
           "text": "program.stateMap full implementation (extends M11 stub)"
         },
         {
           "done": false,
-          "text": "program.reportDiagnostic includes source location (line/character)"
+          "text": "program.reportDiagnostic includes source location (line/character) — diagnostics carry file + pos/end; line/character formatting deferred to M13 (CLI diagnostic output)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Additional helpers as json-schema requires: getOverloads, getDiscriminatedUnion, getDeprecationDetails, getFriendlyName, getKnownValues, etc. (discover iteratively)"
         },
         {
-          "done": false,
+          "done": true,
           "text": "Minimal test: load tiny TypeSpec spec, run json-schema , no throws"
         },
         {
-          "done": false,
+          "done": true,
           "text": "~10-20 comparison tests: TypeSpec spec → json-schema → produced JSON matches TS path"
         },
         {
-          "done": false,
+          "done": true,
           "text": "In-memory output host enables diff-based assertions on emitted files"
         },
         {
-          "done": false,
+          "done": true,
           "text": "All previous tests still pass"
         },
         {
-          "done": false,
+          "done": true,
           "text": "cargo build / test / clippy -D warnings / fmt --check all green"
         },
         {
-          "done": false,
+          "done": true,
           "text": "pnpm -C packages/compiler-rust build / test all green"
         }
       ],
-      "log": []
+      "log": [
+        {
+          "timestamp": "2026-11-24T21:17:45Z",
+          "author": "agent:rust-port-m12",
+          "text": "Claimed M12 on branch jeremymeng/rust-port-m12 (based on jeremymeng/rust-port-upstream-sync after M11)."
+        },
+        {
+          "timestamp": "2026-11-24T22:11:33Z",
+          "author": "agent:rust-port-m12",
+          "text": "Completed M12: @typespec/json-schema (via @typespec/asset-emitter, unported) runs on the Program adapter through compile() with an emitter stage (src/emitter.ts) and EmitterHost (src/host-fs.ts); 32 json-schema comparison cases match TS byte-for-byte plus 4 adapter-surface tests (getTypeName, cloneType/createAndFinishType, sourceFiles, getStdType). Rust: tuples, string templates, object/array value type-checking with TS-flattened diagnostics (defaults, typed consts, valueof decorator args), indexer relations, qualified type names, default values as Values. Validation: cargo fmt/clippy -D warnings/test green; compiler-rust 1164 passed, 5 skipped. Deferred with owners in upstream-sync.md: adapter isValueOfType/relation flattening, typeref values, $provideTypeInfo, @typespec/rest, resolveTypeReference with template args, template value-argument constraints, tuple min/maxItems (post-M13 follow-on); single-source check() stdlib, linter gating, diagnostic line/character (M13)."
+        }
+      ]
     },
     {
       "id": "M13",

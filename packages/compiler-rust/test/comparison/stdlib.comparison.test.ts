@@ -170,6 +170,30 @@ describe("standard library comparison: Rust vs TS", () => {
       `@doc("hi") @summary("s") model A { @minValue(1) x: int32 }`,
     ],
     ["unused template parameter", `model A<T> {}`],
+    // M12: tuples, string templates and object / array value checking.
+    [
+      "tuple constraints",
+      `model W<T extends string[]> { t: T } model Y<T extends [string, int32]> { t: T }
+      model X { pair: [string, int32]; a: W<["a"]>; b: W<[1]>; c: Y<[string]> }`,
+    ],
+    [
+      "string templates",
+      `alias P = "pre"; model X { a: "\${P}-x"; b: "\${P}-\${int32}" } @doc("\${P} \${int32}") model D {}`,
+    ],
+    [
+      "value defaults",
+      `model P { x: int32; y?: string } const c = #{ x: 1 };
+      model X {
+        a?: int32[] = #[1, "b"]; b?: P = #{ x: "s" }; c?: P = #{ x: 1, z: 2 };
+        d?: P = #{ y: "a" }; h?: int32 = #[1]; r?: Record<int32> = #{ a: "x" };
+        u?: string | int32 = #[1]; s?: P = #{ ...c, y: "ok" }; ok?: P = c;
+        t?: [int32, string] = #[1]; t2?: [int32, string] = #[1, 2];
+        dt?: string = utcDateTime.fromISO("2020-01-01T00:00:00Z");
+        n?: { a: { b: int32 } } = #{ a: #{ b: "x" } };
+      }`,
+    ],
+    ["typed const", `model P { x: int32 } const bad: P = #{ x: "s" }; const ok: P = #{ x: 1 };`],
+    ["decorator value argument", `@service(#{ title: 1 }) namespace A {}`],
   ];
 
   it.each(cases)("%s", async (_, source) => {

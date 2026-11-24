@@ -334,6 +334,8 @@ export interface SerializedType {
   propertyTypeId?: number
   optional?: boolean
   defaultTypeId?: number
+  /** JSON encoded default value (same encoding as decorator argument values). */
+  defaultValueJson?: string
   sourcePropertyId?: number
   effectiveTypeId?: number
   decoratorNodeIds: Array<number>
@@ -379,6 +381,14 @@ export interface SerializedType {
   isTemplateDeclaration: boolean
   constraintId?: number
   templateDefaultId?: number
+  /** Tuple values. */
+  valueIds: Array<number>
+  /** String template spans. */
+  spanIds: Array<number>
+  stringValue?: string
+  isInterpolated?: boolean
+  /** String template span type. */
+  spanTypeId?: number
 }
 
 export interface SymbolToType {

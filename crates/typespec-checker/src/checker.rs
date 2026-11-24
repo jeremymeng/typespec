@@ -8,22 +8,24 @@ use typespec_source::{Diagnostic, DiagnosticSeverity, Numeric, Span};
 
 use crate::decorator::{
     decorator_state_key, CheckOptions, DecoratorApplication, DecoratorArgument, DecoratorContext,
-    DecoratorRunner, DecoratorState, DecoratorValue, ExternDeclarationInfo,
+    DecoratorRunner, DecoratorState, DecoratorValue, DecoratorValueEntity, ExternDeclarationInfo,
     ResolvedDecoratorApplication,
 };
 use crate::instantiation::InstantiationMap;
 use crate::intrinsics::{register_intrinsics, Intrinsics};
 use crate::name_resolver::ResolutionResult;
-use crate::type_relation::{type_name, TypeRelationChecker};
+use crate::type_relation::{type_name, type_name_only, TypeRelationChecker};
 use crate::types::{
     AliasType, BooleanLiteralType, DecoratorRef, EnumMemberType, EnumMemberValue, EnumType,
     InterfaceType, IntrinsicDeclaration, ModelIndexer, ModelPropertyType, ModelType, NamespaceType,
-    NumericLiteralType, OperationType, ScalarType, StringLiteralType, SymbolFlags, SymbolId,
-    SymbolTable, TemplateParameterType, Type, TypeArena, TypeId, UnionType, UnionVariantType,
+    NumericLiteralType, OperationType, ScalarType, StringLiteralType, StringTemplateSpanType,
+    StringTemplateType, SymbolFlags, SymbolId, SymbolTable, TemplateParameterType, TupleType, Type,
+    TypeArena, TypeId, UnionType, UnionVariantType,
 };
 
 mod decorators;
 mod deprecation;
+mod values;
 
 pub struct Checker<'p> {
     options: CheckOptions,
@@ -66,6 +68,10 @@ pub struct Checker<'p> {
     /// values yet; each gets a distinct `unknown` placeholder type remembering its
     /// expression so decorator arguments mapped from it can be evaluated (M11).
     value_placeholders: HashMap<TypeId, NodeId>,
+    /// Precise types of object / array / const values (M12).
+    value_types: HashMap<NodeId, TypeId>,
+    /// Properties of object value types, checked for excess properties.
+    object_value_properties: HashSet<TypeId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -104,6 +110,8 @@ pub struct CheckResult {
     pub extern_declarations: Vec<ExternDeclarationInfo>,
     /// Deprecated types and their message (TS `TypeSpec.deprecated` state map).
     pub deprecations: Vec<(TypeId, String)>,
+    /// Model property default values (TS `ModelProperty.defaultValue`).
+    pub default_values: Vec<(TypeId, DecoratorValueEntity)>,
 }
 
 pub fn check(
@@ -205,6 +213,8 @@ impl<'p> Checker<'p> {
             node_parents: None,
             reported_deprecations: HashSet::new(),
             value_placeholders: HashMap::new(),
+            value_types: HashMap::new(),
+            object_value_properties: HashSet::new(),
         }
     }
 
@@ -228,8 +238,10 @@ impl<'p> Checker<'p> {
             .collect::<Vec<_>>();
         self.diagnostics.extend(binder_diagnostics);
         let deprecations = self.collect_deprecations();
+        let default_values = self.collect_default_values();
         CheckResult {
             deprecations,
+            default_values,
             type_arena: self.type_arena,
             symbol_to_type: self.symbol_to_type,
             node_to_type: self.node_to_type,
@@ -294,6 +306,19 @@ impl<'p> Checker<'p> {
                 None
             }
             NodeData::InterfaceStatement { .. } => Some(self.check_interface(node_id)),
+            NodeData::ConstStatement {
+                value,
+                type_ref: Some(type_ref),
+                ..
+            } => {
+                // TS `checkConst`: the value must be of the declared type.
+                let target = self.type_for_node(type_ref);
+                if !matches!(self.type_arena.get(target), Type::Error) {
+                    let diagnostics = self.check_value_of_type(value, target);
+                    self.diagnostics.extend(diagnostics);
+                }
+                None
+            }
             _ => None,
         }
     }
@@ -1493,7 +1518,13 @@ impl<'p> Checker<'p> {
                 decorators,
             }),
         );
-        if !optional {
+        if let Some(default_node) = default_node.filter(|node| self.is_value_node(*node)) {
+            // TS `checkDefaultValue`: object / array / const / scalar constructor values.
+            if !matches!(self.type_arena.get(property_type), Type::Error) {
+                let diagnostics = self.check_value_of_type(default_node, property_type);
+                self.diagnostics.extend(diagnostics);
+            }
+        } else if !optional {
             if let (Some(default_type), Some(default_node)) = (default, default_node) {
                 let diagnostics = {
                     let relation = TypeRelationChecker::new(&self.type_arena);
@@ -1523,6 +1554,10 @@ impl<'p> Checker<'p> {
             }
             NodeData::UnionExpression { .. } => self.check_union_expression(node_id),
             NodeData::IntersectionExpression { .. } => self.check_intersection_expression(node_id),
+            NodeData::TupleExpression { values } => self.check_tuple_expression(node_id, values),
+            NodeData::StringTemplateExpression { head, spans } => {
+                self.check_string_template_expression(node_id, head, spans)
+            }
             NodeData::StringLiteral { value } => self.string_literal(Some(node_id), value),
             NodeData::NumericLiteral {
                 value_as_string, ..
@@ -1722,6 +1757,8 @@ impl<'p> Checker<'p> {
                 Some(symbol) => {
                     let element = self.type_for_symbol(symbol);
                     self.check_reference_deprecation(element_type, symbol, element);
+                    // `T[]` uses the template parameter like a plain `T` reference.
+                    self.mark_template_parameter_used(element);
                     element
                 }
                 None => self.type_for_node(element_type),
@@ -1754,6 +1791,110 @@ impl<'p> Checker<'p> {
             is_template_declaration: false,
         };
         self.add_and_cache(node_id, Type::Model(model))
+    }
+
+    /// TS `checkTupleExpression`.
+    fn check_tuple_expression(&mut self, node_id: NodeId, values: Vec<NodeId>) -> TypeId {
+        let values = values
+            .into_iter()
+            .map(|value| self.type_for_node(value))
+            .collect();
+        self.add_and_cache(
+            node_id,
+            Type::Tuple(TupleType {
+                node: Some(node_id),
+                values,
+            }),
+        )
+    }
+
+    /// TS `checkStringTemplateExpresion` in the type world: literal spans plus interpolated
+    /// type spans; `string_value` is set when every interpolated type serializes to a string.
+    fn check_string_template_expression(
+        &mut self,
+        node_id: NodeId,
+        head: NodeId,
+        spans: Vec<NodeId>,
+    ) -> TypeId {
+        let mut parts = Vec::new();
+        for span in spans {
+            let NodeData::StringTemplateSpan {
+                expression,
+                literal,
+            } = self.node(span).data.clone()
+            else {
+                continue;
+            };
+            let span_type = self.type_for_node(expression);
+            parts.push((expression, span_type, literal));
+        }
+        let template = self.build_string_template(node_id, head, &parts);
+        self.add_and_cache(node_id, template)
+    }
+
+    fn build_string_template(
+        &mut self,
+        node_id: NodeId,
+        head: NodeId,
+        parts: &[(NodeId, TypeId, NodeId)],
+    ) -> Type {
+        let mut string_value = Some(self.template_literal_value(head));
+        let mut spans = vec![self.template_span_literal(head)];
+        for &(expression, span_type, literal) in parts {
+            spans.push(
+                self.type_arena
+                    .add(Type::StringTemplateSpan(StringTemplateSpanType {
+                        node: Some(expression),
+                        is_interpolated: true,
+                        span_type,
+                    })),
+            );
+            let serialized = self.stringify_type_for_template(span_type);
+            string_value = match (string_value, serialized) {
+                (Some(value), Some(part)) => Some(value + &part),
+                _ => None,
+            };
+            spans.push(self.template_span_literal(literal));
+            let literal_value = self.template_literal_value(literal);
+            if let Some(value) = string_value.as_mut() {
+                value.push_str(&literal_value);
+            }
+        }
+        Type::StringTemplate(StringTemplateType {
+            node: Some(node_id),
+            spans,
+            string_value,
+        })
+    }
+
+    fn template_literal_value(&self, node: NodeId) -> String {
+        match &self.node(node).data {
+            NodeData::StringTemplateLiteral { value, .. } => value.clone(),
+            _ => String::new(),
+        }
+    }
+
+    /// TS `createTemplateSpanLiteral`.
+    fn template_span_literal(&mut self, node: NodeId) -> TypeId {
+        let value = self.template_literal_value(node);
+        let literal = self.string_literal(None, value);
+        self.type_arena
+            .add(Type::StringTemplateSpan(StringTemplateSpanType {
+                node: Some(node),
+                is_interpolated: false,
+                span_type: literal,
+            }))
+    }
+
+    /// TS `stringifyTypeForTemplate`.
+    fn stringify_type_for_template(&self, type_id: TypeId) -> Option<String> {
+        match self.type_arena.get(self.get_non_alias_type(type_id)) {
+            Type::StringLiteral(literal) => Some(literal.value.clone()),
+            Type::NumericLiteral(literal) => Some(literal.value.to_string()),
+            Type::BooleanLiteral(literal) => Some(literal.value.to_string()),
+            Type::StringTemplate(template) => template.string_value.clone(),
+            _ => None,
+        }
     }
 
     /// Type of a template argument or default; object / array values become a
@@ -1809,12 +1950,8 @@ impl<'p> Checker<'p> {
         }
         let default_node = default;
         let default = default.map(|default| self.template_argument_type(default));
-        // Tuple types are not modeled yet (checked as `unknown`); don't report
-        // them against the constraint (e.g. `@typespec/http`'s `Scopes extends string[] = []`).
-        let default_is_tuple = default_node
-            .is_some_and(|node| matches!(self.node(node).data, NodeData::TupleExpression { .. }));
-        if let (Some(default), Some(default_node), Some(constraint), false) =
-            (default, default_node, constraint, default_is_tuple)
+        if let (Some(default), Some(default_node), Some(constraint)) =
+            (default, default_node, constraint)
         {
             let diagnostics = {
                 let relation = TypeRelationChecker::new(&self.type_arena);
@@ -2596,8 +2733,68 @@ impl<'p> Checker<'p> {
             Type::Enum(enum_type) if enum_type.expression && !subst.is_empty() => {
                 self.instantiate_enum(type_id, enum_type, subst)
             }
+            Type::Tuple(tuple) => {
+                let values = tuple
+                    .values
+                    .iter()
+                    .map(|value| self.substitute_type(*value, subst))
+                    .collect::<Vec<_>>();
+                if values == tuple.values {
+                    return type_id;
+                }
+                self.type_arena.add(Type::Tuple(TupleType {
+                    node: tuple.node,
+                    values,
+                }))
+            }
+            Type::StringTemplate(template) => {
+                self.substitute_string_template(type_id, template, subst)
+            }
             _ => type_id,
         }
+    }
+
+    /// TS re-checks a string template expression under the template mapper.
+    fn substitute_string_template(
+        &mut self,
+        type_id: TypeId,
+        template: StringTemplateType,
+        subst: &HashMap<TypeId, TypeId>,
+    ) -> TypeId {
+        let Some(node_id) = template.node else {
+            return type_id;
+        };
+        let NodeData::StringTemplateExpression { head, spans } = self.node(node_id).data.clone()
+        else {
+            return type_id;
+        };
+        let interpolated = template
+            .spans
+            .iter()
+            .filter_map(|span| match self.type_arena.get(*span) {
+                Type::StringTemplateSpan(span) if span.is_interpolated => Some(span.span_type),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        let mut parts = Vec::new();
+        for (span, original) in spans.into_iter().zip(interpolated) {
+            let NodeData::StringTemplateSpan {
+                expression,
+                literal,
+            } = self.node(span).data.clone()
+            else {
+                continue;
+            };
+            let mapped = self.substitute_type(original, subst);
+            changed |= mapped != original;
+            parts.push((expression, mapped, literal));
+        }
+        if !changed {
+            return type_id;
+        }
+        let instance = self.build_string_template(node_id, head, &parts);
+        self.type_arena.add(instance)
     }
 
     /// Mirrors TS re-checking an enum declaration expression under a template mapper: each
@@ -3972,7 +4169,7 @@ impl DecoratorContext for Checker<'_> {
     }
 
     fn get_type_name(&self, target: TypeId) -> String {
-        type_name(&self.type_arena, target)
+        type_name_only(&self.type_arena, target)
     }
 
     fn get_type_kind(&self, target: TypeId) -> String {
@@ -4655,5 +4852,18 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.code == "decorator-wrong-target"));
+    }
+
+    #[test]
+    fn array_of_template_parameter_uses_the_parameter() {
+        let result = check_source("model Page<T> { items: T[]; }");
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "unused-template-parameter"),
+            "{:?}",
+            result.diagnostics
+        );
     }
 }

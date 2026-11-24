@@ -18,7 +18,7 @@ use crate::decorator::{
     ResolvedDecoratorArgument,
 };
 use crate::type_relation::{type_name, TypeRelationChecker};
-use crate::types::{SymbolFlags, SymbolId, Type, TypeId};
+use crate::types::{StringTemplateType, SymbolFlags, SymbolId, Type, TypeId};
 
 /// TS `MixedParameterConstraint`: `types` is the type part, `values` the
 /// `valueof` part. Union constraints mixing both are split into their options.
@@ -660,7 +660,14 @@ impl Checker<'_> {
 
         let mut has_error = false;
         let target_constraint = self.parameter_constraint(target_parameter);
-        if let Some(types) = &target_constraint.types {
+        // TS `checkUnion` validates a union's decorators (including augments) before its
+        // variants are checked, so the (still empty) union is vacuously assignable to any target.
+        let unchecked_union_target = matches!(self.type_arena.get(target_type), Type::Union(_));
+        if let Some(types) = target_constraint
+            .types
+            .as_ref()
+            .filter(|_| !unchecked_union_target)
+        {
             if !self.is_assignable_to_any(target_type, types) {
                 let decorator_name = self.symbol_table.symbols[symbol.index()].name.clone();
                 let message = format!(
@@ -835,6 +842,7 @@ impl Checker<'_> {
 
     fn is_assignable(&self, source: TypeId, target: TypeId) -> bool {
         TypeRelationChecker::new(&self.type_arena)
+            .with_object_value_properties(&self.object_value_properties)
             .is_type_assignable_to_span(source, target, Span { pos: 0, end: 0 })
             .is_related()
     }
@@ -889,8 +897,25 @@ impl Checker<'_> {
     ) -> Option<ResolvedDecoratorArgument> {
         let value_constraints = constraint.values.clone().unwrap_or_default();
         if self.is_value_expression(argument) {
-            // Object/array values, scalar constructors and const references are
-            // evaluated by the M12 value system; pass them through unvalidated.
+            // TS `isAssignableToMixedParameterConstraint` for object/array values, scalar
+            // constructors and const references.
+            if let (Some(values), Some(value_type)) =
+                (&constraint.values, self.value_type(argument))
+            {
+                if !self.is_assignable_to_any(value_type, values) {
+                    let message = format!(
+                        "Argument of type '{}' is not assignable to parameter of type '{}'",
+                        type_name(&self.type_arena, value_type),
+                        values
+                            .iter()
+                            .map(|id| type_name(&self.type_arena, *id))
+                            .collect::<Vec<_>>()
+                            .join(" | "),
+                    );
+                    self.report("invalid-argument", &message, argument);
+                    return None;
+                }
+            }
             let value = self.value_from_node(argument, mapper);
             return Some(ResolvedDecoratorArgument {
                 node: Some(argument),
@@ -937,7 +962,12 @@ impl Checker<'_> {
         };
         let value = match kind {
             ArgKind::Type => ResolvedArgumentValue::Type(arg_type),
-            ArgKind::Value => ResolvedArgumentValue::Value(self.value_from_type(arg_type)),
+            ArgKind::Value => {
+                if !self.check_string_template_serializable(arg_type) {
+                    return None;
+                }
+                ResolvedArgumentValue::Value(self.value_from_type(arg_type))
+            }
         };
         Some(ResolvedDecoratorArgument {
             node: Some(argument),
@@ -993,8 +1023,68 @@ impl Checker<'_> {
         None
     }
 
+    /// TS `checkStringValue` on a string template: reports
+    /// `explainStringTemplateNotSerializable` when it has no string value.
+    fn check_string_template_serializable(&mut self, type_id: TypeId) -> bool {
+        let Type::StringTemplate(template) = self.type_arena.get(type_id).clone() else {
+            return true;
+        };
+        if template.string_value.is_some() {
+            return true;
+        }
+        self.report_non_serializable_spans(&template);
+        false
+    }
+
+    fn report_non_serializable_spans(&mut self, template: &StringTemplateType) {
+        for span in &template.spans {
+            let Type::StringTemplateSpan(span) = self.type_arena.get(*span).clone() else {
+                continue;
+            };
+            if !span.is_interpolated {
+                continue;
+            }
+            let span_type = self.get_non_alias_type(span.span_type);
+            match self.type_arena.get(span_type).clone() {
+                Type::StringLiteral(_)
+                | Type::NumericLiteral(_)
+                | Type::BooleanLiteral(_)
+                | Type::Error => {}
+                Type::StringTemplate(nested) => self.report_non_serializable_spans(&nested),
+                Type::TemplateParameter(param)
+                    if self.template_parameter_has_value_constraint(param.node) => {}
+                _ => {
+                    if let Some(node) = span.node {
+                        self.report(
+                            "non-literal-string-template",
+                            "Value interpolated in this string template cannot be converted to a string. Only literal types can be automatically interpolated.",
+                            node,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn template_parameter_has_value_constraint(&mut self, param_node: NodeId) -> bool {
+        match self.node(param_node).data.clone() {
+            NodeData::TemplateParameterDeclaration {
+                constraint: Some(node),
+                ..
+            } => self.constraint_from_node(node).values.is_some(),
+            _ => false,
+        }
+    }
+
     fn value_from_type(&self, type_id: TypeId) -> DecoratorValueEntity {
         match self.type_arena.get(type_id) {
+            Type::StringTemplate(StringTemplateType {
+                string_value: Some(value),
+                ..
+            }) => DecoratorValueEntity::String {
+                value: value.clone(),
+                type_id: Some(type_id),
+            },
             Type::StringLiteral(literal) => DecoratorValueEntity::String {
                 value: literal.value.clone(),
                 type_id: Some(type_id),
@@ -1011,6 +1101,40 @@ impl Checker<'_> {
             Type::EnumMember(_) => DecoratorValueEntity::EnumMember(type_id),
             _ => DecoratorValueEntity::Unsupported,
         }
+    }
+
+    /// TS `ModelProperty.defaultValue` for every property declared with a default.
+    pub(super) fn collect_default_values(&mut self) -> Vec<(TypeId, DecoratorValueEntity)> {
+        let properties = (0..self.type_arena.types().len())
+            .filter_map(|index| {
+                let type_id = TypeId::new(index as u32);
+                match self.type_arena.get(type_id) {
+                    Type::ModelProperty(prop) => prop.node.map(|node| (type_id, node)),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut by_node: HashMap<NodeId, DecoratorValueEntity> = HashMap::new();
+        let mut result = Vec::new();
+        for (type_id, node) in properties {
+            let NodeData::ModelProperty {
+                default: Some(default),
+                ..
+            } = self.node(node).data
+            else {
+                continue;
+            };
+            let value = match by_node.get(&default) {
+                Some(value) => value.clone(),
+                None => {
+                    let value = self.value_from_node(default, None);
+                    by_node.insert(default, value.clone());
+                    value
+                }
+            };
+            result.push((type_id, value));
+        }
+        result
     }
 
     fn value_from_node(&mut self, node: NodeId, mapper: Option<&Mapper>) -> DecoratorValueEntity {
