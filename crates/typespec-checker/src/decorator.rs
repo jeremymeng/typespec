@@ -90,6 +90,14 @@ pub struct CheckOptions {
     /// TS `function-declarations` compiler feature. When disabled `fn`
     /// declarations in project files report the `experimental-feature` warning.
     pub function_declarations: bool,
+    /// TS compiler features (`union-extends`, `declaration-expressions`, `auto-decorators`,
+    /// `function-declarations`, ...) enabled in project files: the project `tspconfig.yaml`
+    /// `features` list (M13).
+    pub project_features: Vec<String>,
+    /// Features enabled for library scripts (by `TypeSpecScript` node) through the library's own
+    /// `tspconfig.yaml`, like TS `resolveLibraryFeatures` (M13). Standard library scripts never
+    /// have features enabled.
+    pub library_features: HashMap<NodeId, Vec<String>>,
     /// Resolve the TS-ordered decorator applications of every non-template type
     /// into [`crate::CheckResult::decorator_applications`] so a JS host can run
     /// the real decorator implementations.

@@ -395,7 +395,7 @@ describe("checker templates comparison: Rust vs TS", () => {
   it.each(unusedCases)("reports unused template parameter on %s", (_name, source) => {
     const result = rust(source);
     expect(result.diagnostics).toContainEqual(
-      expect.objectContaining({ severity: "warning", code: "unused-template-parameter" }),
+      expect.objectContaining({ severity: "warning", code: "@typespec/compiler/unused-template-parameter" }),
     );
   });
 
@@ -413,7 +413,7 @@ describe("checker templates comparison: Rust vs TS", () => {
   it("reports unused template parameters as warnings", () => {
     const result = rust(`model Foo<T> { value: string; }`);
     expect(result.diagnostics).toContainEqual(
-      expect.objectContaining({ severity: "warning", code: "unused-template-parameter" }),
+      expect.objectContaining({ severity: "warning", code: "@typespec/compiler/unused-template-parameter" }),
     );
   });
 });

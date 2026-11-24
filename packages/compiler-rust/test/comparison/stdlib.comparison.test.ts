@@ -43,7 +43,7 @@ async function compileTs(source: string) {
         const location = getSourceLocation(d.target);
         expect(location?.file.path ?? mainPath).toBe(mainPath);
         return {
-          code: d.code.replace(/^@typespec\/compiler\//, ""),
+          code: d.code,
           message: d.message,
           ...(location ? { pos: location.pos, end: location.end } : {}),
         };

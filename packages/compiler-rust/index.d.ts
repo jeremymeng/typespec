@@ -46,6 +46,10 @@ export interface CheckProgramOptionsJs {
    * (M6 bridge) is passed.
    */
   collectDecoratorApplications?: boolean
+  /** TS compiler features enabled in project files (project `tspconfig.yaml` `features`), M13. */
+  features?: Array<string>
+  /** Features enabled by libraries' own `tspconfig.yaml`, by library root directory (M13). */
+  libraryFeatures?: Array<LibraryFeaturesJs>
 }
 
 export interface CheckProgramResultJs {
@@ -66,6 +70,8 @@ export interface CheckProgramResultJs {
   relationHandle?: number
   /** Deprecated types (`#deprecated` directive or deprecated base), M11. */
   deprecations: Array<DeprecationJs>
+  /** `#suppress` directives in source order (M13). */
+  suppressDirectives: Array<SuppressDirectiveJs>
 }
 
 export declare function checkRelation(source: string, sourceTypeName: string, targetTypeName: string): RelationCheckResult
@@ -139,6 +145,12 @@ export declare function hello(): string
  */
 export declare function isTypeAssignableTo(handle: number, source: RelationSourceJs, targetId: number): AssignabilityResultJs | null
 
+export interface LibraryFeaturesJs {
+  /** Library package root directory: its files get `features`. */
+  root: string
+  features: Array<string>
+}
+
 /** Result of the JS `resolveModule(specifier, baseDir)` callback. */
 export interface ModuleResolutionJs {
   /** Final file to load (directory/package entrypoints already resolved). */
@@ -163,6 +175,9 @@ export interface NodeInfoJs {
   file?: string
   pos: number
   end: number
+  /** Span of the node's identifier (TS `getSourceLocation` with `locateId`), M13. */
+  idPos?: number
+  idEnd?: number
 }
 
 export interface NodeToType {
@@ -389,6 +404,24 @@ export interface SerializedType {
   isInterpolated?: boolean
   /** String template span type. */
   spanTypeId?: number
+}
+
+/**
+ * `#suppress "code" "message"` directive (M13): the JS host applies suppressions
+ * to every diagnostic located inside the owner node, like TS `findDirectiveSuppressingOnNode`.
+ */
+export interface SuppressDirectiveJs {
+  /** Suppressed diagnostic code (first argument). */
+  code: string
+  file: string
+  /** Directive location (local to `file`). */
+  pos: number
+  end: number
+  /** Location of the node the directive is attached to. */
+  ownerPos: number
+  ownerEnd: number
+  /** Directive is in a project file (TS location context `"project"`). */
+  project: boolean
 }
 
 export interface SymbolToType {

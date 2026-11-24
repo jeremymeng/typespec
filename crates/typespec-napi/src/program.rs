@@ -4,8 +4,12 @@
 use napi::bindgen_prelude::{FnArgs, Function, Object};
 use napi::{Env, Result};
 use napi_derive::napi;
+use std::collections::HashMap;
+
+use typespec_parser::ast::{NodeData, NodeId};
 use typespec_parser::{
-    parse_program_with_stdlib, ModuleResolutionError, ParseOptions, ResolvedModule, SourceHost,
+    parse_program_with_stdlib, ModuleResolutionError, ParseOptions, ParseResult, ResolvedModule,
+    SourceHost,
 };
 use typespec_source::{ProgramSources, SourceFileKind, Span};
 
@@ -68,6 +72,34 @@ pub struct CheckProgramOptionsJs {
     /// decorator implementations (M11). Ignored when a `decorators` registry
     /// (M6 bridge) is passed.
     pub collect_decorator_applications: Option<bool>,
+    /// TS compiler features enabled in project files (project `tspconfig.yaml` `features`), M13.
+    pub features: Option<Vec<String>>,
+    /// Features enabled by libraries' own `tspconfig.yaml`, by library root directory (M13).
+    pub library_features: Option<Vec<LibraryFeaturesJs>>,
+}
+
+#[napi(object)]
+pub struct LibraryFeaturesJs {
+    /// Library package root directory: its files get `features`.
+    pub root: String,
+    pub features: Vec<String>,
+}
+
+/// `#suppress "code" "message"` directive (M13): the JS host applies suppressions
+/// to every diagnostic located inside the owner node, like TS `findDirectiveSuppressingOnNode`.
+#[napi(object)]
+pub struct SuppressDirectiveJs {
+    /// Suppressed diagnostic code (first argument).
+    pub code: String,
+    pub file: String,
+    /// Directive location (local to `file`).
+    pub pos: u32,
+    pub end: u32,
+    /// Location of the node the directive is attached to.
+    pub owner_pos: u32,
+    pub owner_end: u32,
+    /// Directive is in a project file (TS location context `"project"`).
+    pub project: bool,
 }
 
 #[napi(object)]
@@ -89,6 +121,8 @@ pub struct CheckProgramResultJs {
     pub relation_handle: Option<u32>,
     /// Deprecated types (`#deprecated` directive or deprecated base), M11.
     pub deprecations: Vec<DeprecationJs>,
+    /// `#suppress` directives in source order (M13).
+    pub suppress_directives: Vec<SuppressDirectiveJs>,
 }
 
 #[napi(object)]
@@ -170,7 +204,7 @@ pub fn check_program<'env>(
         resolve_module,
         error: None,
     };
-    let (stdlib, check_options) = match options {
+    let (stdlib, mut check_options, library_features) = match options {
         Some(options) => (
             options.stdlib.unwrap_or_default(),
             CheckOptions {
@@ -178,15 +212,23 @@ pub fn check_program<'env>(
                 function_declarations: options.function_declarations.unwrap_or(false),
                 collect_decorator_applications: decorators.is_none()
                     && options.collect_decorator_applications.unwrap_or(false),
+                project_features: options.features.unwrap_or_default(),
+                ..CheckOptions::default()
             },
+            options.library_features.unwrap_or_default(),
         ),
-        None => (Vec::new(), CheckOptions::default()),
+        None => (Vec::new(), CheckOptions::default(), Vec::new()),
     };
     let program =
         parse_program_with_stdlib(&entry_path, &mut host, ParseOptions::default(), &stdlib);
     if let Some(error) = host.error {
         return Err(error);
     }
+    if !library_features.is_empty() {
+        check_options.library_features =
+            map_library_features(&program.parse_result, &program.sources, &library_features);
+    }
+    let suppress_directives = collect_suppress_directives(&program.parse_result, &program.sources);
     let collect = check_options.collect_decorator_applications;
     let mut deprecations = Vec::new();
     let (result, decorators_info, relation_handle) = if decorators.is_none() {
@@ -252,7 +294,91 @@ pub fn check_program<'env>(
         nodes,
         relation_handle,
         deprecations,
+        suppress_directives,
     })
+}
+
+/// Library script -> features of the library whose root contains the script's file.
+fn map_library_features(
+    parse_result: &ParseResult,
+    sources: &ProgramSources,
+    library_features: &[LibraryFeaturesJs],
+) -> HashMap<NodeId, Vec<String>> {
+    let mut result = HashMap::new();
+    for script in &parse_result.library_scripts {
+        let node = parse_result.arena.get(*script);
+        let Some((file, _)) = sources.locate_span(Span {
+            pos: node.pos,
+            end: node.end,
+        }) else {
+            continue;
+        };
+        let path = &sources.get(file).path;
+        if let Some(library) = library_features
+            .iter()
+            .find(|library| path.starts_with(&format!("{}/", library.root.trim_end_matches('/'))))
+        {
+            result.insert(*script, library.features.clone());
+        }
+    }
+    result
+}
+
+/// Every well-formed `#suppress` directive (TS `parseDirective`: first argument is the code),
+/// sorted by file and position.
+fn collect_suppress_directives(
+    parse_result: &ParseResult,
+    sources: &ProgramSources,
+) -> Vec<SuppressDirectiveJs> {
+    let arena = &parse_result.arena;
+    let in_library = |pos: u32| {
+        parse_result.library_scripts.iter().any(|script| {
+            let script = arena.get(*script);
+            script.pos <= pos && pos <= script.end
+        })
+    };
+    let mut directives = Vec::new();
+    for owner in arena.nodes() {
+        for directive_id in &owner.directives {
+            let directive = arena.get(*directive_id);
+            let NodeData::DirectiveExpression { target, arguments } = &directive.data else {
+                continue;
+            };
+            if !matches!(&arena.get(*target).data, NodeData::Identifier { sv } if sv == "suppress")
+            {
+                continue;
+            }
+            let code = match arguments.first().map(|arg| &arena.get(*arg).data) {
+                Some(NodeData::StringLiteral { value }) => value.clone(),
+                Some(NodeData::Identifier { sv }) => sv.clone(),
+                _ => continue,
+            };
+            let Some((file, local)) = sources.locate_span(Span {
+                pos: directive.pos,
+                end: directive.end,
+            }) else {
+                continue;
+            };
+            let offset = directive.pos - local.pos;
+            directives.push((
+                file,
+                SuppressDirectiveJs {
+                    code,
+                    file: sources.get(file).path.clone(),
+                    pos: local.pos,
+                    end: local.end,
+                    owner_pos: owner.pos.saturating_sub(offset),
+                    owner_end: owner.end.saturating_sub(offset),
+                    project: !in_library(directive.pos),
+                },
+            ));
+        }
+    }
+    directives.sort_by_key(|(file, directive)| (*file, directive.pos));
+    directives
+        .into_iter()
+        .map(|(_, directive)| directive)
+        .collect()
 }
 
 fn locate_diagnostic(

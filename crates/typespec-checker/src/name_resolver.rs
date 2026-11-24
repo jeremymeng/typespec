@@ -748,7 +748,8 @@ impl<'p, 't> NameResolver<'p, 't> {
             };
             self.diagnostics.push(Diagnostic {
                 severity: DiagnosticSeverity::Warning,
-                code: "unused-using",
+                // Linter rule diagnostic (full rule code), gated by the JS host (M13).
+                code: "@typespec/compiler/unused-using",
                 message: format!(
                     "'using {}' is declared but never used.",
                     self.expression_to_string(name)

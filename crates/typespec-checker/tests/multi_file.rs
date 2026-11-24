@@ -103,7 +103,10 @@ fn reports_unused_using_in_imported_file() {
         ("/main.tsp", "import \"./a.tsp\"; namespace Lib {}"),
         ("/a.tsp", "using Lib;"),
     ]);
-    assert_eq!(codes(&program), [("/a.tsp", "unused-using")]);
+    assert_eq!(
+        codes(&program),
+        [("/a.tsp", "@typespec/compiler/unused-using")]
+    );
 }
 
 #[test]
@@ -145,7 +148,7 @@ fn global_and_using_bindings_are_ambiguous() {
         codes(&program),
         [
             ("/main.tsp", "ambiguous-symbol"),
-            ("/main.tsp", "unused-using")
+            ("/main.tsp", "@typespec/compiler/unused-using")
         ]
     );
 }
